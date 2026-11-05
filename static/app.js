@@ -18,7 +18,15 @@ async function api(path, data){
 }
 async function action(fn){ try{await fn();}catch(error){toast(error.message);} }
 function openDialog(id){const dialog=$('#'+id); if(!dialog.open)dialog.showModal();}
-function closeDialog(dialog){dialog.close();}
+function closeDialog(dialog){
+  if(dialog && dialog.id==='previewDialog'){
+    const media = dialog.querySelectorAll('video, audio');
+    media.forEach(m => { try { m.pause(); m.removeAttribute('src'); m.load(); } catch(_) {} });
+    const body = $('#previewBody');
+    if(body) body.innerHTML = '';
+  }
+  dialog.close();
+}
 function empty(icon,title,message,button=''){return `<div class="empty"><div class="empty-icon">${icon}</div><h3>${E(title)}</h3><p>${E(message)}</p>${button}</div>`;}
 function button(symbol,title,attrs){return `<button class="icon-button" title="${E(title)}" aria-label="${E(title)}" ${attrs}>${symbol}</button>`;}
 function shortFolder(job){return ['Zedair',job.folder,job.subdir].filter(Boolean).join('/');}
@@ -89,7 +97,9 @@ async function loadFiles(){
   try{const result=await api('folders?path='+encodeURIComponent(filePath));$('#fileList').innerHTML=result.entries.length?result.entries.map(entry=>{
     const path=join(filePath,entry.name);
     if(entry.directory)return `<button class="file-row" data-file-folder="${E(path)}"><span>▰</span><strong>${E(entry.name)}</strong><small>Open folder →</small></button>`;
-    return `<div class="file-entry"><a class="file-row" href="/api/file?path=${encodeURIComponent(path)}" download><span>↓</span><strong>${E(entry.name)}</strong><small>${bytes(entry.size)}</small></a><button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div>`;
+    const ext = entry.name.split('.').pop().toLowerCase();
+    const previewable = ['jpg','jpeg','png','gif','webp','bmp','svg','mp4','mkv','webm','mov','avi','mp3','m4a','ogg','wav','flac','aac'].includes(ext);
+    return `<div class="file-entry"><a class="file-row" href="/api/file?path=${encodeURIComponent(path)}" download><span>↓</span><strong>${E(entry.name)}</strong><small>${bytes(entry.size)}</small></a>${previewable?`<button class="secondary compact" data-preview-file="${E(path)}" data-preview-name="${E(entry.name)}" aria-label="Preview ${E(entry.name)}">Preview</button>`:''}<button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div>`;
   }).join(''):empty('▤','This folder is empty.','Create a subfolder or point your next download here.');}
   catch(error){$('#fileList').innerHTML=empty('!','Storage unavailable',error.message);}
 }
@@ -195,11 +205,48 @@ document.addEventListener('submit',event=>{
 
 function renderSpeed(){
   const s=state.speedtest,active=s.status==='running';
-  $('#speedDown').textContent=s.download_mbps??'—';$('#speedUp').textContent=s.upload_mbps??'—';$('#speedLatency').textContent=s.latency_ms??'—';$('#speedJitter').textContent=s.jitter_ms??'—';
-  $('#speedStatus').textContent=s.detail;$('#startSpeed').disabled=active;$('#startSpeed').textContent=active?'Testing on laptop…':'Start laptop test ↗';$('#cancelSpeed').hidden=!active;
+  const down=s.download_mbps,up=s.upload_mbps;
+  $('#speedDown').textContent=down??'—';$('#speedUp').textContent=up??'—';$('#speedLatency').textContent=s.latency_ms??'—';$('#speedJitter').textContent=s.jitter_ms??'—';
+  const phase=s.phase||'idle';
+  const gaugeVal=phase==='download'?(down||0):phase==='upload'?(up||0):phase==='done'?(down||0):0;
+  const maxSpeed=Math.max(100,gaugeVal*1.3);
+  const pct=Math.min(1,gaugeVal/maxSpeed);
+  const arc=414.7;
+  const offset=arc*(1-pct*0.75);
+  const gaugeEl=$('#gaugeArc');if(gaugeEl)gaugeEl.style.strokeDashoffset=offset;
+  $('#gaugeNumber').textContent=phase==='download'?(down??'—'):phase==='upload'?(up??'—'):phase==='done'?(down??'—'):'—';
+  const labelMap={idle:'Ready',starting:'Connecting…',latency:'Measuring latency…',download:'Testing download…',upload:'Testing upload…',done:'Complete',error:'Error',cancelled:'Cancelled'};
+  $('#gaugeLabel').textContent=labelMap[phase]||s.detail||'Ready';
+  $('#speedStatus').textContent=s.detail||'Ready to test your connection';
+  $('#startSpeed').disabled=active;$('#startSpeed').textContent=active?'⏳ Testing…':'▶ Start test';$('#cancelSpeed').hidden=!active;
   const transfers=state.jobs.some(j=>j.status==='running')||state.torrents.some(t=>[4,6].includes(t.status));
-  $('#speedWarning').hidden=!transfers;$('#speedWarning').textContent='Downloads or torrents are active on the laptop. Hold the queue and wait for transfers to stop before testing for a clearer result.';
-  $('#speedHistory').innerHTML=s.history.length?`<div class="table-scroll"><table><thead><tr><th>Time</th><th>Down · Mbps</th><th>Up · Mbps</th><th>HTTP latency · ms</th></tr></thead><tbody>${s.history.map(r=>`<tr><td>${E(new Date(r.finished*1000).toLocaleString())}</td><td>${r.download_mbps}</td><td>${r.upload_mbps}</td><td>${r.latency_ms}</td></tr>`).join('')}</tbody></table></div>`:'<p class="hint">No completed tests yet.</p>';
+  $('#speedWarning').hidden=!transfers;$('#speedWarning').textContent='Active transfers detected. Hold the queue for accurate results.';
+  $('#speedHistory').innerHTML=s.history.length?`<div class="history-cards">${s.history.map(r=>`<div class="history-card"><div class="history-date"><strong>${E(new Date(r.finished*1000).toLocaleDateString(undefined,{month:'short',day:'numeric'}))}</strong><small>${E(new Date(r.finished*1000).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}))}</small></div><div class="history-speeds"><div class="history-speed"><span class="history-label">↓ DOWNLOAD</span><strong>${r.download_mbps??'—'}</strong><small>Mbps</small></div><div class="history-speed"><span class="history-label">↑ UPLOAD</span><strong>${r.upload_mbps??'—'}</strong><small>Mbps</small></div><div class="history-speed"><span class="history-label">PING</span><strong>${r.latency_ms??'—'}</strong><small>ms</small></div><div class="history-speed"><span class="history-label">JITTER</span><strong>${r.jitter_ms??'—'}</strong><small>ms</small></div></div></div>`).join('')}</div>`:'<p class="hint">No completed tests yet. Run your first test above.</p>';
 }
 $('#startSpeed').onclick=()=>action(async()=>{await api('speedtest',{action:'start'});await refresh();});
 $('#cancelSpeed').onclick=()=>action(async()=>{await api('speedtest',{action:'cancel'});await refresh();});
+
+document.addEventListener('click', event => {
+  const el = event.target.closest('[data-preview-file]');
+  if (!el) return;
+  event.preventDefault();
+  const path = el.dataset.previewFile;
+  const name = el.dataset.previewName;
+  const ext = name.split('.').pop().toLowerCase();
+  const url = '/api/file?path=' + encodeURIComponent(path) + '&preview=1';
+  const imageExts = ['jpg','jpeg','png','gif','webp','bmp','svg'];
+  const videoExts = ['mp4','mkv','webm','mov','avi'];
+  const audioExts = ['mp3','m4a','ogg','wav','flac','aac'];
+  let content = '';
+  if (imageExts.includes(ext)) {
+    content = `<img src="${url}" alt="${E(name)}" style="max-width:100%;max-height:70vh;border-radius:8px;">`;
+  } else if (videoExts.includes(ext)) {
+    content = `<video controls autoplay style="max-width:100%;max-height:70vh;border-radius:8px;"><source src="${url}">Your browser does not support this video format.</video>`;
+  } else if (audioExts.includes(ext)) {
+    content = `<div style="text-align:center;padding:40px 0;"><p style="margin-bottom:20px;font-size:14px;">${E(name)}</p><audio controls autoplay style="width:100%;"><source src="${url}">Your browser does not support this audio format.</audio></div>`;
+  }
+  $('#previewTitle').textContent = name;
+  $('#previewBody').innerHTML = content;
+  $('#previewDownload').href = '/api/file?path=' + encodeURIComponent(path);
+  openDialog('previewDialog');
+});

@@ -35,20 +35,40 @@ def measure(emit, connection_factory=http.client.HTTPSConnection):
                 raise TimeoutError('Speed-test response exceeded its limit')
         if not upload and count!=size:
             raise ValueError('Incomplete test response; no speed result was accepted')
+        elapsed = max(time.monotonic()-start, .000001)
         transferred += size if upload else count
-        return ttfb, size*8/max(time.monotonic()-start,.000001)/1_000_000
+        return ttfb, elapsed, (size if upload else count)
+
     try:
         emit({'phase':'latency','detail':'Measuring HTTP latency from the laptop…'})
         request(0) # warm TLS connection; excluded from latency median
-        latency=[request(0)[0] for _ in range(5)]
+        latency=[]
+        for _ in range(5):
+            latency.append(request(0)[0])
+            time.sleep(0.05)
         emit({'latency_ms':round(statistics.median(latency),1), 'jitter_ms':round(statistics.mean(abs(b-a) for a,b in zip(latency,latency[1:])),1)})
+        
         emit({'phase':'download','detail':'Downloading test data to the laptop’s memory…'})
-        request(8*1024*1024)
-        _, down=request(24*1024*1024)
-        emit({'download_mbps':round(down,2),'phase':'upload','detail':'Uploading generated test data from the laptop…'})
-        request(1024*1024,True)
-        _, up=request(8*1024*1024,True)
-        emit({'upload_mbps':round(up,2),'transferred_bytes':transferred,'phase':'done','detail':'Test complete. Single-connection HTTP estimate to Cloudflare.'})
+        # Multi-chunk download (4 x 8 MiB = 32 MiB) with median filtering to avoid TCP burst skew
+        dl_samples = []
+        for i in range(4):
+            _, t, b = request(8*1024*1024)
+            speed = (b * 8) / t / 1_000_000
+            dl_samples.append(speed)
+            emit({'download_mbps': round(speed, 2), 'detail': f'Measuring download ({i+1}/4)… {round(speed, 1)} Mbps'})
+            time.sleep(0.15)
+
+        steady_dl = dl_samples[1:] if len(dl_samples) > 1 else dl_samples
+        final_dl = round(statistics.median(steady_dl), 2)
+        emit({'download_mbps': final_dl, 'phase':'upload','detail':'Uploading generated test data from the laptop…'})
+
+        # Multi-chunk upload (1 MiB + 8 MiB = 9 MiB, total transferred: 41 MiB)
+        _, t1, b1 = request(1024*1024, True)
+        time.sleep(0.15)
+        _, t2, b2 = request(8*1024*1024, True)
+        up_mbps = (b1 + b2) * 8 / (t1 + t2) / 1_000_000
+        final_up = round(up_mbps, 2)
+        emit({'upload_mbps': final_up, 'download_mbps': final_dl, 'transferred_bytes': transferred, 'phase':'done', 'detail':'Test complete. Multi-stage HTTP estimate to Cloudflare.'})
     finally:
         connection.close()
 

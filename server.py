@@ -599,7 +599,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('X-Frame-Options', 'DENY')
         self.send_header('Referrer-Policy', 'no-referrer')
-        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
     def reply(self, data, status=200, cookie=None):
         raw = json.dumps(data, ensure_ascii=False).encode()
@@ -702,8 +702,14 @@ class Handler(BaseHTTPRequestHandler):
             with file.open('rb') as stream:
                 self.send_response(206 if ranged else 200)
                 self.headers_common()
-                self.send_header('Content-Type', 'application/octet-stream')
-                self.send_header('Content-Disposition', "attachment; filename*=UTF-8''" + urllib.parse.quote(file.name))
+                preview = query.get('preview', [''])[0] == '1'
+                mime = mimetypes.guess_type(str(file))[0] or 'application/octet-stream'
+                if preview and mime.startswith(('image/', 'video/', 'audio/')):
+                    self.send_header('Content-Type', mime)
+                    self.send_header('Content-Disposition', "inline; filename*=UTF-8''" + urllib.parse.quote(file.name))
+                else:
+                    self.send_header('Content-Type', 'application/octet-stream')
+                    self.send_header('Content-Disposition', "attachment; filename*=UTF-8''" + urllib.parse.quote(file.name))
                 self.send_header('Accept-Ranges', 'bytes')
                 if ranged:
                     self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
