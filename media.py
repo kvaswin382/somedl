@@ -12,6 +12,7 @@ import urllib.parse
 import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
+import platforms
 
 
 def validate_url(url, dns=True):
@@ -50,6 +51,8 @@ def engine_for(url):
 def build_command(job, dest, cookie, settings, state):
     """Use argument arrays only. Every job owns one resumable destination directory."""
     url, kind = job['url'], job['kind']
+    key = platforms.platform_for(url)
+    prefs = platforms.preferences(settings.get('platforms'))[key]
     if kind == 'threads':
         return [sys.executable, str(Path(__file__).resolve()), '--threads', url, str(dest), str(cookie or '')]
     if kind == 'instagram':
@@ -58,8 +61,9 @@ def build_command(job, dest, cookie, settings, state):
                 'base-directory': str(dest), 'directory': [],
                 'path-restrict': 'windows', 'path-replace': '_',
                 'retries': 3, 'timeout': 30,
-                'instagram': {'videos': True, 'previews': False, 'max-posts': 1,
-                              'warn-images': True, 'wd': False, 'sleep-request': '6-12'},
+                'instagram': {'videos': prefs['videos'], 'previews': False, 'max-posts': 1,
+                              'filename': '{post_shortcode}_{num:>02}.{extension}',
+                              'warn-images': prefs['warn_images'], 'wd': False, 'sleep-request': prefs['sleep_request']},
             },
             'downloader': {'http': {'rate': str(settings['media_kib']) + 'k' if settings['media_kib'] else None},
                            'ytdl': {'options': {'format': 'bv*+ba/b', 'noplaylist': True,
@@ -74,7 +78,7 @@ def build_command(job, dest, cookie, settings, state):
         config_path.write_text(json.dumps(config))
         config_path.chmod(0o600)
         args = [sys.executable, '-m', 'gallery_dl', '--config-ignore', '--config', str(config_path),
-                '--directory', str(dest)]
+                '--directory', str(dest), '--write-metadata']
         if cookie:
             args += ['--cookies', str(cookie)]
         return args + ['--', url]
@@ -86,7 +90,7 @@ def build_command(job, dest, cookie, settings, state):
         fmt = 'ba/b'
     args = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-cache-dir',
             '--newline', '--progress', '--no-colors', '--windows-filenames', '--trim-filenames', '160',
-            '--continue', '--no-overwrites', '--retries', '3', '--fragment-retries', '3',
+            '--continue', '--write-info-json', '--no-overwrites', '--retries', '3', '--fragment-retries', '3',
             '--socket-timeout', '30', '--concurrent-fragments', '1',
             '--progress-delta', '1', '--progress-template',
             'download:ZEDPROG %(progress)j', '--print', 'before_dl:ZEDTITLE %(title)s',
@@ -94,7 +98,9 @@ def build_command(job, dest, cookie, settings, state):
             '-o', '%(title).120B [%(id)s].%(ext)s',
             '--postprocessor-args', 'ffmpeg:-threads 1',
             '--yes-playlist' if job['playlist'] else '--no-playlist',
-            '--playlist-end', str(settings['playlist_limit'])]
+            '--playlist-end', str(prefs.get('playlist_limit',settings['playlist_limit']))]
+    if key == 'x':
+        args += ['--extractor-args', 'twitter:api='+prefs['api']]
     if quality == 'audio':
         args += ['-x', '--audio-format', 'best']
     if job.get('subtitles'):

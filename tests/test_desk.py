@@ -113,7 +113,7 @@ class CoreTests(Fixture):
 
     def test_worker_completes_and_persists_title(self):
         jid = self.create_job()
-        command = [sys.executable, '-c', "print('ZEDTITLE Fixture movie');print('ZEDPROG {\"downloaded_bytes\":100,\"total_bytes\":100}')"]
+        command = [sys.executable, '-c', "from pathlib import Path;Path('Fixture movie.mp4').write_bytes(b'movie');print('ZEDTITLE Fixture movie');print('ZEDPROG {\"downloaded_bytes\":100,\"total_bytes\":100}')"]
         with patch('server.validate_url'), patch('server.build_command', return_value=command):
             self.desk.run_job(self.desk.job(jid))
         job = self.desk.job(jid)

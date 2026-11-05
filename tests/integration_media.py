@@ -10,7 +10,8 @@ import tempfile
 import threading
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from media import build_command
-from server import DEFAULTS
+from server import DEFAULTS, Desk
+from publishing import publish
 
 with tempfile.TemporaryDirectory() as temp:
     root=Path(temp); source=root/'source'; source.mkdir(); dest=root/'output'; dest.mkdir()
@@ -30,4 +31,14 @@ with tempfile.TemporaryDirectory() as temp:
     assert 'ZEDPROG ' in result.stdout
     for line in result.stdout.splitlines():
         if line.startswith('ZEDPROG '):json.loads(line[8:])
-    print('PASS: real yt-dlp completed exact-byte media transfer, title and JSON progress output.')
+    mount=root/'ssd';(mount/'Zedair').mkdir(parents=True)
+    desk=Desk({'state':str(root/'state'),'mount':str(mount),'require_mount':False})
+    desk.set_setting('reserve_gib',0)
+    jid=desk.add_jobs({'urls':['https://example.com/fixture.mp4']})['ids'][0]
+    output=desk.destination('example.com',create=True)
+    (output/'fixture.mp4').write_bytes(b'existing file')
+    publish(desk,desk.job(jid),dest,output)
+    assert (output/'fixture (1).mp4').read_bytes()==(source/'fixture.mp4').read_bytes()
+    assert (output/'fixture.mp4').read_bytes()==b'existing file'
+    desk.close()
+    print('PASS: real yt-dlp completed exact-byte media transfer, title, JSON progress, metadata naming and numbered publication.')

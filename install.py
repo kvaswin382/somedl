@@ -155,11 +155,11 @@ def main():
     if root.is_symlink():
         raise SystemExit('Zedair must be a real directory, not a link.')
     root.mkdir(exist_ok=True)
-    for folder in ('Videos', 'Instagram', 'Threads', 'Torrents'):
+    for folder in ('YouTube', 'Instagram', 'X', 'Threads', 'Torrents'):
         (root/folder).mkdir(exist_ok=True)
     if previous and Path('/etc/systemd/system/zedair.service').exists():
         run('systemctl', 'stop', 'zedair.service')
-    for name in ('server.py', 'media.py', 'README.md', 'requirements.txt', 'update.sh'):
+    for name in ('server.py', 'media.py', 'platforms.py', 'publishing.py', 'speedcheck.py', 'README.md', 'TEST-REPORT.md', 'LICENSE', 'requirements.txt', 'update.sh', 'upgrade.sh', 'upgrade.py'):
         shutil.copy2(BASE/name, APP/name)
     shutil.copytree(BASE/'static', APP/'static', dirs_exist_ok=True)
     run('python3', '-m', 'venv', APP/'venv')

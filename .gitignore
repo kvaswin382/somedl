@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+cookies*.txt
+config.json
+*sqlite3*
+*.db
+*.log
+_preview.py
+preview-data/
+*.zip

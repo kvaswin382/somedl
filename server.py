@@ -26,6 +26,9 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from media import build_command, engine_for, validate_url
+import platforms
+from publishing import publish
+from speedcheck import SpeedTest
 
 HERE = Path(__file__).resolve().parent
 DAYS = 35
@@ -33,7 +36,7 @@ DEFAULTS = {'media_kib': 0, 'torrent_down_kib': 0, 'torrent_up_kib': 256,
             'seed_ratio': 0.0, 'reserve_gib': 5, 'playlist_limit': 100, 'retry_count': 3,
             'hold': False}
 QUALITY = ('best', '2160', '1080', '720', '480', 'audio')
-COOKIE_SLOTS = ('instagram', 'youtube', 'threads', 'other')
+COOKIE_SLOTS = tuple(platforms.DEFAULTS)
 ACTIVE = ('queued', 'running', 'retry', 'blocked', 'paused')
 
 
@@ -62,7 +65,7 @@ def password_ok(password, saved):
 
 
 def safe_relative(raw):
-    if not isinstance(raw, str) or len(raw) > 220:
+    if not isinstance(raw, str) or len(raw) > 1024:
         raise APIError('Folder path is too long')
     raw = raw.strip().replace('\\', '/')
     if raw in ('', '.'):
@@ -128,6 +131,11 @@ class Desk:
                 created REAL, updated REAL, progress REAL DEFAULT 0, detail TEXT DEFAULT '',
                 last_error TEXT DEFAULT '', position REAL);
         ''')
+        columns = {r[1] for r in self.db.execute('PRAGMA table_info(jobs)')}
+        for key, definition in {'layout':'INTEGER DEFAULT 1', 'phase':"TEXT DEFAULT 'download'", 'error_kind':"TEXT DEFAULT ''"}.items():
+            if key not in columns:
+                self.db.execute('ALTER TABLE jobs ADD COLUMN '+key+' '+definition)
+        self.db.execute('CREATE TABLE IF NOT EXISTS published(job TEXT, source TEXT, target TEXT, signature TEXT, complete INTEGER, PRIMARY KEY(job,source))')
         self.db.execute("UPDATE jobs SET status='queued', detail='Recovering after service restart' WHERE status='running'")
         self.db.commit()
         self.stop = threading.Event()
@@ -140,6 +148,7 @@ class Desk:
         self.failures = collections.defaultdict(collections.deque)
         self.rpc = Transmission(config)
         self.threads = []
+        self.speedtest = SpeedTest(self)
 
     def rows(self, sql, args=()):
         with self.lock:
@@ -159,6 +168,44 @@ class Desk:
 
     def settings(self):
         return {k: self.get_setting(k, v) for k, v in DEFAULTS.items()}
+
+    def platform_settings(self):
+        return platforms.preferences(self.get_setting('platforms', {}))
+
+    def staging(self, jid):
+        if not re.fullmatch('[a-f0-9]{12}', jid):
+            raise APIError('Invalid job identifier')
+        if not self.storage()['ready']:
+            raise APIError(self.storage()['reason'])
+        base = self.root / '.incomplete'
+        path = base / jid
+        if base.is_symlink() or path.is_symlink():
+            raise APIError('Partial download folder must not be a symbolic link')
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def delete_file(self, data):
+        if data.get('confirm') is not True:
+            raise APIError('Confirm permanent deletion first')
+        with self.lock:
+            path = self.destination(data.get('path',''), reserve=False)
+            if not path.is_file():
+                raise APIError('File not found',404)
+            stamp = str(path.stat().st_size)+':'+str(path.stat().st_mtime_ns)
+            if data.get('stamp') != stamp:
+                raise APIError('File changed. Refresh the file list before deleting.',409)
+            for job in self.rows("SELECT * FROM jobs WHERE status IN ('running','queued','retry','paused','blocked')"):
+                old = self.root / job['folder'] / job['subdir']
+                if job['layout']==1 and path.is_relative_to(old):
+                    raise APIError('Cancel the download before deleting its files',409)
+            reserved = self.rows('SELECT p.target,j.folder,j.subdir FROM published p JOIN jobs j ON p.job=j.id WHERE p.complete=0')
+            if any(path==self.root/r['folder']/r['subdir']/r['target'] for r in reserved):
+                raise APIError('This file is still being saved',409)
+            torrents = self.rpc.call('torrent-get',{'fields':['downloadDir','files']}).get('torrents',[])
+            for torrent in torrents:
+                if any(path.resolve()==(Path(torrent['downloadDir'])/f['name']).resolve() for f in torrent.get('files',[])):
+                    raise APIError('Remove this torrent from the torrent list first, then delete its files here',409)
+            path.unlink()
 
     def storage(self, reserve=True):
         status = {'ready': False, 'root': str(self.root), 'mount': str(self.mount), 'free': 0, 'total': 0, 'reason': ''}
@@ -222,8 +269,8 @@ class Desk:
             raise APIError('Paste between 1 and 30 URLs')
         if len(self.rows('SELECT id FROM jobs')) + len(urls) > 1000:
             raise APIError('History is full (1,000 jobs). Clear finished history first.')
-        quality = data.get('quality', 'best')
-        if quality not in QUALITY:
+        quality = data.get('quality', 'platform')
+        if quality not in (*QUALITY, 'platform'):
             raise APIError('Unknown quality preset')
         cookie = data.get('cookie_profile', 'auto')
         if cookie not in (*COOKIE_SLOTS, 'auto', 'none'):
@@ -231,7 +278,7 @@ class Desk:
         folder = safe_relative(data.get('folder', ''))
         name = safe_relative(data.get('name', ''))
         if '/' in name or len(name) > 80:
-            raise APIError('Use one short name for the job folder')
+            raise APIError('Use one short display label')
         # Validate the whole batch before recording any work. Queuing while unplugged is allowed.
         clean = []
         for url in urls:
@@ -242,6 +289,9 @@ class Desk:
                 raise APIError('Instagram requires a direct post, carousel or reel URL')
             if kind == 'threads' and not re.search(r'/(post|t)/[\w-]+', urllib.parse.urlsplit(url).path):
                 raise APIError('Threads requires a direct post URL')
+            if not self.platform_settings()[platforms.platform_for(url)]['enabled']:
+                raise APIError('This platform is disabled in Settings')
+            safe_relative(platforms.platform_folder(url,self.platform_settings()))
             clean.append((url, kind))
         result = []
         with self.lock:
@@ -250,11 +300,13 @@ class Desk:
                 if self.db.execute("SELECT id FROM jobs WHERE url=? AND status IN ('queued','running','retry','paused','blocked')", (url,)).fetchone():
                     continue
                 jid = secrets.token_hex(6)
-                subdir = (name or kind) + '-' + jid
-                self.db.execute('''INSERT INTO jobs(id,url,kind,folder,name,subdir,quality,playlist,subtitles,cookie_profile,status,created,updated,position)
-                                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                    (jid, url, kind, folder, name or urllib.parse.urlsplit(url).hostname, subdir, quality,
-                     int(bool(data.get('playlist'))), int(bool(data.get('subtitles'))), cookie, 'queued', now(), now(), now()))
+                prefs = self.platform_settings()[platforms.platform_for(url)]
+                subdir = platforms.platform_folder(url,self.platform_settings())
+                selected_quality = prefs.get('quality','best') if quality=='platform' else quality
+                self.db.execute('''INSERT INTO jobs(id,url,kind,folder,name,subdir,quality,playlist,subtitles,cookie_profile,status,created,updated,position,layout)
+                                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,2)''',
+                    (jid, url, kind, folder, name or urllib.parse.urlsplit(url).hostname, subdir, selected_quality,
+                     int(bool(data.get('playlist') or (quality=='platform' and prefs.get('playlist')))), int(bool(data.get('subtitles') or (quality=='platform' and prefs.get('subtitles')))), cookie, 'queued', now(), now(), now()))
                 result.append(jid)
             self.db.commit()
         return {'ids': result, 'skipped': len(urls)-len(result)}
@@ -264,10 +316,21 @@ class Desk:
         if slot == 'none':
             return None
         if slot == 'auto':
-            host = urllib.parse.urlsplit(job['url']).hostname or ''
-            slot = job['kind'] if job['kind'] in ('instagram', 'threads') else ('youtube' if host == 'youtu.be' or host == 'youtube.com' or host.endswith('.youtube.com') else 'other')
+            slot = platforms.platform_for(job['url'])
         path = self.state / ('cookies-' + slot + '.txt')
         return path if path.exists() else None
+
+    def clean_metadata(self, stage):
+        try:
+            if not self.storage(reserve=False)['ready'] or stage.is_symlink():
+                return
+            for item in stage.glob('*.json'):
+                if item.is_file() and not item.is_symlink():
+                    item.unlink()
+            if not any(stage.iterdir()):
+                stage.rmdir()
+        except OSError:
+            pass  # Publication has completed; optional metadata cleanup must not change its status.
 
     def stop_process(self):
         process = self.process
@@ -289,7 +352,7 @@ class Desk:
             elif action in ('resume', 'retry'):
                 if job['status'] == 'running':
                     raise APIError('This download is already running')
-                self.update_job(jid, status='queued', attempts=0, next_try=0, last_error='', detail='Waiting in queue')
+                self.update_job(jid, status='queued', attempts=0, next_try=0, last_error='', error_kind='', detail='Waiting in queue')
             elif action == 'first':
                 self.update_job(jid, position=now() - 10**10)
             else:
@@ -298,7 +361,7 @@ class Desk:
     def consume(self, pipe, jid):
         tail = collections.deque(maxlen=24)
         for raw in iter(lambda: pipe.readline(65536), b''):
-            line = raw.decode('utf-8', 'replace').strip()[:3000]
+            line = platforms.redact(raw.decode('utf-8', 'replace').strip(), self.state)[:3000]
             if not line:
                 continue
             live = self.live.setdefault(jid, {})
@@ -331,8 +394,23 @@ class Desk:
                 self.update_job(jid, status='running', attempts=job['attempts']+1, detail='Connecting…')
             validate_url(job['url'])
             relative = '/'.join(p for p in (job['folder'], job['subdir']) if p)
-            dest = self.destination(relative, create=True)
-            args = build_command(job, dest, self.cookie_for(job), self.settings(), self.state)
+            output = self.destination(relative, create=True)
+            dest = self.staging(jid) if job['layout']==2 else output
+            if job['phase']=='publish' and job['layout']==2:
+                publish(self, job, dest, output)
+                self.update_job(jid,status='done',progress=100,detail='Saved to '+relative)
+                self.clean_metadata(dest)
+                return
+            key = platforms.platform_for(job['url'])
+            prefs = self.platform_settings()[key]
+            if key=='instagram' and prefs['require_cookies']:
+                cookie = self.cookie_for(job)
+                slot = job['cookie_profile'] if job['cookie_profile']!='auto' else key
+                if not cookie or not platforms.cookie_status(self.state,slot)['usable']:
+                    raise APIError('Instagram login required: add a valid sessionid in Settings → Platforms → Instagram')
+            settings = self.settings()
+            settings['platforms'] = self.platform_settings()
+            args = build_command(job, dest, self.cookie_for(job), settings, self.state)
             env = dict(os.environ, TMPDIR=str(dest), XDG_CACHE_HOME=str(dest), PYTHONUNBUFFERED='1')
             self.current = jid
             self.live[jid] = {}
@@ -363,18 +441,25 @@ class Desk:
                 return
             live = self.live.get(jid, {})
             if self.process.returncode == 0:
+                if job['layout']==2:
+                    self.update_job(jid,phase='publish',name=live.get('name',job['name']))
+                    publish(self, job, dest, output)
                 self.update_job(jid, status='done', progress=100, detail='Saved to ' + relative,
                     name=live.get('name', job['name']), last_error=live.get('log', '')[-8000:])
+                if job['layout']==2:
+                    self.clean_metadata(dest)
             else:
                 raise APIError(live.get('log', '')[-8000:] or f'Downloader exited with code {self.process.returncode}')
         except Exception as exc:
             fresh = self.job(jid)
             if fresh['status'] not in ('paused', 'cancelled'):
                 attempts = max(fresh['attempts'], job['attempts'] + 1)
-                again = attempts <= self.get_setting('retry_count', 3)
+                error = platforms.redact(str(exc), self.state)[-8000:]
+                category, detail = platforms.failure_kind(error)
+                again = category=='transient' and attempts <= self.get_setting('retry_count', 3)
                 self.update_job(jid, status='retry' if again else 'error', attempts=attempts,
                     next_try=now() + min(1800, 60 * 2**min(attempts-1, 5)),
-                    last_error=str(exc)[-8000:], detail='Automatic retry scheduled' if again else 'Needs attention')
+                    last_error=error, error_kind=category, detail=detail if category!='transient' or again else 'Needs attention')
         finally:
             self.current = None
             self.process = None
@@ -446,6 +531,7 @@ class Desk:
             self.threads.append(thread)
 
     def close(self):
+        self.speedtest.close()
         self.stop.set()
         for thread in self.threads:
             thread.join(timeout=12)
@@ -458,9 +544,10 @@ class Desk:
             job.update(self.live.get(job['id'], {}))
             job.pop('last_error', None)
         return {'storage': self.storage(), 'jobs': jobs, 'torrents': self.torrents,
-                'torrent_error': self.torrent_error, 'settings': self.settings(),
+                'torrent_error': self.torrent_error, 'settings': self.settings(), 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
-                'uptime': int(now()-self.started), 'version': '1.0.0', 'session_days': DAYS}
+                'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
+                'uptime': int(now()-self.started), 'version': '1.1.0', 'session_days': DAYS}
 
     def get_session(self, raw):
         jar = http.cookies.SimpleCookie()
@@ -589,10 +676,11 @@ class Handler(BaseHTTPRequestHandler):
             if not path.is_dir():
                 raise APIError('Folder not found', 404)
             entries = []
+            reserved = {d.root/r['folder']/r['subdir']/r['target'] for r in d.rows('SELECT p.target,j.folder,j.subdir FROM published p JOIN jobs j ON p.job=j.id WHERE p.complete=0')}
             for item in sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-                if item.is_symlink() or item.name.startswith('.'):
+                if item.is_symlink() or item.name.startswith('.') or item in reserved:
                     continue
-                entries.append({'name': item.name, 'directory': item.is_dir(), 'size': item.stat().st_size if item.is_file() else 0})
+                entries.append({'name': item.name, 'directory': item.is_dir(), 'size': item.stat().st_size if item.is_file() else 0, 'stamp': str(item.stat().st_size)+':'+str(item.stat().st_mtime_ns)})
                 if len(entries) >= 1000:
                     break
             self.reply({'path': relative, 'entries': entries, 'limit': 1000})
@@ -723,31 +811,24 @@ class Handler(BaseHTTPRequestHandler):
                 d.apply_torrent_settings()
             except APIError:
                 pass  # Saved settings are applied when the daemon returns.
-        elif path == '/api/cookies':
-            slot = data.get('slot')
-            if slot not in COOKIE_SLOTS:
-                raise APIError('Unknown cookie profile')
-            file = d.state / ('cookies-' + slot + '.txt')
-            if data.get('delete'):
-                file.unlink(missing_ok=True)
+        elif path == '/api/speedtest':
+            if data.get('action')=='start':
+                d.speedtest.start()
+            elif data.get('action')=='cancel':
+                d.speedtest.cancel()
             else:
-                content = data.get('content', '')
-                if not isinstance(content, str) or len(content.encode()) > 1024*1024:
-                    raise APIError('Cookie file must be smaller than 1 MiB')
-                if not content.startswith(('# Netscape HTTP Cookie File', '# HTTP Cookie File')):
-                    raise APIError('Upload a Netscape-format cookies.txt file')
-                temp = file.with_suffix('.new')
-                temp.write_text(content)
-                temp.chmod(0o600)
-                try:
-                    import http.cookiejar
-                    jar = http.cookiejar.MozillaCookieJar(str(temp))
-                    jar.load(ignore_discard=True, ignore_expires=True)
-                    if not list(jar):
-                        raise ValueError('No cookies found')
-                    os.replace(temp, file)
-                finally:
-                    temp.unlink(missing_ok=True)
+                raise APIError('Unknown speed-test action')
+        elif path == '/api/file/delete':
+            d.delete_file(data)
+        elif path == '/api/platforms':
+            key = data.get('platform')
+            values = platforms.validate_preferences(key,data.get('values'),safe_relative)
+            saved = d.platform_settings()
+            saved[key] = values
+            d.set_setting('platforms',saved)
+        elif path == '/api/cookies':
+            with d.lock:
+                platforms.save_cookies(d.state,data.get('slot'),data)
         elif path == '/api/torrents':
             if d.get_setting('hold', False):
                 raise APIError('Resume the queue before adding a torrent', 409)

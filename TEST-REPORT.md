@@ -1,65 +1,44 @@
-# Verification report
+# Verification report — Zedair 1.1.0
 
-Package: Zedair Download Desk 1.0.0
-Date: 3 November 2026
-Target: Ubuntu 24.04 x86_64, Python 3.12, external exFAT SSD
+Date: 5 November 2026. Target: Ubuntu 24.04 x86_64, Python 3.12, exFAT USB SSD.
 
 ## Passed
 
-**25 automated tests**, run using `python3 -m unittest discover -s tests -v`:
+- **37 automated tests** with `python3 -m unittest discover -s tests -v`.
+- Real yt-dlp integration over loopback, downloading a generated MP4 with FFmpeg available. Verified exact media bytes, title/progress output, metadata-based filename selection, numbered publication and preservation of an existing file.
+- Python compilation for application, adapters, platform settings, publisher, speed test and installation/upgrade scripts.
+- JavaScript syntax (`node --check static/app.js`) and shell syntax for install/update/upgrade entrypoints.
+- Desktop browser inspection of charcoal sidebar, settings submenu, Instagram session fields, X video/session controls, platform setting save and speed-test controls.
+- Mobile settings inspection at a 375 CSS-pixel content viewport. A navigation overflow was corrected; measured body width equals viewport width (375 px).
+- Actual browser-triggered speed worker launch and failure display. Workspace DNS could not resolve the external endpoint; the UI reported the failure without invented results.
 
-- Folder traversal, absolute paths, Windows reserved filenames and symlink escapes are rejected.
-- Missing mounts, incorrect/missing SSD identity and the free-space reserve block new work.
-- Invalid batches are rejected without partially adding jobs; unfinished duplicates are skipped.
-- Queue/settings persist across server recreation; interrupted running jobs are re-queued.
-- Password hashing is salted, valid passwords work and invalid passwords fail.
-- Cookie profiles are selected by source rather than indiscriminately shared between engines.
-- A failed subprocess schedules a bounded retry with recorded error and attempt count.
-- A successful subprocess persists its result and title.
-- A simulated SSD disappearance stops the active subprocess and blocks its job.
-- Video command arguments retain quality ceilings, resume behavior and SSD temporary paths.
-- Threads fixture extraction selects the exact requested post, includes all exposed carousel items and picks the largest variants; unrelated post/profile thumbnails are rejected.
-- Local/private URL targets and embedded credentials are rejected; source routing respects hostname boundaries.
-- First-run setup requires the installation key, can happen only once, and creates a 35-day HttpOnly/SameSite session.
-- Unauthenticated API access and missing CSRF/cross-origin mutations are rejected.
-- Folder creation and ranged file downloads work through the real HTTP server.
-- Cookie files are stored with private permissions and their values are not returned by the state endpoint.
-- Changing the administrator password revokes sessions.
-- Torrent file selections omit empty arrays (which would otherwise mean all files in Transmission).
-- Torrent operations outside the configured download root are refused.
-- Saved torrent settings survive a temporarily offline engine.
-- Transmission's HTTP 409 session-ID handshake, HTTP authentication header and RPC envelope work against a local protocol simulator.
+## Automated coverage
 
-**Real media-engine integration:** yt-dlp 2026.10.26 downloaded an FFmpeg-generated one-second MP4 from a loopback fixture server. The output matched the source bytes exactly. Title and JSON progress output were verified. The initial test exposed suppressed progress from `--print`; explicitly enabling `--progress` fixed it.
+Baseline coverage includes mount/UUID/free-space guards, confined paths and symlinks, atomic URL batches, duplicate unfinished jobs, restart recovery, salted password verification, first-run setup, 35-day sessions, CSRF/origin protection, ranged file responses, queue retries/pause/unplug handling, Threads exact-post fixture extraction, and Transmission RPC handshake/control protections.
 
-**gallery-dl CLI:** version 1.32.19 accepted the generated command-line options and configuration-path argument. No Instagram account or live authenticated media was used.
+New coverage includes:
 
-**Browser QA:** inspected first-run layout; used an isolated authenticated test fixture to exercise settings save, folder creation, destination selection and adding a queued download. Reviewed desktop layout and a 390-pixel-wide mobile frame; measured no horizontal document overflow in that frame. Mobile Settings exposes theme and logout controls. Preview-only credentials/fixtures and preview launchers are excluded from the deliverable.
+- Platform routing (including both x.com and twitter.com), platform folders/defaults, and X engine arguments.
+- Manual Instagram/X session conversion, expiry handling, private storage, redaction and absence of secrets from snapshots.
+- Missing Instagram authentication stops before launching the engine; recognized auth, access and rate-limit errors are classified separately from temporary failures.
+- Numbered title collisions preserve existing bytes; repeat publication does not duplicate files.
+- Recovery after a completed rename but before its database commit, without launching a second download.
+- File-deletion guards for changed files, symlinks and files managed by Transmission; successful deletion of a disposable test fixture.
+- Existing legacy job folders survive restart; hidden staging rejects symlinks.
+- New speed-test API authentication/CSRF enforcement and platform-setting validation.
+- Speed-test endpoint selection, bounded 41 MiB payload, maximum 8 MiB upload buffer, and refusal to report HTTP failures as success, using deterministic transport fixtures.
+- App upgrade success and failed-health-check rollback in temporary directories with mocked service commands; private state and the existing Python environment survive both paths.
 
-**Static checks:** Python compilation, JavaScript syntax and shell syntax passed.
+## Not verified on the physical laptop
 
-## Not verified here
+No connection to the user's laptop or GitHub repository was available. The package was not installed there and nothing was pushed to GitHub.
 
-- The root installer, systemd unit execution, physical USB unplug/reconnect and exFAT permissions on the user's actual Ubuntu laptop. The installer is supplied for that first real run.
-- Actual Transmission daemon behavior and a real peer-to-peer download. Its adapter/API contract was tested with a local protocol simulator; the testing environment could not install the daemon.
-- Live YouTube/Instagram account sessions or every supported website. The tested direct-media transfer does not prove current access to a particular site's changing extraction endpoints.
-- Live Threads access. Its exact-post parser is fixture-tested; public-page retrieval remains experimental and clearly labeled in the UI. It deliberately fails rather than downloading unrelated thumbnails if structured media is unavailable.
-- RAM/CPU/power measurements on the Atom laptop, optional HTTPS provisioning, or every phone browser. Conservative concurrency and systemd limits are defaults, not a measured performance guarantee.
+Actual exFAT power-loss behavior, mount/fstab/systemd installation, RAM/CPU usage on the Atom, torrent swarms, Deno-based YouTube challenges, Instagram/X account-specific access and real internet throughput require validation on that laptop. The upgrade tests simulate service control; they are not a real systemd upgrade. Live account cookies were neither provided nor requested.
 
-## Re-run locally
+Instagram authentication was a suspected cause of the reported failures, not a proven diagnosis. This release adds session entry, checks and clearer error handling; it cannot guarantee that a website will accept a session or offer original-resolution media. Threads remains explicitly experimental.
 
-From the extracted package:
+The speed test is a bounded single-connection HTTP estimate to Cloudflare, not Ookla or an ICMP test. The workspace network prevented a successful external throughput measurement.
 
-```bash
-python3 -m unittest discover -s tests -v
-node --check static/app.js   # optional; Node is not required to run the desk
-bash -n install.sh update.sh
-```
+## Package hygiene
 
-For the real media-engine fixture after installation (uses the installed yt-dlp and FFmpeg):
-
-```bash
-/opt/zedair/venv/bin/python tests/integration_media.py
-```
-
-No tests require a personal cookie file. The loopback media test is separate from production URL validation and cannot enable local-network fetching in the application.
+The release contains source, documentation, tests and checksums. It excludes the temporary browser-QA wrapper, preview authentication bypass, test data, cookies, databases, virtual environments, screenshots and logs. The checksum manifest can be checked with `sha256sum -c MANIFEST.sha256` from the extracted package directory.
