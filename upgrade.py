@@ -17,7 +17,7 @@ APP=Path('/opt/zedair')
 STATE=Path('/var/lib/zedair')
 CONFIG=Path('/etc/zedair')
 BACKUPS=Path('/var/backups/zedair')
-FILES=('server.py','media.py','platforms.py','publishing.py','speedcheck.py','README.md','TEST-REPORT.md','LICENSE','requirements.txt','update.sh','upgrade.sh','upgrade.py')
+FILES=('server.py','media.py','platforms.py','publishing.py','speedcheck.py','install-speedtest.py','install-speedtest.sh','README.md','TEST-REPORT.md','LICENSE','requirements.txt','update.sh','upgrade.sh','upgrade.py')
 
 def run(*args):
     subprocess.run([str(x) for x in args],check=True)
@@ -98,7 +98,7 @@ def main():
         for name in FILES:
             if not (BASE/name).is_file():raise SystemExit('Missing package file: '+name)
         with tempfile.TemporaryDirectory() as temp:
-            for name in ('server.py','media.py','platforms.py','publishing.py','speedcheck.py','upgrade.py'):
+            for name in ('server.py','media.py','platforms.py','publishing.py','speedcheck.py','install-speedtest.py','upgrade.py'):
                 import py_compile
                 py_compile.compile(str(BASE/name),cfile=str(Path(temp)/(name+'c')),doraise=True)
         run(APP/'venv/bin/python','-c','import yt_dlp, gallery_dl')

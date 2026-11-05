@@ -1,140 +1,186 @@
-"""Bounded server-side HTTP speed estimate. No payload is written to disk."""
-import http.client
+"""Run official Ookla Speedtest on the laptop; never derive speeds from browser traffic."""
+import csv
+import io
 import json
+import math
 import os
-import statistics
+import re
+import secrets
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
 
-HOST = 'speed.cloudflare.com'
+ENGINE = 'ookla'
+HISTORY_LIMIT = 100
 
-def measure(emit, connection_factory=http.client.HTTPSConnection):
-    connection = connection_factory(HOST, timeout=12)
-    deadline = time.monotonic()+75
-    headers = {'User-Agent':'Zedair-Download-Desk/1.1', 'Cache-Control':'no-cache', 'Accept-Encoding':'identity'}
-    transferred = 0
-    def request(size, upload=False):
-        nonlocal transferred
-        if time.monotonic()>deadline:
-            raise TimeoutError('Test time limit reached')
-        body = b'0'*size if upload else None  # largest upload is 8 MiB
-        start = time.monotonic()
-        path = '/__up' if upload else '/__down?bytes='+str(size)+'&r='+str(time.time_ns())
-        connection.request('POST' if upload else 'GET',path,body=body,headers=headers)
-        response = connection.getresponse()
-        ttfb = (time.monotonic()-start)*1000
-        if response.status!=200:
-            raise ValueError('Speed-test endpoint returned HTTP '+str(response.status))
-        count = 0
-        while block := response.read(65536):
-            count += len(block)
-            if count > size+65536 or time.monotonic()>deadline:
-                raise TimeoutError('Speed-test response exceeded its limit')
-        if not upload and count!=size:
-            raise ValueError('Incomplete test response; no speed result was accepted')
-        elapsed = max(time.monotonic()-start, .000001)
-        transferred += size if upload else count
-        return ttfb, elapsed, (size if upload else count)
 
-    try:
-        emit({'phase':'latency','detail':'Measuring HTTP latency from the laptop…'})
-        request(0) # warm TLS connection; excluded from latency median
-        latency=[]
-        for _ in range(5):
-            latency.append(request(0)[0])
-            time.sleep(0.05)
-        emit({'latency_ms':round(statistics.median(latency),1), 'jitter_ms':round(statistics.mean(abs(b-a) for a,b in zip(latency,latency[1:])),1)})
-        
-        emit({'phase':'download','detail':'Downloading test data to the laptop’s memory…'})
-        # Multi-chunk download (4 x 8 MiB = 32 MiB) with median filtering to avoid TCP burst skew
-        dl_samples = []
-        for i in range(4):
-            _, t, b = request(8*1024*1024)
-            speed = (b * 8) / t / 1_000_000
-            dl_samples.append(speed)
-            emit({'download_mbps': round(speed, 2), 'detail': f'Measuring download ({i+1}/4)… {round(speed, 1)} Mbps'})
-            time.sleep(0.15)
+def cli_path():
+    for path in (Path('/opt/zedair/bin/speedtest'), Path('/usr/bin/speedtest')):
+        if path.is_file() and os.access(path, os.X_OK):
+            try:
+                version = subprocess.run([str(path),'--version'], capture_output=True, text=True, timeout=5)
+                if version.returncode==0 and 'ookla' in (version.stdout+version.stderr).lower():
+                    return str(path)
+            except (OSError,subprocess.TimeoutExpired):
+                pass
+    return None
 
-        steady_dl = dl_samples[1:] if len(dl_samples) > 1 else dl_samples
-        final_dl = round(statistics.median(steady_dl), 2)
-        emit({'download_mbps': final_dl, 'phase':'upload','detail':'Uploading generated test data from the laptop…'})
 
-        # Multi-chunk upload (1 MiB + 8 MiB = 9 MiB, total transferred: 41 MiB)
-        _, t1, b1 = request(1024*1024, True)
-        time.sleep(0.15)
-        _, t2, b2 = request(8*1024*1024, True)
-        up_mbps = (b1 + b2) * 8 / (t1 + t2) / 1_000_000
-        final_up = round(up_mbps, 2)
-        emit({'upload_mbps': final_up, 'download_mbps': final_dl, 'transferred_bytes': transferred, 'phase':'done', 'detail':'Test complete. Multi-stage HTTP estimate to Cloudflare.'})
-    finally:
-        connection.close()
+def number(value, name):
+    if isinstance(value,bool) or not isinstance(value,(int,float)) or not math.isfinite(value) or value<0:
+        raise ValueError('Invalid '+name+' in speed-test result')
+    return value
+
+
+def parse_result(data):
+    """Ookla JSON bandwidth is bytes/second, elapsed is milliseconds, ping is ms."""
+    if data.get('type')!='result':
+        raise ValueError('The speed test did not produce a final result')
+    down,up,ping=data.get('download',{}),data.get('upload',{}),data.get('ping',{})
+    result={
+        'download_mbps':round(number(down.get('bandwidth'),'download bandwidth')*8/1_000_000,2),
+        'upload_mbps':round(number(up.get('bandwidth'),'upload bandwidth')*8/1_000_000,2),
+        'latency_ms':round(number(ping.get('latency'),'ping'),2),
+        'jitter_ms':round(number(ping.get('jitter'),'jitter'),2),
+        'download_bytes':number(down.get('bytes'),'download bytes'),
+        'upload_bytes':number(up.get('bytes'),'upload bytes'),
+        'download_elapsed_ms':number(down.get('elapsed'),'download duration'),
+        'upload_elapsed_ms':number(up.get('elapsed'),'upload duration'),
+        'server':str(data.get('server',{}).get('name','Unknown'))[:200],
+        'location':str(data.get('server',{}).get('location',''))[:200],
+        'server_id':str(data.get('server',{}).get('id',''))[:30],
+        'isp':str(data.get('isp',''))[:200],
+        'engine':ENGINE,
+    }
+    if not result['download_bytes'] or not result['upload_bytes'] or not result['download_elapsed_ms'] or not result['upload_elapsed_ms']:
+        raise ValueError('The speed test returned an empty or incomplete transfer')
+    if data.get('packetLoss') is not None:
+        result['packet_loss']=number(data['packetLoss'],'packet loss')
+    url=str(data.get('result',{}).get('url',''))
+    if re.fullmatch(r'https://www\.speedtest\.net/result/c/[a-zA-Z0-9-]+',url):
+        result['result_url']=url
+    # Do not persist public/private IPs, MAC addresses or raw engine output.
+    return result
+
+
+def history_csv(history):
+    out=io.StringIO(newline='')
+    fields=['finished','status','engine','download_mbps','upload_mbps','latency_ms','jitter_ms','server','location','isp','detail']
+    writer=csv.writer(out);writer.writerow(fields)
+    for row in history:
+        values=[]
+        for key in fields:
+            value=row.get(key,'legacy-http' if key=='engine' else '')
+            if key=='finished' and isinstance(value,(float,int)):
+                value=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(value))
+            if isinstance(value,str) and value.lstrip().startswith(('=','+','-','@')):
+                value="'"+value
+            values.append(value)
+        writer.writerow(values)
+    return out.getvalue().encode('utf-8-sig')
+
 
 class SpeedTest:
-    def __init__(self, desk):
+    def __init__(self,desk):
         self.desk=desk
         self.lock=threading.RLock()
-        self.result={'status':'idle','phase':'idle','detail':'Ready to test this laptop'}
+        self.result={'status':'idle','phase':'idle','detail':'Ready to test the laptop’s internet connection'}
+        self.binary=cli_path()
         self.process=None
         self.thread=None
         self.cancelled=False
         self.last_start=0
 
+    def history(self):
+        # Preserve old reports but explicitly label their different, unreliable method.
+        return [dict(row,engine=row.get('engine','legacy-http'),id=row.get('id','legacy-'+str(i)))
+                for i,row in enumerate(self.desk.get_setting('speed_history',[]))][:HISTORY_LIMIT]
+
     def snapshot(self):
         with self.lock:
-            return dict(self.result,history=self.desk.get_setting('speed_history',[]))
+            return dict(self.result,history=self.history(),installed=bool(self.binary),
+                        consent=bool(self.desk.get_setting('ookla_consent',False)))
 
-    def start(self):
+    def start(self,accept_terms=False):
         with self.lock:
             if self.result['status']=='running':
                 raise ValueError('A speed test is already running on the laptop')
             if time.monotonic()-self.last_start<30:
                 raise ValueError('Wait 30 seconds between speed tests')
+            self.binary=self.binary or cli_path()
+            if not self.binary:
+                raise ValueError('Install the official engine on the laptop: sudo bash /opt/zedair/install-speedtest.sh')
+            if not self.desk.get_setting('ookla_consent',False):
+                if accept_terms is not True:
+                    raise ValueError('Read and accept Ookla’s license, terms and privacy notice before testing')
+                self.desk.set_setting('ookla_consent',{'accepted_at':time.time(),'engine':'Ookla CLI 1.2'})
             self.last_start=time.monotonic()
             self.cancelled=False
-            self.result={'status':'running','phase':'starting','started':time.time(),'detail':'Starting test on the Zedair laptop…'}
+            self.result={'id':secrets.token_hex(8),'engine':ENGINE,'status':'running','phase':'starting','started':time.time(),
+                         'detail':'Selecting a nearby test server…','progress':0}
             self.thread=threading.Thread(target=self.run,daemon=True)
             self.thread.start()
 
     def cancel(self):
         with self.lock:
+            if self.result['status']!='running':return
             self.cancelled=True
-            if self.process and self.process.poll() is None:
-                self.process.terminate()
+            if self.process and self.process.poll() is None:self.process.terminate()
+
+    def save_report(self):
+        self.result['finished']=time.time()
+        self.result['duration_seconds']=round(self.result['finished']-self.result['started'],1)
+        report={k:v for k,v in self.result.items() if k not in ('live_mbps','progress')}
+        self.desk.set_setting('speed_history',([report]+self.history())[:HISTORY_LIMIT])
 
     def run(self):
         timer=None
+        final=None
         try:
             with self.lock:
                 if self.cancelled:
                     self.result.update(status='cancelled',phase='cancelled',detail='Test cancelled')
-                    return
-                self.process=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'--worker'],stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,env=dict(os.environ,PYTHONUNBUFFERED='1'))
+                    self.save_report();return
+                # Acceptance flags are used only after the user has checked the GUI agreement.
+                args=[self.binary,'--accept-license','--accept-gdpr','--format=json','--progress=yes','--progress-update-interval=500']
+                (self.desk.state/'speedtest-config').mkdir(mode=0o700,exist_ok=True)
+                self.process=subprocess.Popen(args,stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,
+                    env=dict(os.environ,XDG_CONFIG_HOME=str(self.desk.state/'speedtest-config')))
                 process=self.process
-            timer=threading.Timer(90,process.kill);timer.daemon=True;timer.start()
-            for line in process.stdout:
+            timer=threading.Timer(180,process.kill);timer.daemon=True;timer.start()
+            for raw in iter(lambda:process.stdout.readline(65536),b''):
                 try:
-                    update=json.loads(line)
+                    data=json.loads(raw)
+                    if not isinstance(data,dict):continue
+                    kind=data.get('type')
                     with self.lock:
-                        self.result.update(update)
-                except ValueError:
-                    pass
-            process.stdout.close()
-            code=process.wait()
+                        if kind=='result':
+                            final=parse_result(data)
+                        elif kind in ('ping','download','upload'):
+                            part=data.get(kind,{})
+                            phase={'ping':'latency','download':'download','upload':'upload'}[kind]
+                            self.result.update(phase=phase,detail={'ping':'Measuring ping…','download':'Testing download…','upload':'Testing upload…'}[kind])
+                            self.result['progress']=min(100,number(part.get('progress',0),'progress')*100)
+                            if kind in ('download','upload'):
+                                self.result['live_mbps']=round(number(part.get('bandwidth',0),'bandwidth')*8/1_000_000,2)
+                            elif 'latency' in part:
+                                self.result['latency_ms']=round(number(part['latency'],'ping'),2)
+                except (ValueError,TypeError,KeyError):
+                    continue
+            process.stdout.close();code=process.wait()
             with self.lock:
                 if self.cancelled:
                     self.result.update(status='cancelled',phase='cancelled',detail='Test cancelled')
-                elif code==0 and self.result.get('phase')=='done':
-                    self.result.update(status='done',finished=time.time())
-                    history=self.desk.get_setting('speed_history',[])
-                    self.desk.set_setting('speed_history',([dict(self.result)]+history)[:10])
+                elif code==0 and final:
+                    self.result.update(final,status='done',phase='done',detail='Test complete',progress=100)
                 else:
-                    self.result.update(status='error',phase='error',detail=self.result.get('error','Test failed or timed out. Check the laptop’s connection and try again.'))
+                    self.result.update(status='error',phase='error',detail='Speed test failed or timed out. Check the laptop’s connection and the installed Ookla CLI. No completed speeds were saved.')
+                self.save_report()
         except Exception:
             with self.lock:
-                self.result.update(status='error',phase='error',detail='Could not start the laptop speed test')
+                self.result.update(status='error',phase='error',detail='Could not run the official speed-test engine. Check its installation on the laptop.')
+                self.save_report()
         finally:
             if timer:timer.cancel()
             with self.lock:self.process=None
@@ -142,10 +188,3 @@ class SpeedTest:
     def close(self):
         self.cancel()
         if self.thread:self.thread.join(timeout=5)
-
-if __name__=='__main__':
-    try:
-        measure(lambda value: print(json.dumps(value),flush=True))
-    except Exception as exc:
-        print(json.dumps({'error':str(exc)[:300]}),flush=True)
-        sys.exit(1)

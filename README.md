@@ -1,4 +1,4 @@
-# Zedair Download Desk — v1.1
+# Zedair Download Desk — v1.2
 
 A private web downloader for your Ubuntu 24.04 laptop. Open it from your phone, tablet or computer on the same home network. The laptop does the downloading and saves files on the USB SSD.
 
@@ -35,13 +35,22 @@ The upgrade:
 
 It **does not format, move or delete your SSD files**, change `/etc/fstab`, or reinstall Python engine versions. Existing login sessions remain valid. If the SSD is disconnected, the web interface can start while the torrent service waits for the drive.
 
+For the new speed-test engine, run these **once after upgrading to v1.2** (the same steps apply to a first installation):
+
+```bash
+sudo bash /opt/zedair/install-speedtest.sh
+sudo systemctl restart zedair
+```
+
+This downloads the official Ookla CLI from its publisher’s Packagecloud repository, verifies a pinned SHA-256 checksum and installs it locally. It does not run a test or accept agreements. In the webpage, open **Speed test**, review the first-use agreement and check it yourself before starting. Future app upgrades preserve this engine; you do not need to reinstall it each time. The rest of the downloader works without it.
+
 After success:
 
 ```bash
 systemctl status zedair zedair-transmission --no-pager
 ```
 
-Refresh the page with **Ctrl+F5** on Windows. On your phone, reload the page. The footer should show **v1.1.0**. Existing jobs keep their old folders so they can resume; newly added jobs use platform folders. To use the new layout for a failed old job, cancel it and add the URL again. Existing files are not relocated automatically.
+Refresh the page with **Ctrl+F5** on Windows. On your phone, reload the page. The footer should show **v1.2.0**. Existing jobs keep their old folders so they can resume; newly added jobs use platform folders. To use the new layout for a failed old job, cancel it and add the URL again. Existing files are not relocated automatically.
 
 ### First time using Git on this laptop
 
@@ -87,7 +96,7 @@ Backups contain private account sessions. Keep them private and keep at least th
 
 This is a downloader, not a website search directory. Availability depends on the source website and your session. DRM-protected media, Instagram profile-wide crawling and X photo/feed crawling are not included. Threads support is experimental: login walls and changes to embedded page data can prevent downloads. It will not substitute profile pictures for missing post media.
 
-The interface includes a charcoal sidebar, light/dark themes, platform settings, a persistent background queue, file browsing/deletion and a **speed test run on the laptop**. Closing your browser does not stop work. There is one media job and one active torrent download at a time to keep resource use modest.
+The interface includes a charcoal sidebar, light/dark themes, platform settings, a persistent background queue, image/video previews, file browsing/deletion and an **Ookla speed test run on the laptop**, with saved reports. Closing your browser does not stop work. There is one media job and one active torrent download at a time to keep resource use modest.
 
 ## First installation
 
@@ -140,6 +149,8 @@ sudo bash install.sh
 The installer never formats or repartitions a drive. It mounts the SSD by UUID at `/srv/zedair-ssd` and uses its `Zedair` folder. Files elsewhere on the SSD are not exposed by the app. exFAT stays compatible with Windows.
 
 If the selected SSD is already mounted or has an existing conflicting fstab entry, the installer stops for you to review it. Do not blindly remove mount entries. Fix dependency/network errors and rerun the installer if the initial installation stops.
+
+For speed testing, also follow **Test the laptop’s internet speed → One-time engine installation** below. Other downloads do not require that optional engine.
 
 ### 3. Check the installation
 
@@ -236,11 +247,23 @@ Saving a manual session or importing a file replaces that platform’s previous 
 
 Cookies are account credentials: do not put them in GitHub, chat, screenshots or shared folders. They are stored under `/var/lib/zedair`, not on the removable SSD. Inputs are masked, values are not returned to the webpage, and recognized secret values are redacted from job logs. Only use this interface on a trusted LAN or configure HTTPS below. Plain HTTP does not encrypt passwords/cookies in transit.
 
-If Instagram still fails, read **Details**. Renew an expired session; resolve a challenge in your own browser; wait after a rate limit; update the engines if extraction broke. Authentication was a suspected cause, not a confirmed diagnosis of your original failures. Highest resolution means the best media the site provides to that session, not guaranteed original upload resolution.
+### Instagram works once, then says the cookie expired
 
-## Browse and delete files
+**v1.2 fixes a reproducible local bug.** Gallery-dl writes session cookies with expiry `0` after downloading. This means “session cookie, no fixed expiry,” but v1.1’s status reader interpreted it as January 1970. That could block the next job even though Instagram still accepted the session.
 
-Open **SSD files**, enter a platform folder and click a file to copy it to your current device. **New folder** creates a subfolder. Lists show up to 1,000 entries per folder.
+After upgrading, retry the affected job from **Attention** using the cookies already stored. No re-import is needed to correct expiry-zero files. An explicit positive timestamp in the past remains expired; the app does not invent a new expiry or extend a revoked login.
+
+Each Instagram job now uses a private working copy. Gallery-dl applies cookies returned by Instagram during its normal requests. After a successful download, Zedair normalizes and atomically saves that updated cookie jar for the next job, including refreshed session/CSRF values when the website supplies them. A failed download does not overwrite the saved session. If you replace or remove cookies in Settings while a job runs, your action takes priority over that older job’s updates. Settings shows when the saved file was last updated.
+
+This is automatic response-cookie refresh, not repeated password login or an artificial keep-alive timer. There is no official promise that a copied session will last a month, and no app can force Instagram to renew it. A browser login can remain active while a separate server request is challenged. We do not request your Instagram password or bypass verification. The expiry-zero failure was reproduced with the real gallery-dl cookie writer; live access with your account still needs checking on the laptop.
+
+If a request still fails, open **Details**. Verification/challenge errors, rate limits, rejected authentication and transient network errors have distinct messages. Resolve verification on Instagram, wait after rate limits, and replace cookies only when necessary. Highest resolution means the best media the site provides to that session, not guaranteed original upload resolution.
+
+## Preview, download and delete files
+
+Open **SSD files** and enter a platform folder. Click an image/video filename marked **Preview** to open it inside the page. Videos have native playback, volume, seeking and fullscreen controls; supported audio files also have a player. Closing the preview stops playback. Click the separate **Download** button only when you want a copy on the current phone/computer. **New folder** creates a subfolder. Lists show up to 1,000 entries per folder.
+
+Previews require your normal login and stream the original file from the SSD. They do not convert video or use FFmpeg in the background, which keeps CPU/RAM usage low on the laptop. Your browser still transfers media bytes to display/play them. MP4 with H.264/AAC and common JPEG/PNG/WebP images usually have the broadest browser support. MKV, HEVC, some audio formats and unfinished torrent files may not play in your browser even when the download is valid. Use **Download** and a compatible player in that case. SVG/HTML files are not rendered inline. Seeking uses HTTP byte ranges; a disconnected SSD or expired login can interrupt playback.
 
 Click **Delete** beside an individual file, check its full path, then confirm. **This permanently deletes it from the SSD; there is no recycle bin.** There is no recursive delete-folder button. Files outside `Zedair`, hidden working folders and symbolic links are not accessible.
 
@@ -261,13 +284,38 @@ For a magnet, start it briefly to get metadata, pause it, then use its file-sele
 
 ## Test the laptop’s internet speed
 
-Open **Speed test → Start laptop test**. It measures **Zedair’s connection**, regardless of whether you opened the page on a phone or computer. The browser exchanges only small control/status messages with the laptop.
+### One-time engine installation
 
-The laptop connects to Cloudflare’s public test endpoints. You see download/upload Mbps, median HTTP latency and jitter. The last ten completed results are saved. You can cancel; only one test runs at a time, with at least 30 seconds between starts. It stops after a bounded timeout if the endpoint does not respond.
+After installing or upgrading Zedair, run on the **laptop**:
 
-The test uses up to **41 MiB of payload** plus protocol overhead, streamed to memory with an upload buffer no larger than 8 MiB. It writes no payload to the SSD or eMMC. Your network’s public IP is visible to the endpoint as with other internet requests; website session cookies are not used.
+```bash
+sudo bash /opt/zedair/install-speedtest.sh
+sudo systemctl restart zedair
+```
 
-For a clearer measurement, click **Hold queue**, wait until transfers stop, run the test, then **Resume queue**. The app warns about active transfers but does not automatically change your queue. This is a lightweight single-connection HTTP estimate, not an Ookla test or a maximum-line-rate guarantee. HTTP latency includes server response time; it is not ICMP ping. Older CPU/TLS performance, Wi-Fi/Ethernet negotiation, traffic and the endpoint can affect results.
+The installer targets this x86_64 laptop. It retrieves the official Ookla CLI 1.2.0 package, checks its SHA-256 checksum and puts the binary at `/opt/zedair/bin/speedtest`. It does not add an APT repository or replace an existing system speedtest package. The publisher’s manual is copied to `/opt/zedair/speedtest-docs/speedtest.5`. A checksum/network failure stops installation; do not bypass checksum validation. Internet access to Ookla’s Packagecloud download and its redirected file host is needed.
+
+This is the **official Ookla CLI**, not the Python package called `speedtest-cli`. The app also recognizes an already installed official `/usr/bin/speedtest`. If the page says the engine is missing, complete the commands above and reload.
+
+### Run a test
+
+1. Open **Speed test** from any device on your LAN.
+2. Before the first test, read the linked Ookla license, terms and privacy notice. The CLI’s license is for personal, non-commercial use. Check the agreement yourself if you accept it. The installer never accepts it for you.
+3. For a clearer result, **Hold queue**, wait for active media/torrents to stop and avoid other heavy traffic on the network.
+4. Click **Start test**. The laptop runs the actual internet test; your phone or computer only displays its progress. The nearby test server is selected automatically.
+5. Read **Download** and **Upload** in Mbps, plus **Ping** and **Jitter** in milliseconds. Click **Cancel test** to stop early. Resume the queue when finished.
+
+The large number shows the live rate during a transfer and the final download rate when finished. Live rates can fluctuate; the completed report uses Ookla’s final result. The app converts the engine’s bandwidth from bytes/second to decimal Mbps using `bytes_per_second × 8 ÷ 1,000,000` (25,000,000 bytes/s = 200 Mbps). It never caps or invents a result to match your plan. Only a valid final result with a successful process exit counts as completed.
+
+The last **100 reports** remain across restarts and app upgrades. **View** opens report details, server/ISP, data transferred, duration and the official result link when available. **Export CSV** saves the report history to your current device. Failed/cancelled attempts are identified separately. Old v1.1 measurements are retained as **Legacy estimate · unreliable** and are not used as the latest successful result.
+
+Only one test runs at a time, starts must be at least 30 seconds apart, and a test is stopped after 180 seconds. Ookla adapts transfer sizes: tests can use **hundreds of megabytes or more** of internet data. There is no longer a 41 MiB limit. Payload is not saved as downloaded files. Ookla/test servers receive the laptop connection’s public IP and test/network information under their terms; platform session cookies are not supplied. The app stores report metrics, not raw IP/MAC fields from engine output.
+
+### Understand unexpected results
+
+A 200 Mbps internet plan and an Ethernet link speed are different measurements. The test measures internet throughput, not the local Ethernet cable’s negotiated rate. Server choice, other traffic, ISP provisioning/bursting, CPU load, USB adapters and the laptop’s hardware can affect a result. The app’s service resource limits remain in effect; on the old Atom CPU these can reduce measured throughput. Pause transfers and compare several completed reports at different times. Do not compare Mbps directly to MB/s (divide Mbps by 8 for decimal MB/s).
+
+The previous short HTTP test was not reliable enough; its payload/timing method has been replaced. We could not establish the exact reason for your old 350/300 Mbps readings without testing the physical laptop. If the new engine still reports unexpected values, inspect **View → Open Ookla result** and compare with your router/ISP information. No successful live speed measurement was performed on your laptop while preparing this release.
 
 ## Take the SSD to Windows safely
 
@@ -418,13 +466,14 @@ The implementation uses Python’s standard library for the server, plain HTML/C
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m py_compile server.py media.py platforms.py publishing.py speedcheck.py install.py upgrade.py
+python3 -m py_compile server.py media.py platforms.py publishing.py speedcheck.py install.py upgrade.py install-speedtest.py
 ```
 
 With FFmpeg and `requirements.txt` installed in your development Python environment:
 
 ```bash
 python tests/integration_media.py
+python tests/integration_instagram_cookies.py
 ```
 
 See `TEST-REPORT.md` for actual verification and its limits. This release was not installed on your physical laptop. Live account-specific Instagram/X access, real torrent swarms, SSD/systemd behavior and real laptop speed need confirmation there. No preview account, browser screenshot, cookie file or populated database is included in the release.
@@ -439,6 +488,7 @@ See `TEST-REPORT.md` for actual verification and its limits. This release was no
 - [gallery-dl configuration](https://gdl-org.github.io/docs/configuration.html)
 - [Transmission](https://github.com/transmission/transmission)
 - [Deno](https://github.com/denoland/deno)
-- [Cloudflare test endpoints and methodology](https://github.com/cloudflare/speedtest)
+- [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli)
+- [Official Ookla x86_64 package and checksum](https://packagecloud.io/ookla/speedtest-cli/packages/ubuntu/jammy/speedtest_1.2.0.84-1.ea6b6773cf_amd64.deb)
 
 The custom application is MIT licensed. Third-party tools retain their upstream licenses.

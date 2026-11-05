@@ -60,7 +60,7 @@ def build_command(job, dest, cookie, settings, state):
             'extractor': {
                 'base-directory': str(dest), 'directory': [],
                 'path-restrict': 'windows', 'path-replace': '_',
-                'retries': 3, 'timeout': 30,
+                'retries': 3, 'timeout': 30, 'cookies-update': True,
                 'instagram': {'videos': prefs['videos'], 'previews': False, 'max-posts': 1,
                               'filename': '{post_shortcode}_{num:>02}.{extension}',
                               'warn-images': prefs['warn_images'], 'wd': False, 'sleep-request': prefs['sleep_request']},

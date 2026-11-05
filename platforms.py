@@ -1,13 +1,18 @@
 """Platform preferences and private cookie storage; no values are returned to the UI."""
 import copy
 import http.cookiejar
+import hashlib
 import json
 import os
 import re
 import time
+import tempfile
+import threading
 import warnings
 from pathlib import Path
 from urllib.parse import urlsplit
+
+COOKIE_LOCK = threading.RLock()
 
 QUALITY = ('best', '2160', '1080', '720', '480', 'audio')
 DEFAULTS = {
@@ -84,6 +89,13 @@ def load_jar(path):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         jar.load(ignore_discard=True, ignore_expires=True)
+    # gallery-dl exports session cookies as expiry 0 on every completed job.
+    # MozillaCookieJar interprets that as epoch zero unless normalized on EVERY read.
+    # A positive past timestamp remains expired; never extend a server-set expiry.
+    for cookie in jar:
+        if cookie.expires == 0:
+            cookie.expires = None
+            cookie.discard = True
     return jar
 
 
@@ -107,6 +119,11 @@ def cookie_status(state, slot):
 
 
 def save_cookies(state, slot, data):
+    with COOKIE_LOCK:
+        return _save_cookies(state, slot, data)
+
+
+def _save_cookies(state, slot, data):
     path = cookie_path(state, slot)
     temporary = path.with_suffix('.new')
     if data.get('delete'):
@@ -167,6 +184,63 @@ def save_cookies(state, slot, data):
         temporary.unlink(missing_ok=True)
 
 
+def cookie_revision(path):
+    try:
+        data = path.read_bytes()
+        st = path.stat()
+        return (st.st_ino, st.st_mtime_ns, hashlib.sha256(data).digest())
+    except FileNotFoundError:
+        return None
+
+
+class InstagramSession:
+    """Private per-job jar; publish server-refreshed cookies without overwriting a GUI edit."""
+    def __init__(self, source):
+        self.source = Path(source)
+        self.path = None
+        with COOKIE_LOCK:
+            self.revision = cookie_revision(self.source)
+            jar = load_jar(self.source)
+            fd, name = tempfile.mkstemp(prefix='cookies-work-', suffix='.txt', dir=self.source.parent)
+            os.close(fd)
+            self.path = Path(name)
+            try:
+                jar.save(str(self.path), ignore_discard=True, ignore_expires=True)
+                self.path.chmod(0o600)
+            except Exception:
+                self.close()
+                raise
+
+    def commit(self):
+        """Called only after engine success. A failed job never damages the saved session."""
+        try:
+            jar = load_jar(self.path)
+        except (OSError, ValueError):
+            return False
+        for cookie in list(jar):
+            domain = cookie.domain.lstrip('.').lower()
+            if not (domain == 'instagram.com' or domain.endswith('.instagram.com')):
+                jar.clear(cookie.domain, cookie.path, cookie.name)
+        if not any(c.name == 'sessionid' and c.value and
+                   (c.expires is None or c.expires > time.time()) for c in jar):
+            return False
+        with COOKIE_LOCK:
+            # Removal or replacement in Settings wins over an older running download.
+            if cookie_revision(self.source) != self.revision:
+                return False
+            jar.save(str(self.path), ignore_discard=True, ignore_expires=True)
+            self.path.chmod(0o600)
+            os.replace(self.path, self.source)
+            self.path = None
+            return True
+
+    def close(self):
+        if self.path:
+            self.path.unlink(missing_ok=True)
+            Path(str(self.path)+'.tmp').unlink(missing_ok=True)
+            self.path = None
+
+
 def redact(text, state):
     text = str(text)
     for path in Path(state).glob('cookies-*.txt'):
@@ -184,12 +258,13 @@ def failure_kind(message):
     low = message.lower()
     if any(s in low for s in ('429','too many requests','rate limit','please wait a few minutes')):
         return 'rate_limit', 'Website rate limit. Wait before retrying; automatic retries are paused.'
+    if any(s in low for s in ('checkpoint_required','challenge_required','consent_required','/challenge/')):
+        return 'challenge', 'Instagram/site requires verification. Open the site in your browser and resolve the prompt; this does not prove the saved cookie expired.'
     if any(s in low for s in ('login required','loginrequired','authenticationerror','authentication required',
                               'not logged in','log in to','sign in to','sign-in','cookies are no longer valid',
-                              'cookie has expired','cookies have expired','login_required','checkpoint_required',
-                              'challenge_required','consent_required','invalid session','sessionid is required',
+                              'cookie has expired','cookies have expired','login_required','invalid session','sessionid is required',
                               'http error 401','401 unauthorized')):
-        return 'auth', 'Sign-in required. Open Settings → Platforms, replace the session cookies, then retry.'
+        return 'auth', 'Authentication was not accepted. Check Details and Settings → Platforms. A rejected request does not prove the browser session expired; replace cookies only if the session is missing, expired or revoked.'
     if any(s in low for s in ('unsupported url','no video could be found','no video formats found',
                               'does not contain a video','this tweet is unavailable','404 not found')):
         return 'unsupported', 'No accessible supported media. Check the link and platform availability.'

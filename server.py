@@ -28,7 +28,7 @@ from pathlib import Path
 from media import build_command, engine_for, validate_url
 import platforms
 from publishing import publish
-from speedcheck import SpeedTest
+from speedcheck import SpeedTest, history_csv
 
 HERE = Path(__file__).resolve().parent
 DAYS = 35
@@ -38,6 +38,30 @@ DEFAULTS = {'media_kib': 0, 'torrent_down_kib': 0, 'torrent_up_kib': 256,
 QUALITY = ('best', '2160', '1080', '720', '480', 'audio')
 COOKIE_SLOTS = tuple(platforms.DEFAULTS)
 ACTIVE = ('queued', 'running', 'retry', 'blocked', 'paused')
+
+
+PREVIEW_MIME={'.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp',
+    '.gif':'image/gif','.avif':'image/avif','.bmp':'image/bmp',
+    '.mp4':'video/mp4','.m4v':'video/mp4','.webm':'video/webm','.ogv':'video/ogg',
+    '.mov':'video/quicktime','.mkv':'video/x-matroska',
+    '.mp3':'audio/mpeg','.m4a':'audio/mp4','.ogg':'audio/ogg','.opus':'audio/ogg','.wav':'audio/wav','.flac':'audio/flac'}
+
+def preview_type(suffix):
+    mime=PREVIEW_MIME.get(suffix.lower(),'')
+    return mime.split('/')[0] if mime else ''
+
+def parse_range(header,size):
+    if header is None:return 0,size-1
+    match=re.fullmatch(r'bytes=(\d*)-(\d*)',header.strip())
+    if not match or size==0 or not any(match.groups()):raise ValueError('Invalid range')
+    first,last=match.groups()
+    if not first:
+        count=int(last)
+        if count<=0:raise ValueError('Invalid suffix range')
+        return max(0,size-count),size-1
+    start=int(first);end=min(int(last),size-1) if last else size-1
+    if start>=size or end<start:raise ValueError('Range outside file')
+    return start,end
 
 
 class APIError(Exception):
@@ -387,6 +411,7 @@ class Desk:
 
     def run_job(self, job):
         jid = job['id']
+        instagram_session = None
         try:
             with self.lock:
                 if self.job(jid)['status'] not in ('queued', 'retry', 'blocked'):
@@ -410,7 +435,11 @@ class Desk:
                     raise APIError('Instagram login required: add a valid sessionid in Settings → Platforms → Instagram')
             settings = self.settings()
             settings['platforms'] = self.platform_settings()
-            args = build_command(job, dest, self.cookie_for(job), settings, self.state)
+            cookie = self.cookie_for(job)
+            if key=='instagram' and cookie:
+                instagram_session = platforms.InstagramSession(cookie)
+                cookie = instagram_session.path
+            args = build_command(job, dest, cookie, settings, self.state)
             env = dict(os.environ, TMPDIR=str(dest), XDG_CACHE_HOME=str(dest), PYTHONUNBUFFERED='1')
             self.current = jid
             self.live[jid] = {}
@@ -441,6 +470,11 @@ class Desk:
                 return
             live = self.live.get(jid, {})
             if self.process.returncode == 0:
+                if instagram_session:
+                    try:
+                        instagram_session.commit()
+                    except OSError:
+                        live['log'] = (live.get('log','')+'\nSession refresh could not be saved; the previously stored session was kept.')[-8000:]
                 if job['layout']==2:
                     self.update_job(jid,phase='publish',name=live.get('name',job['name']))
                     publish(self, job, dest, output)
@@ -461,6 +495,8 @@ class Desk:
                     next_try=now() + min(1800, 60 * 2**min(attempts-1, 5)),
                     last_error=error, error_kind=category, detail=detail if category!='transient' or again else 'Needs attention')
         finally:
+            if instagram_session:
+                instagram_session.close()
             self.current = None
             self.process = None
             self.live.pop(jid, None)
@@ -547,7 +583,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'settings': self.settings(), 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'uptime': int(now()-self.started), 'version': '1.1.0', 'session_days': DAYS}
+                'uptime': int(now()-self.started), 'version': '1.2.0', 'session_days': DAYS}
 
     def get_session(self, raw):
         jar = http.cookies.SimpleCookie()
@@ -599,7 +635,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('X-Frame-Options', 'DENY')
         self.send_header('Referrer-Policy', 'no-referrer')
-        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
     def reply(self, data, status=200, cookie=None):
         raw = json.dumps(data, ensure_ascii=False).encode()
@@ -611,7 +647,8 @@ class Handler(BaseHTTPRequestHandler):
             flag = '; Secure' if self.desk.config.get('tls_cert') else ''
             self.send_header('Set-Cookie', f'zedair_session={cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age={DAYS*86400 if cookie else 0}{flag}')
         self.end_headers()
-        self.wfile.write(raw)
+        if self.command!='HEAD':
+            self.wfile.write(raw)
 
     def read_json(self):
         if self.headers.get('Content-Type', '').split(';')[0].strip() != 'application/json':
@@ -636,6 +673,9 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError('Refresh this page before making changes', 403)
         return session
 
+    def do_HEAD(self):
+        self.do_GET()
+
     def do_GET(self):
         try:
             self.get()
@@ -658,7 +698,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header('Content-Type', (mimetypes.guess_type(str(file))[0] or 'text/plain') + '; charset=utf-8')
             self.send_header('Content-Length', str(len(raw)))
             self.end_headers()
-            self.wfile.write(raw)
+            if self.command!='HEAD':
+                self.wfile.write(raw)
             return
         if p.path == '/api/auth':
             session = d.get_session(self.headers.get('Cookie'))
@@ -680,49 +721,50 @@ class Handler(BaseHTTPRequestHandler):
             for item in sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
                 if item.is_symlink() or item.name.startswith('.') or item in reserved:
                     continue
-                entries.append({'name': item.name, 'directory': item.is_dir(), 'size': item.stat().st_size if item.is_file() else 0, 'stamp': str(item.stat().st_size)+':'+str(item.stat().st_mtime_ns)})
+                entries.append({'name': item.name, 'directory': item.is_dir(), 'size': item.stat().st_size if item.is_file() else 0, 'preview': preview_type(item.suffix), 'stamp': str(item.stat().st_size)+':'+str(item.stat().st_mtime_ns)})
                 if len(entries) >= 1000:
                     break
             self.reply({'path': relative, 'entries': entries, 'limit': 1000})
-        elif p.path == '/api/file':
+        elif p.path == '/api/speedtest/history.csv':
+            raw=history_csv(d.speedtest.history())
+            self.send_response(200);self.headers_common()
+            self.send_header('Content-Type','text/csv; charset=utf-8')
+            self.send_header('Content-Disposition','attachment; filename="zedair-speed-tests.csv"')
+            self.send_header('Content-Length',str(len(raw)));self.end_headers()
+            if self.command!='HEAD':self.wfile.write(raw)
+        elif p.path in ('/api/file','/api/preview'):
             file = d.destination(query.get('path', [''])[0], reserve=False)
             if not file.is_file():
                 raise APIError('File not found', 404)
-            size = file.stat().st_size
-            start, end = 0, size-1
-            ranged = self.headers.get('Range')
-            if ranged:
-                m = re.fullmatch(r'bytes=(\d+)-(\d*)', ranged)
-                if not m:
-                    raise APIError('Unsupported byte range', 416)
-                start = int(m[1])
-                end = min(int(m[2]) if m[2] else size-1, size-1)
-                if start > end:
-                    raise APIError('Range outside file', 416)
+            inline=p.path=='/api/preview'
+            media=PREVIEW_MIME.get(file.suffix.lower())
+            if inline and not media:
+                raise APIError('This file type cannot be previewed safely. Use Download instead.',415)
             with file.open('rb') as stream:
+                size=os.fstat(stream.fileno()).st_size
+                try:
+                    start,end=parse_range(self.headers.get('Range'),size)
+                except ValueError:
+                    self.send_response(416);self.headers_common()
+                    self.send_header('Content-Range',f'bytes */{size}')
+                    self.send_header('Content-Length','0');self.end_headers();return
+                ranged=self.headers.get('Range') is not None
                 self.send_response(206 if ranged else 200)
                 self.headers_common()
-                preview = query.get('preview', [''])[0] == '1'
-                mime = mimetypes.guess_type(str(file))[0] or 'application/octet-stream'
-                if preview and mime.startswith(('image/', 'video/', 'audio/')):
-                    self.send_header('Content-Type', mime)
-                    self.send_header('Content-Disposition', "inline; filename*=UTF-8''" + urllib.parse.quote(file.name))
-                else:
-                    self.send_header('Content-Type', 'application/octet-stream')
-                    self.send_header('Content-Disposition', "attachment; filename*=UTF-8''" + urllib.parse.quote(file.name))
-                self.send_header('Accept-Ranges', 'bytes')
-                if ranged:
-                    self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
-                self.send_header('Content-Length', str(max(0, end-start+1)))
+                self.send_header('Content-Type',media if inline else 'application/octet-stream')
+                disposition='inline' if inline else 'attachment'
+                self.send_header('Content-Disposition',disposition+"; filename*=UTF-8''"+urllib.parse.quote(file.name))
+                self.send_header('Accept-Ranges','bytes')
+                if ranged:self.send_header('Content-Range',f'bytes {start}-{end}/{size}')
+                self.send_header('Content-Length',str(max(0,end-start+1)))
                 self.end_headers()
+                if self.command=='HEAD':return
                 stream.seek(start)
-                remaining = end-start+1
-                while remaining > 0:
-                    block = stream.read(min(256*1024, remaining))
-                    if not block:
-                        break
-                    self.wfile.write(block)
-                    remaining -= len(block)
+                remaining=end-start+1
+                while remaining>0:
+                    block=stream.read(min(256*1024,remaining))
+                    if not block:break
+                    self.wfile.write(block);remaining-=len(block)
         elif p.path == '/api/job':
             job = d.job(query.get('id', [''])[0])
             job.update(d.live.get(job['id'], {}))
@@ -819,7 +861,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass  # Saved settings are applied when the daemon returns.
         elif path == '/api/speedtest':
             if data.get('action')=='start':
-                d.speedtest.start()
+                d.speedtest.start(accept_terms=data.get('accept_terms',False))
             elif data.get('action')=='cancel':
                 d.speedtest.cancel()
             else:

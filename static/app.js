@@ -18,15 +18,7 @@ async function api(path, data){
 }
 async function action(fn){ try{await fn();}catch(error){toast(error.message);} }
 function openDialog(id){const dialog=$('#'+id); if(!dialog.open)dialog.showModal();}
-function closeDialog(dialog){
-  if(dialog && dialog.id==='previewDialog'){
-    const media = dialog.querySelectorAll('video, audio');
-    media.forEach(m => { try { m.pause(); m.removeAttribute('src'); m.load(); } catch(_) {} });
-    const body = $('#previewBody');
-    if(body) body.innerHTML = '';
-  }
-  dialog.close();
-}
+function closeDialog(dialog){if(dialog.id==='previewDialog')clearPreview();dialog.close();}
 function empty(icon,title,message,button=''){return `<div class="empty"><div class="empty-icon">${icon}</div><h3>${E(title)}</h3><p>${E(message)}</p>${button}</div>`;}
 function button(symbol,title,attrs){return `<button class="icon-button" title="${E(title)}" aria-label="${E(title)}" ${attrs}>${symbol}</button>`;}
 function shortFolder(job){return ['Zedair',job.folder,job.subdir].filter(Boolean).join('/');}
@@ -97,9 +89,8 @@ async function loadFiles(){
   try{const result=await api('folders?path='+encodeURIComponent(filePath));$('#fileList').innerHTML=result.entries.length?result.entries.map(entry=>{
     const path=join(filePath,entry.name);
     if(entry.directory)return `<button class="file-row" data-file-folder="${E(path)}"><span>▰</span><strong>${E(entry.name)}</strong><small>Open folder →</small></button>`;
-    const ext = entry.name.split('.').pop().toLowerCase();
-    const previewable = ['jpg','jpeg','png','gif','webp','bmp','svg','mp4','mkv','webm','mov','avi','mp3','m4a','ogg','wav','flac','aac'].includes(ext);
-    return `<div class="file-entry"><a class="file-row" href="/api/file?path=${encodeURIComponent(path)}" download><span>↓</span><strong>${E(entry.name)}</strong><small>${bytes(entry.size)}</small></a>${previewable?`<button class="secondary compact" data-preview-file="${E(path)}" data-preview-name="${E(entry.name)}" aria-label="Preview ${E(entry.name)}">Preview</button>`:''}<button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div>`;
+    const row=entry.preview?`<button class="file-row" data-preview-file="${E(path)}" data-preview-kind="${E(entry.preview)}"><span>${entry.preview==='image'?'▧':'▷'}</span><strong>${E(entry.name)}<span class="file-preview-label"> · Preview</span></strong><small>${bytes(entry.size)}</small></button>`:`<div class="file-row"><span>▤</span><strong>${E(entry.name)}</strong><small>${bytes(entry.size)}</small></div>`;
+    return `<div class="file-entry">${row}<div class="file-actions"><a class="secondary compact" href="/api/file?path=${encodeURIComponent(path)}" download aria-label="Download ${E(entry.name)}">Download</a><button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div></div>`;
   }).join(''):empty('▤','This folder is empty.','Create a subfolder or point your next download here.');}
   catch(error){$('#fileList').innerHTML=empty('!','Storage unavailable',error.message);}
 }
@@ -133,7 +124,7 @@ function renderPlatform(){
   if(key==='other')fields+='<p class="hint">Supported video sites, including supported adult sites, use yt-dlp. Availability varies; DRM media is not supported. An empty folder uses the source hostname.</p>';
   const raw=key==='instagram'?['sessionid','csrftoken','ds_user_id']:key==='x'?['auth_token','ct0']:[];
   const manual=raw.length?`<form id="sessionForm" autocomplete="off"><h3>Paste session values</h3><p class="hint">From your browser’s cookies for ${key==='x'?'x.com':'instagram.com'}. Paste the value only. Saving replaces this platform’s cookie file.</p>${raw.map(n=>`<label>${n}${key==='instagram'&&n!=='sessionid'?' (optional)':''}<input type="password" name="${n}" autocomplete="new-password" spellcheck="false" maxlength="8192" ${key==='x'||n==='sessionid'?'required':''}></label>`).join('')}<button class="secondary" type="submit">Save private session</button></form>`:'';
-  $('#platformEditor').innerHTML=`<div class="platform-editor"><form id="platformForm"><h3>${platformNames[key]} defaults</h3>${fields}<button class="primary" type="submit">Save platform settings</button></form><div><h3>Website authentication</h3><div class="cookie-status"><strong>${c.usable?'Session stored':c.present?'Cookies need attention':'No session stored'}</strong><small>${c.present?`${c.count} cookies · ${c.expired} expired`:'Public downloads may work without cookies.'} This checks file contents, not live login validity.</small></div><div class="cookie-actions"><button class="secondary" data-cookie="${key}">${c.present?'Replace':'Import'} cookies.txt</button>${c.present?`<button class="secondary danger" data-cookie-delete="${key}">Remove session</button>`:''}</div>${manual}<p class="hint">Cookie values stay private on the laptop and are never returned to this page. They expire independently of your 35-day desk login. After replacing them, retry the affected job from Attention. See README for Firefox instructions.</p></div></div>`;
+  $('#platformEditor').innerHTML=`<div class="platform-editor"><form id="platformForm"><h3>${platformNames[key]} defaults</h3>${fields}<button class="primary" type="submit">Save platform settings</button></form><div><h3>Website authentication</h3><div class="cookie-status"><strong>${c.usable?'Session stored':c.present?'Cookies need attention':'No session stored'}</strong><small>${c.present?`${c.count} cookies · ${c.expired} expired`:'Public downloads may work without cookies.'}${c.updated?' · Saved '+E(new Date(c.updated*1000).toLocaleString()):''} This checks file contents, not live login validity.</small></div><div class="cookie-actions"><button class="secondary" data-cookie="${key}">${c.present?'Replace':'Import'} cookies.txt</button>${c.present?`<button class="secondary danger" data-cookie-delete="${key}">Remove session</button>`:''}</div>${manual}${key==='instagram'?'<p class="hint">Automatic session updates: after a successful download, cookies refreshed by Instagram are saved for the next job. Session cookies with no fixed expiry remain valid locally; only Instagram can renew or revoke the login.</p>':''}<p class="hint">Cookie values stay private on the laptop and are never returned to this page. They expire independently of your 35-day desk login. After replacing them, retry the affected job from Attention. See README for Firefox instructions.</p></div></div>`;
 }
 async function showDetail(id){
   const j=await api('job?id='+encodeURIComponent(id));$('#detailTitle').textContent=j.name;
@@ -172,6 +163,8 @@ document.addEventListener('click',event=>{
     if(el.dataset.platform){selectedPlatform=el.dataset.platform;renderPlatform();}
     if(el.hasAttribute('data-open-platforms')){closeDialog($('#detailDialog'));settingsTab='platforms';await setPage('settings');}
     if(el.dataset.deleteFile){if(!confirm('Permanently delete Zedair/'+el.dataset.deleteFile+' from the SSD? This cannot be undone.'))return;await api('file/delete',{path:el.dataset.deleteFile,stamp:el.dataset.stamp,confirm:true});await loadFiles();toast('File permanently deleted.');}
+    if(el.dataset.previewFile)showPreview(el.dataset.previewFile,el.dataset.previewKind);
+    if(el.dataset.speedReport)showSpeedReport(el.dataset.speedReport);
     if(el.dataset.theme!==undefined)$('#themeBtn').click();
     if(el.dataset.logout!==undefined)$('#logoutBtn').click();
     if(el.dataset.close!==undefined)closeDialog(el.closest('dialog'));
@@ -203,50 +196,42 @@ document.addEventListener('submit',event=>{
   }
 });
 
+
 function renderSpeed(){
   const s=state.speedtest,active=s.status==='running';
-  const down=s.download_mbps,up=s.upload_mbps;
-  $('#speedDown').textContent=down??'—';$('#speedUp').textContent=up??'—';$('#speedLatency').textContent=s.latency_ms??'—';$('#speedJitter').textContent=s.jitter_ms??'—';
-  const phase=s.phase||'idle';
-  const gaugeVal=phase==='download'?(down||0):phase==='upload'?(up||0):phase==='done'?(down||0):0;
-  const maxSpeed=Math.max(100,gaugeVal*1.3);
-  const pct=Math.min(1,gaugeVal/maxSpeed);
-  const arc=414.7;
-  const offset=arc*(1-pct*0.75);
-  const gaugeEl=$('#gaugeArc');if(gaugeEl)gaugeEl.style.strokeDashoffset=offset;
-  $('#gaugeNumber').textContent=phase==='download'?(down??'—'):phase==='upload'?(up??'—'):phase==='done'?(down??'—'):'—';
-  const labelMap={idle:'Ready',starting:'Connecting…',latency:'Measuring latency…',download:'Testing download…',upload:'Testing upload…',done:'Complete',error:'Error',cancelled:'Cancelled'};
-  $('#gaugeLabel').textContent=labelMap[phase]||s.detail||'Ready';
-  $('#speedStatus').textContent=s.detail||'Ready to test your connection';
-  $('#startSpeed').disabled=active;$('#startSpeed').textContent=active?'⏳ Testing…':'▶ Start test';$('#cancelSpeed').hidden=!active;
+  const display=s.status==='idle'?s.history.find(r=>r.engine==='ookla'&&r.status==='done')||s:s;
+  $('#speedDown').textContent=display.download_mbps??'—';$('#speedUp').textContent=display.upload_mbps??'—';$('#speedLatency').textContent=display.latency_ms??'—';$('#speedJitter').textContent=display.jitter_ms??'—';
+  $('#speedLive').textContent=active?(s.live_mbps??'—'):(display.download_mbps??'—');
+  const phase={starting:'Connecting',latency:'Ping',download:'Download',upload:'Upload',done:'Complete',error:'Failed',cancelled:'Cancelled',idle:'Ready'};
+  $('#speedPhase').textContent=s.status==='idle'&&display!==s?'Last result':phase[s.phase]||'Ready';$('#speedStatus').textContent=s.status==='idle'&&display!==s?'Last completed test · '+new Date(display.finished*1000).toLocaleString():s.detail;
+  $('#speedProgress').style.width=(active?s.progress||0:s.status==='done'?100:0)+'%';$('#speedTrack').setAttribute('aria-valuenow',String(active?s.progress||0:s.status==='done'?100:0));
+  $('#startSpeed').disabled=active||!s.installed;$('#startSpeed').textContent=active?'Testing…':'Start test';$('#cancelSpeed').hidden=!active;
+  $('#speedSetup').hidden=s.installed;$('#speedAgreement').hidden=s.consent||!s.installed;
+  $('#speedServer').textContent=display.server?[display.server,display.location,display.isp].filter(Boolean).join(' · '):'Nearby server selected automatically';
   const transfers=state.jobs.some(j=>j.status==='running')||state.torrents.some(t=>[4,6].includes(t.status));
-  $('#speedWarning').hidden=!transfers;$('#speedWarning').textContent='Active transfers detected. Hold the queue for accurate results.';
-  $('#speedHistory').innerHTML=s.history.length?`<div class="history-cards">${s.history.map(r=>`<div class="history-card"><div class="history-date"><strong>${E(new Date(r.finished*1000).toLocaleDateString(undefined,{month:'short',day:'numeric'}))}</strong><small>${E(new Date(r.finished*1000).toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'}))}</small></div><div class="history-speeds"><div class="history-speed"><span class="history-label">↓ DOWNLOAD</span><strong>${r.download_mbps??'—'}</strong><small>Mbps</small></div><div class="history-speed"><span class="history-label">↑ UPLOAD</span><strong>${r.upload_mbps??'—'}</strong><small>Mbps</small></div><div class="history-speed"><span class="history-label">PING</span><strong>${r.latency_ms??'—'}</strong><small>ms</small></div><div class="history-speed"><span class="history-label">JITTER</span><strong>${r.jitter_ms??'—'}</strong><small>ms</small></div></div></div>`).join('')}</div>`:'<p class="hint">No completed tests yet. Run your first test above.</p>';
+  $('#speedWarning').hidden=!transfers;$('#speedWarning').textContent='Transfers are active on the laptop. Hold the queue and wait for them to stop before testing.';
+  const value=v=>v===undefined||v===null?'—':E(v);
+  $('#speedHistory').innerHTML=s.history.length?`<div class="table-scroll"><table><thead><tr><th>Time</th><th>Download</th><th>Upload</th><th>Ping</th><th>Status / method</th><th>Report</th></tr></thead><tbody>${s.history.map(r=>`<tr><td>${E(new Date(r.finished*1000).toLocaleString())}</td><td>${value(r.download_mbps)} Mbps</td><td>${value(r.upload_mbps)} Mbps</td><td>${value(r.latency_ms)} ms</td><td>${r.engine==='legacy-http'?'<span class="legacy-label">Legacy estimate · unreliable</span>':E(r.status==='done'?'Completed · Ookla':r.status)}</td><td><button class="secondary compact" data-speed-report="${E(r.id)}">View</button></td></tr>`).join('')}</tbody></table></div>`:'<p class="hint">No tests yet. Your reports will appear here.</p>';
 }
-$('#startSpeed').onclick=()=>action(async()=>{await api('speedtest',{action:'start'});await refresh();});
+function showSpeedReport(id){
+  const r=state.speedtest.history.find(x=>x.id===id);if(!r)return;
+  $('#detailTitle').textContent='Speed test report';
+  const metric=(label,value,unit)=>`<div><span>${label}</span><strong>${value??'—'} <small>${unit}</small></strong></div>`;
+  $('#detailBody').innerHTML=`<p class="detail-value">${E(new Date(r.finished*1000).toLocaleString())} · ${E(r.status||'done')}</p>${r.engine==='legacy-http'?'<p class="notice">This report used the old short HTTP test. Its speeds are not reliable and are not used as the latest result.</p>':''}<div class="speed-report-grid">${metric('Download',E(r.download_mbps??'—'),'Mbps')}${metric('Upload',E(r.upload_mbps??'—'),'Mbps')}${metric('Ping',E(r.latency_ms??'—'),'ms')}${metric('Jitter',E(r.jitter_ms??'—'),'ms')}</div><p class="detail-label">SERVER / NETWORK</p><p class="detail-value">${E([r.server,r.location,r.isp].filter(Boolean).join(' · ')||'Not recorded')}</p><p class="detail-label">TEST DETAILS</p><p class="detail-value">Duration: ${E(r.duration_seconds??'—')} s · Download data: ${bytes(r.download_bytes)} · Upload data: ${bytes(r.upload_bytes)}${r.packet_loss!==undefined?' · Packet loss: '+E(r.packet_loss)+'%':''}</p><p class="hint">${E(r.detail||'')}</p>${r.result_url?`<a class="secondary" href="${E(r.result_url)}" target="_blank" rel="noopener noreferrer">Open Ookla result</a>`:''}`;
+  openDialog('detailDialog');
+}
+function showPreview(path,kind){
+  if(!['image','video','audio'].includes(kind))return;
+  $('#previewTitle').textContent=path.split('/').pop();$('#previewError').hidden=true;
+  const url='/api/preview?path='+encodeURIComponent(path);
+  $('#previewDownload').href='/api/file?path='+encodeURIComponent(path);
+  $('#previewBody').innerHTML='<div class="preview-stage"></div>';
+  const element=document.createElement(kind==='image'?'img':kind);element.src=url;
+  if(kind==='image')element.alt=path.split('/').pop();else{element.controls=true;element.preload='metadata';element.setAttribute('playsinline','');}
+  element.addEventListener('error',()=>$('#previewError').hidden=false,{once:true});
+  $('.preview-stage').appendChild(element);openDialog('previewDialog');
+}
+function clearPreview(){const media=$('video,audio',$('#previewBody'));if(media){media.pause();media.removeAttribute('src');media.load();}$('#previewBody').replaceChildren();}
+$('#previewDialog').addEventListener('close',clearPreview);
+$('#startSpeed').onclick=()=>action(async()=>{if(!state.speedtest.consent&&!$('#acceptSpeedTerms').checked)throw Error('Review and accept the Ookla agreement before starting.');await api('speedtest',{action:'start',accept_terms:$('#acceptSpeedTerms').checked});await refresh();});
 $('#cancelSpeed').onclick=()=>action(async()=>{await api('speedtest',{action:'cancel'});await refresh();});
-
-document.addEventListener('click', event => {
-  const el = event.target.closest('[data-preview-file]');
-  if (!el) return;
-  event.preventDefault();
-  const path = el.dataset.previewFile;
-  const name = el.dataset.previewName;
-  const ext = name.split('.').pop().toLowerCase();
-  const url = '/api/file?path=' + encodeURIComponent(path) + '&preview=1';
-  const imageExts = ['jpg','jpeg','png','gif','webp','bmp','svg'];
-  const videoExts = ['mp4','mkv','webm','mov','avi'];
-  const audioExts = ['mp3','m4a','ogg','wav','flac','aac'];
-  let content = '';
-  if (imageExts.includes(ext)) {
-    content = `<img src="${url}" alt="${E(name)}" style="max-width:100%;max-height:70vh;border-radius:8px;">`;
-  } else if (videoExts.includes(ext)) {
-    content = `<video controls autoplay style="max-width:100%;max-height:70vh;border-radius:8px;"><source src="${url}">Your browser does not support this video format.</video>`;
-  } else if (audioExts.includes(ext)) {
-    content = `<div style="text-align:center;padding:40px 0;"><p style="margin-bottom:20px;font-size:14px;">${E(name)}</p><audio controls autoplay style="width:100%;"><source src="${url}">Your browser does not support this audio format.</audio></div>`;
-  }
-  $('#previewTitle').textContent = name;
-  $('#previewBody').innerHTML = content;
-  $('#previewDownload').href = '/api/file?path=' + encodeURIComponent(path);
-  openDialog('previewDialog');
-});

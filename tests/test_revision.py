@@ -10,7 +10,7 @@ import test_desk as baseline
 import platforms
 from media import build_command
 from publishing import publish, fingerprint, filename
-from speedcheck import measure
+from speedcheck import parse_result
 
 class RevisionTests(Fixture):
     def test_platform_routing_defaults_and_no_random_subfolders(self):
@@ -110,31 +110,3 @@ class NewHTTPTests(Fixture):
         self.assertEqual(self.request('/api/platforms',{'platform':'x','values':values})[0],400)
         self.assertEqual(self.request('/api/file/delete',{'path':'missing','confirm':False})[0],400)
 
-class SpeedTests(unittest.TestCase):
-    def test_bounded_payloads_and_server_endpoint(self):
-        calls=[]
-        class Response:
-            status=200
-            def __init__(self,size):self.remaining=size
-            def read(self,count):
-                chunk=min(self.remaining,count);self.remaining-=chunk;return b'0'*chunk
-        class Connection:
-            def __init__(self,host,timeout):self.host=host;self.size=0;self.assert_host=host
-            def request(self,method,path,body,headers):
-                self.size=int(path.split('bytes=')[1].split('&')[0]) if method=='GET' else 0
-                calls.append((self.host,method,self.size,len(body or b'')))
-            def getresponse(self):return Response(self.size)
-            def close(self):pass
-        updates=[];measure(updates.append,Connection)
-        self.assertEqual(updates[-1]['phase'],'done')
-        self.assertEqual(updates[-1]['transferred_bytes'],41*1024*1024)
-        self.assertTrue(all(c[0]=='speed.cloudflare.com' for c in calls))
-        self.assertLessEqual(max(c[3] for c in calls),8*1024*1024)
-
-    def test_speed_endpoint_failures_not_reported_as_success(self):
-        class Bad:
-            def __init__(self,*args,**kwargs):pass
-            def request(self,*args,**kwargs):pass
-            def getresponse(self):return type('Response',(),{'status':503})()
-            def close(self):pass
-        with self.assertRaisesRegex(ValueError,'503'):measure(lambda x:None,Bad)

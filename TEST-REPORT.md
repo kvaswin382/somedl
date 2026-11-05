@@ -1,44 +1,44 @@
-# Verification report — Zedair 1.1.0
+# Verification report — Zedair 1.2.0
 
 Date: 5 November 2026. Target: Ubuntu 24.04 x86_64, Python 3.12, exFAT USB SSD.
 
 ## Passed
 
-- **37 automated tests** with `python3 -m unittest discover -s tests -v`.
-- Real yt-dlp integration over loopback, downloading a generated MP4 with FFmpeg available. Verified exact media bytes, title/progress output, metadata-based filename selection, numbered publication and preservation of an existing file.
-- Python compilation for application, adapters, platform settings, publisher, speed test and installation/upgrade scripts.
-- JavaScript syntax (`node --check static/app.js`) and shell syntax for install/update/upgrade entrypoints.
-- Desktop browser inspection of charcoal sidebar, settings submenu, Instagram session fields, X video/session controls, platform setting save and speed-test controls.
-- Mobile settings inspection at a 375 CSS-pixel content viewport. A navigation overflow was corrected; measured body width equals viewport width (375 px).
-- Actual browser-triggered speed worker launch and failure display. Workspace DNS could not resolve the external endpoint; the UI reported the failure without invented results.
+- **54 automated tests** with `python3 -m unittest discover -s tests -v`.
+- Real gallery-dl cookie serialization regression: its writer exports session expiry as `0`; the old MozillaCookieJar reader interprets that as epoch zero. The new reader correctly recognizes it as a session cookie. Three simulated server rotations survive real gallery-dl write/reload cycles. This test makes no Instagram requests and uses no real account.
+- Two consecutive queue jobs with a controlled downloader process exercise private working cookies, successful-session publication and next-job reuse.
+- Real yt-dlp loopback integration downloads a generated MP4 with FFmpeg available. Verified exact media bytes, title/progress output, metadata naming, numbered publication and preservation of an existing file.
+- Official Ookla package downloaded from the publisher's Packagecloud repository, verified against the pinned SHA-256, extracted and checked using `--version` and `--help`. Version: 1.2.0.84 x86_64-linux-musl. The official bundled manual documents machine-readable bandwidth as bytes/second. No live test was run and no agreement was accepted.
+- Python compilation, JavaScript syntax and individual shell syntax checks for install/update/upgrade/speed-test installer entrypoints.
+- Desktop browser checks: image preview loaded its actual pixels; MP4 metadata loaded and native video playback advanced; closing the dialog removed the media element. The separate Download action remains available.
+- Dark theme and mobile speed-test layout checked at a 375 CSS-pixel content viewport: body width equals viewport width. Main background is RGB(21,21,23); speed card is RGB(32,32,35). Historical report details opened successfully.
+- Browser speed values were explicitly labelled test fixtures, not network measurements. No production account or authentication bypass is included.
 
 ## Automated coverage
 
-Baseline coverage includes mount/UUID/free-space guards, confined paths and symlinks, atomic URL batches, duplicate unfinished jobs, restart recovery, salted password verification, first-run setup, 35-day sessions, CSRF/origin protection, ranged file responses, queue retries/pause/unplug handling, Threads exact-post fixture extraction, and Transmission RPC handshake/control protections.
+Baseline tests cover storage UUID/mount/free-space guards, confined paths and symlinks, URL batches, duplicate unfinished jobs, restart recovery, password verification, first-run setup, 35-day sessions, CSRF/origin protection, queue control/retry/unplug handling, Threads exact-post fixtures, Transmission RPC protections, platform routing/settings, private cookie fields, title collisions, publication recovery and safe individual-file deletion.
 
-New coverage includes:
+New v1.2 coverage includes:
 
-- Platform routing (including both x.com and twitter.com), platform folders/defaults, and X engine arguments.
-- Manual Instagram/X session conversion, expiry handling, private storage, redaction and absence of secrets from snapshots.
-- Missing Instagram authentication stops before launching the engine; recognized auth, access and rate-limit errors are classified separately from temporary failures.
-- Numbered title collisions preserve existing bytes; repeat publication does not duplicate files.
-- Recovery after a completed rename but before its database commit, without launching a second download.
-- File-deletion guards for changed files, symlinks and files managed by Transmission; successful deletion of a disposable test fixture.
-- Existing legacy job folders survive restart; hidden staging rejects symlinks.
-- New speed-test API authentication/CSRF enforcement and platform-setting validation.
-- Speed-test endpoint selection, bounded 41 MiB payload, maximum 8 MiB upload buffer, and refusal to report HTTP failures as success, using deterministic transport fixtures.
+- Session cookies with zero/blank expiry remain usable on every read, including existing gallery-dl exports; positive past expiries are not extended.
+- Session/CSRF rotation persists between jobs; invalid or empty exported jars cannot overwrite the saved session. GUI replacement/deletion wins over an older active download.
+- Cookie working files have private permissions, filter non-Instagram domains at publication and participate in secret redaction. Completed/failed working files are cleaned up.
+- Authentication, challenge and rate-limit messages remain distinct.
+- Official speed conversion: 25,000,000 bytes/second becomes 200 Mbps. Invalid, nonfinite, negative, boolean or incomplete metrics are rejected.
+- Deterministic subprocess fixtures verify live progress does not become a completed report, failure never reports success, cancellation/concurrency guards, required first-use acceptance and missing-engine handling.
+- Legacy reports are labelled separately; CSV export guards spreadsheet formula prefixes.
+- Authenticated HTTP preview responses: MIME allowlist, inline versus attachment, full/open/suffix byte ranges, HEAD, invalid ranges (416), unsupported inline formats (415), traversal and symlink rejection.
+- Authenticated history export and folder preview metadata.
 - App upgrade success and failed-health-check rollback in temporary directories with mocked service commands; private state and the existing Python environment survive both paths.
 
-## Not verified on the physical laptop
+## Limits
 
-No connection to the user's laptop or GitHub repository was available. The package was not installed there and nothing was pushed to GitHub.
+No connection to the physical laptop or GitHub repository was available. This package was not installed there and nothing was pushed to GitHub. Actual exFAT power-loss behavior, mount/fstab/systemd installation, Atom CPU/RAM usage, torrent swarms, YouTube challenges and account-specific Instagram/X access require validation there. Upgrade tests simulate service control.
 
-Actual exFAT power-loss behavior, mount/fstab/systemd installation, RAM/CPU usage on the Atom, torrent swarms, Deno-based YouTube challenges, Instagram/X account-specific access and real internet throughput require validation on that laptop. The upgrade tests simulate service control; they are not a real systemd upgrade. Live account cookies were neither provided nor requested.
+The Instagram expiry-zero bug is reproduced and fixed. That does not prove it was the only cause of the user's failures. Session refresh preserves cookies supplied during successful normal requests; it does not force Instagram to renew a login, bypass a challenge or guarantee a session lifetime. Threads remains experimental.
 
-Instagram authentication was a suspected cause of the reported failures, not a proven diagnosis. This release adds session entry, checks and clearer error handling; it cannot guarantee that a website will accept a session or offer original-resolution media. Threads remains explicitly experimental.
-
-The speed test is a bounded single-connection HTTP estimate to Cloudflare, not Ookla or an ICMP test. The workspace network prevented a successful external throughput measurement.
+Speed testing now uses the official Ookla engine, but actual internet throughput and the precise reason for prior inflated readings were not measured on the laptop. The engine remains subject to the app service's resource limits. Browser-native codec support varies; there is no server transcoding.
 
 ## Package hygiene
 
-The release contains source, documentation, tests and checksums. It excludes the temporary browser-QA wrapper, preview authentication bypass, test data, cookies, databases, virtual environments, screenshots and logs. The checksum manifest can be checked with `sha256sum -c MANIFEST.sha256` from the extracted package directory.
+The release contains source, documentation, tests and checksums. It excludes the browser-QA wrapper, authentication bypass, fixture media, populated databases, real cookies, downloaded Ookla binary, virtual environments, screenshots and logs. Check extracted contents with `sha256sum -c MANIFEST.sha256`.
