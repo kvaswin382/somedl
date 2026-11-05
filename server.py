@@ -1,0 +1,868 @@
+#!/usr/bin/env python3
+"""Zedair Download Desk — a small, single-user LAN download server."""
+import argparse
+import base64
+import collections
+import hashlib
+import hmac
+import http.cookies
+import json
+import mimetypes
+import os
+import re
+import secrets
+import shutil
+import signal
+import socket
+import sqlite3
+import ssl
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from media import build_command, engine_for, validate_url
+
+HERE = Path(__file__).resolve().parent
+DAYS = 35
+DEFAULTS = {'media_kib': 0, 'torrent_down_kib': 0, 'torrent_up_kib': 256,
+            'seed_ratio': 0.0, 'reserve_gib': 5, 'playlist_limit': 100, 'retry_count': 3,
+            'hold': False}
+QUALITY = ('best', '2160', '1080', '720', '480', 'audio')
+COOKIE_SLOTS = ('instagram', 'youtube', 'threads', 'other')
+ACTIVE = ('queued', 'running', 'retry', 'blocked', 'paused')
+
+
+class APIError(Exception):
+    def __init__(self, message, status=400):
+        super().__init__(message)
+        self.status = status
+
+
+def now():
+    return time.time()
+
+
+def digest(token):
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def password_hash(password, salt=None):
+    salt = salt or secrets.token_hex(16)
+    value = hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=16384, r=8, p=1).hex()
+    return salt + ':' + value
+
+
+def password_ok(password, saved):
+    return hmac.compare_digest(password_hash(password, saved.split(':')[0]), saved)
+
+
+def safe_relative(raw):
+    if not isinstance(raw, str) or len(raw) > 220:
+        raise APIError('Folder path is too long')
+    raw = raw.strip().replace('\\', '/')
+    if raw in ('', '.'):
+        return ''
+    parts = raw.split('/')
+    reserved = re.compile(r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)', re.I)
+    for part in parts:
+        if not part or part in ('.', '..') or part.startswith('.') or part.endswith((' ', '.')) or len(part.encode()) > 150:
+            raise APIError('Use normal folder names without hidden, empty or parent-directory segments')
+        if re.search(r'[\x00-\x1f<>:"|?*]', part) or reserved.match(part):
+            raise APIError('This name is not compatible with Windows/exFAT')
+    return '/'.join(parts)
+
+
+class Transmission:
+    def __init__(self, config):
+        self.url = config.get('rpc_url', 'http://127.0.0.1:9092/transmission/rpc')
+        self.auth = base64.b64encode((config.get('rpc_user', 'zedair') + ':' + config.get('rpc_password', '')).encode()).decode()
+        self.sid = ''
+        self.lock = threading.RLock()
+
+    def call(self, method, arguments=None):
+        with self.lock:
+            for _ in range(2):
+                req = urllib.request.Request(self.url, json.dumps({'method': method, 'arguments': arguments or {}}).encode(),
+                      {'Content-Type': 'application/json', 'Authorization': 'Basic ' + self.auth,
+                       'X-Transmission-Session-Id': self.sid})
+                try:
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        data = json.load(response)
+                    if data.get('result') != 'success':
+                        raise APIError('Torrent engine: ' + str(data.get('result', 'unknown response')), 502)
+                    return data.get('arguments', {})
+                except urllib.error.HTTPError as exc:
+                    if exc.code == 409:
+                        self.sid = exc.headers.get('X-Transmission-Session-Id', '')
+                        continue
+                    raise APIError('Torrent engine rejected the request. Check its service and credentials.', 503)
+                except (OSError, ValueError):
+                    raise APIError('Torrent engine is offline. Check zedair-transmission on the laptop.', 503)
+            raise APIError('Torrent engine session handshake failed', 503)
+
+
+class Desk:
+    def __init__(self, config):
+        self.config = config
+        self.state = Path(config['state']).resolve()
+        self.state.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.mount = Path(config['mount']).resolve()
+        self.root = self.mount / 'Zedair'
+        self.lock = threading.RLock()
+        self.db = sqlite3.connect(self.state / 'desk.sqlite3', check_same_thread=False)
+        self.db.row_factory = sqlite3.Row
+        self.db.executescript('''
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE IF NOT EXISTS admin(id INTEGER PRIMARY KEY CHECK(id=1), username TEXT, password TEXT);
+            CREATE TABLE IF NOT EXISTS sessions(token TEXT PRIMARY KEY, csrf TEXT, expires REAL);
+            CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY, value TEXT);
+            CREATE TABLE IF NOT EXISTS jobs(
+                id TEXT PRIMARY KEY, url TEXT, kind TEXT, folder TEXT, name TEXT, subdir TEXT,
+                quality TEXT, playlist INTEGER, subtitles INTEGER, cookie_profile TEXT,
+                status TEXT, attempts INTEGER DEFAULT 0, next_try REAL DEFAULT 0,
+                created REAL, updated REAL, progress REAL DEFAULT 0, detail TEXT DEFAULT '',
+                last_error TEXT DEFAULT '', position REAL);
+        ''')
+        self.db.execute("UPDATE jobs SET status='queued', detail='Recovering after service restart' WHERE status='running'")
+        self.db.commit()
+        self.stop = threading.Event()
+        self.current = None
+        self.process = None
+        self.live = {}
+        self.torrents = []
+        self.torrent_error = 'Connecting to torrent engine…'
+        self.started = now()
+        self.failures = collections.defaultdict(collections.deque)
+        self.rpc = Transmission(config)
+        self.threads = []
+
+    def rows(self, sql, args=()):
+        with self.lock:
+            return [dict(r) for r in self.db.execute(sql, args).fetchall()]
+
+    def write(self, sql, args=()):
+        with self.lock:
+            self.db.execute(sql, args)
+            self.db.commit()
+
+    def get_setting(self, key, fallback=None):
+        rows = self.rows('SELECT value FROM settings WHERE key=?', (key,))
+        return json.loads(rows[0]['value']) if rows else fallback
+
+    def set_setting(self, key, value):
+        self.write('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(value)))
+
+    def settings(self):
+        return {k: self.get_setting(k, v) for k, v in DEFAULTS.items()}
+
+    def storage(self, reserve=True):
+        status = {'ready': False, 'root': str(self.root), 'mount': str(self.mount), 'free': 0, 'total': 0, 'reason': ''}
+        try:
+            if self.config.get('require_mount', True):
+                if not os.path.ismount(self.mount):
+                    raise APIError('SSD is not mounted. Downloads are waiting safely.')
+                uuid = self.config.get('ssd_uuid')
+                if not uuid:
+                    raise APIError('SSD identity is not configured')
+                device = Path('/dev/disk/by-uuid') / uuid
+                if not device.exists() or device.stat().st_rdev != self.mount.stat().st_dev:
+                    raise APIError('The mounted drive does not match your configured SSD')
+            if not self.root.is_dir() or self.root.is_symlink():
+                raise APIError('The Zedair folder is missing or is a symbolic link')
+            disk = shutil.disk_usage(self.root)
+            status.update(free=disk.free, total=disk.total)
+            if reserve and disk.free < self.get_setting('reserve_gib', 5) * 1024**3:
+                raise APIError('SSD free space is below the configured reserve')
+            if not os.access(self.root, os.W_OK):
+                raise APIError('Zedair folder is not writable by the service user')
+            status['ready'] = True
+        except (OSError, APIError) as exc:
+            status['reason'] = str(exc)
+        return status
+
+    def destination(self, relative='', create=False, check=True, reserve=True):
+        if check:
+            status = self.storage(reserve=reserve)
+            if not status['ready']:
+                raise APIError(status['reason'], 409)
+        relative = safe_relative(relative)
+        path = self.root / relative
+        resolved = path.resolve()
+        if not resolved.is_relative_to(self.root.resolve()):
+            raise APIError('Folder is outside Zedair', 403)
+        current = self.root
+        for part in relative.split('/') if relative else []:
+            current /= part
+            if current.is_symlink():
+                raise APIError('Symbolic links are not allowed', 403)
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def job(self, jid):
+        rows = self.rows('SELECT * FROM jobs WHERE id=?', (jid,))
+        if not rows:
+            raise APIError('Download not found', 404)
+        return rows[0]
+
+    def update_job(self, jid, **fields):
+        fields['updated'] = now()
+        with self.lock:
+            self.db.execute('UPDATE jobs SET ' + ','.join(k + '=?' for k in fields) + ' WHERE id=?', (*fields.values(), jid))
+            self.db.commit()
+
+    def add_jobs(self, data):
+        urls = data.get('urls', [])
+        if not isinstance(urls, list) or not 1 <= len(urls) <= 30:
+            raise APIError('Paste between 1 and 30 URLs')
+        if len(self.rows('SELECT id FROM jobs')) + len(urls) > 1000:
+            raise APIError('History is full (1,000 jobs). Clear finished history first.')
+        quality = data.get('quality', 'best')
+        if quality not in QUALITY:
+            raise APIError('Unknown quality preset')
+        cookie = data.get('cookie_profile', 'auto')
+        if cookie not in (*COOKIE_SLOTS, 'auto', 'none'):
+            raise APIError('Unknown cookie profile')
+        folder = safe_relative(data.get('folder', ''))
+        name = safe_relative(data.get('name', ''))
+        if '/' in name or len(name) > 80:
+            raise APIError('Use one short name for the job folder')
+        # Validate the whole batch before recording any work. Queuing while unplugged is allowed.
+        clean = []
+        for url in urls:
+            url = url.strip()
+            validate_url(url, dns=False)
+            kind = engine_for(url)
+            if kind == 'instagram' and not re.search(r'/(p|reel|reels|tv)/[^/]+', urllib.parse.urlsplit(url).path):
+                raise APIError('Instagram requires a direct post, carousel or reel URL')
+            if kind == 'threads' and not re.search(r'/(post|t)/[\w-]+', urllib.parse.urlsplit(url).path):
+                raise APIError('Threads requires a direct post URL')
+            clean.append((url, kind))
+        result = []
+        with self.lock:
+            for url, kind in clean:
+                # Duplicate checks apply to unfinished jobs only; explicit redownloads stay possible.
+                if self.db.execute("SELECT id FROM jobs WHERE url=? AND status IN ('queued','running','retry','paused','blocked')", (url,)).fetchone():
+                    continue
+                jid = secrets.token_hex(6)
+                subdir = (name or kind) + '-' + jid
+                self.db.execute('''INSERT INTO jobs(id,url,kind,folder,name,subdir,quality,playlist,subtitles,cookie_profile,status,created,updated,position)
+                                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (jid, url, kind, folder, name or urllib.parse.urlsplit(url).hostname, subdir, quality,
+                     int(bool(data.get('playlist'))), int(bool(data.get('subtitles'))), cookie, 'queued', now(), now(), now()))
+                result.append(jid)
+            self.db.commit()
+        return {'ids': result, 'skipped': len(urls)-len(result)}
+
+    def cookie_for(self, job):
+        slot = job['cookie_profile']
+        if slot == 'none':
+            return None
+        if slot == 'auto':
+            host = urllib.parse.urlsplit(job['url']).hostname or ''
+            slot = job['kind'] if job['kind'] in ('instagram', 'threads') else ('youtube' if host == 'youtu.be' or host == 'youtube.com' or host.endswith('.youtube.com') else 'other')
+        path = self.state / ('cookies-' + slot + '.txt')
+        return path if path.exists() else None
+
+    def stop_process(self):
+        process = self.process
+        if process and process.poll() is None:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def job_action(self, jid, action):
+        with self.lock:
+            job = self.job(jid)
+            if action in ('pause', 'cancel'):
+                self.update_job(jid, status='paused' if action == 'pause' else 'cancelled', detail='Paused' if action == 'pause' else 'Cancelled; partial files kept')
+                # The worker notices the new state and stops its complete process group.
+            elif action in ('resume', 'retry'):
+                if job['status'] == 'running':
+                    raise APIError('This download is already running')
+                self.update_job(jid, status='queued', attempts=0, next_try=0, last_error='', detail='Waiting in queue')
+            elif action == 'first':
+                self.update_job(jid, position=now() - 10**10)
+            else:
+                raise APIError('Unknown queue action')
+
+    def consume(self, pipe, jid):
+        tail = collections.deque(maxlen=24)
+        for raw in iter(lambda: pipe.readline(65536), b''):
+            line = raw.decode('utf-8', 'replace').strip()[:3000]
+            if not line:
+                continue
+            live = self.live.setdefault(jid, {})
+            if line.startswith('ZEDPROG '):
+                try:
+                    info = json.loads(line[8:])
+                    done = info.get('downloaded_bytes') or 0
+                    total = info.get('total_bytes') or info.get('total_bytes_estimate') or 0
+                    live.update(progress=min(99.9, done / total * 100) if total else 0,
+                                speed=info.get('speed') or 0, eta=info.get('eta'), bytes=done,
+                                detail='Merging / finishing' if info.get('status') == 'finished' else 'Downloading')
+                except (ValueError, TypeError):
+                    pass
+            elif line.startswith('ZEDTITLE '):
+                live['name'] = line[9:][:240]
+            else:
+                tail.append(line)
+                live['log'] = '\n'.join(tail)[-8000:]
+                if 'warning' in line.lower():
+                    live['warning'] = line[:400]
+                live['detail'] = line[-250:]
+        pipe.close()
+
+    def run_job(self, job):
+        jid = job['id']
+        try:
+            with self.lock:
+                if self.job(jid)['status'] not in ('queued', 'retry', 'blocked'):
+                    return
+                self.update_job(jid, status='running', attempts=job['attempts']+1, detail='Connecting…')
+            validate_url(job['url'])
+            relative = '/'.join(p for p in (job['folder'], job['subdir']) if p)
+            dest = self.destination(relative, create=True)
+            args = build_command(job, dest, self.cookie_for(job), self.settings(), self.state)
+            env = dict(os.environ, TMPDIR=str(dest), XDG_CACHE_HOME=str(dest), PYTHONUNBUFFERED='1')
+            self.current = jid
+            self.live[jid] = {}
+            with self.lock:
+                # Recheck after preparation so a concurrent pause is respected.
+                if self.job(jid)['status'] != 'running':
+                    return
+                self.process = subprocess.Popen(args, cwd=dest, env=env, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, start_new_session=True)
+            reader = threading.Thread(target=self.consume, args=(self.process.stdout, jid), daemon=True)
+            reader.start()
+            while self.process.poll() is None:
+                if self.stop.wait(1):
+                    self.stop_process()
+                    self.update_job(jid, status='queued', detail='Waiting for service restart')
+                    return
+                fresh = self.job(jid)
+                if fresh['status'] != 'running':
+                    self.stop_process()
+                    return
+                disk = self.storage()
+                if self.get_setting('hold', False) or not disk['ready']:
+                    self.stop_process()
+                    self.update_job(jid, status='blocked', detail='Queue held' if self.get_setting('hold', False) else disk['reason'])
+                    return
+            reader.join(timeout=3)
+            if self.job(jid)['status'] != 'running':
+                return
+            live = self.live.get(jid, {})
+            if self.process.returncode == 0:
+                self.update_job(jid, status='done', progress=100, detail='Saved to ' + relative,
+                    name=live.get('name', job['name']), last_error=live.get('log', '')[-8000:])
+            else:
+                raise APIError(live.get('log', '')[-8000:] or f'Downloader exited with code {self.process.returncode}')
+        except Exception as exc:
+            fresh = self.job(jid)
+            if fresh['status'] not in ('paused', 'cancelled'):
+                attempts = max(fresh['attempts'], job['attempts'] + 1)
+                again = attempts <= self.get_setting('retry_count', 3)
+                self.update_job(jid, status='retry' if again else 'error', attempts=attempts,
+                    next_try=now() + min(1800, 60 * 2**min(attempts-1, 5)),
+                    last_error=str(exc)[-8000:], detail='Automatic retry scheduled' if again else 'Needs attention')
+        finally:
+            self.current = None
+            self.process = None
+            self.live.pop(jid, None)
+            (self.state / ('gallery-' + jid + '.json')).unlink(missing_ok=True)
+
+    def media_loop(self):
+        while not self.stop.wait(1):
+            try:
+                if self.get_setting('hold', False) or not self.storage()['ready']:
+                    continue
+                items = self.rows("SELECT * FROM jobs WHERE status IN ('queued','retry','blocked') AND next_try<=? ORDER BY position LIMIT 1", (now(),))
+                if items:
+                    self.run_job(items[0])
+            except Exception as exc:
+                print('Queue monitor:', type(exc).__name__, flush=True)
+
+    def apply_torrent_settings(self):
+        s = self.settings()
+        return self.rpc.call('session-set', {
+            'download-queue-enabled': True, 'download-queue-size': 1,
+            'seed-queue-enabled': True, 'seed-queue-size': 1, 'queue-stalled-enabled': False,
+            'speed-limit-down-enabled': bool(s['torrent_down_kib']), 'speed-limit-down': s['torrent_down_kib'],
+            'speed-limit-up-enabled': True, 'speed-limit-up': max(1, s['torrent_up_kib']),
+            'seedRatioLimited': True, 'seedRatioLimit': s['seed_ratio'],
+            'peer-limit-global': 40, 'peer-limit-per-torrent': 20,
+            'cache-size-mb': 16, 'port-forwarding-enabled': False,
+        })
+
+    def owned_torrent(self, torrent):
+        try:
+            return Path(torrent['downloadDir']).resolve().is_relative_to(self.root.resolve())
+        except (KeyError, OSError):
+            return False
+
+    def torrent_loop(self):
+        configured = False
+        while not self.stop.is_set():
+            try:
+                if not configured:
+                    self.apply_torrent_settings()
+                    configured = True
+                result = self.rpc.call('torrent-get', {'fields': ['id','hashString','name','status','percentDone',
+                    'rateDownload','rateUpload','eta','totalSize','errorString','uploadRatio','downloadDir','metadataPercentComplete','queuePosition']})
+                items = [t for t in result.get('torrents', []) if self.owned_torrent(t)]
+                with self.lock:
+                    self.torrents = items
+                    self.torrent_error = ''
+                active = [t['hashString'] for t in items if t['status'] != 0]
+                blocked = self.get_setting('blocked_torrents', [])
+                if self.get_setting('hold', False) or not self.storage()['ready']:
+                    if active:
+                        self.set_setting('blocked_torrents', list(set(blocked + active)))
+                        self.rpc.call('torrent-stop', {'ids': active})
+                elif blocked:
+                    ids = [t['hashString'] for t in items if t['hashString'] in blocked]
+                    if ids:
+                        self.rpc.call('torrent-start', {'ids': ids})
+                    self.set_setting('blocked_torrents', [])
+            except Exception as exc:
+                self.torrent_error = str(exc)
+                configured = False
+            self.stop.wait(4)
+
+    def start(self):
+        for function in (self.media_loop, self.torrent_loop):
+            thread = threading.Thread(target=function, daemon=True)
+            thread.start()
+            self.threads.append(thread)
+
+    def close(self):
+        self.stop.set()
+        for thread in self.threads:
+            thread.join(timeout=12)
+        self.stop_process()
+        self.db.close()
+
+    def snapshot(self):
+        jobs = self.rows("SELECT * FROM jobs ORDER BY CASE WHEN status='running' THEN 0 WHEN status IN ('queued','retry','blocked','paused') THEN 1 ELSE 2 END, CASE WHEN status IN ('queued','retry','blocked','paused') THEN position ELSE -created END LIMIT 1000")
+        for job in jobs:
+            job.update(self.live.get(job['id'], {}))
+            job.pop('last_error', None)
+        return {'storage': self.storage(), 'jobs': jobs, 'torrents': self.torrents,
+                'torrent_error': self.torrent_error, 'settings': self.settings(),
+                'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
+                'uptime': int(now()-self.started), 'version': '1.0.0', 'session_days': DAYS}
+
+    def get_session(self, raw):
+        jar = http.cookies.SimpleCookie()
+        try:
+            jar.load(raw or '')
+            token = jar['zedair_session'].value
+        except (KeyError, http.cookies.CookieError):
+            return None
+        found = self.rows('SELECT * FROM sessions WHERE token=? AND expires>?', (digest(token), now()))
+        return found[0] if found else None
+
+    def new_session(self):
+        token, csrf = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
+        self.write('DELETE FROM sessions WHERE expires<?', (now(),))
+        self.write('INSERT INTO sessions VALUES (?,?,?)', (digest(token), csrf, now()+DAYS*86400))
+        # Bound active sessions without logging out ordinary household use.
+        self.write('DELETE FROM sessions WHERE token NOT IN (SELECT token FROM sessions ORDER BY expires DESC LIMIT 30)')
+        return token, csrf
+
+    def throttle(self, ip):
+        with self.lock:
+            q = self.failures[ip]
+            while q and q[0] < now()-900:
+                q.popleft()
+            if len(q) >= 10:
+                raise APIError('Too many login attempts. Try again in 15 minutes.', 429)
+            q.append(now())
+            if len(self.failures) > 1000:
+                self.failures.clear()
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = 'Zedair'
+    protocol_version = 'HTTP/1.1'
+
+    @property
+    def desk(self):
+        return self.server.desk
+
+    def setup(self):
+        super().setup()
+        self.connection.settimeout(30)
+
+    def log_message(self, fmt, *args):
+        pass  # Do not put URLs or browser cookies into the system journal.
+
+    def headers_common(self):
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.send_header('X-Frame-Options', 'DENY')
+        self.send_header('Referrer-Policy', 'no-referrer')
+        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+
+    def reply(self, data, status=200, cookie=None):
+        raw = json.dumps(data, ensure_ascii=False).encode()
+        self.send_response(status)
+        self.headers_common()
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Content-Length', str(len(raw)))
+        if cookie is not None:
+            flag = '; Secure' if self.desk.config.get('tls_cert') else ''
+            self.send_header('Set-Cookie', f'zedair_session={cookie}; Path=/; HttpOnly; SameSite=Strict; Max-Age={DAYS*86400 if cookie else 0}{flag}')
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def read_json(self):
+        if self.headers.get('Content-Type', '').split(';')[0].strip() != 'application/json':
+            raise APIError('JSON requests are required', 415)
+        length = int(self.headers.get('Content-Length', '0'))
+        if length <= 0 or length > 12*1024*1024:
+            self.close_connection = True
+            raise APIError('Request is empty or too large', 413)
+        try:
+            data = json.loads(self.rfile.read(length))
+            if not isinstance(data, dict):
+                raise ValueError()
+            return data
+        except (ValueError, UnicodeError):
+            raise APIError('Invalid JSON')
+
+    def require_session(self, mutation=False):
+        session = self.desk.get_session(self.headers.get('Cookie'))
+        if not session:
+            raise APIError('Please sign in', 401)
+        if mutation and not hmac.compare_digest(self.headers.get('X-Zedair-CSRF', ''), session['csrf']):
+            raise APIError('Refresh this page before making changes', 403)
+        return session
+
+    def do_GET(self):
+        try:
+            self.get()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except (APIError, ValueError, OSError) as exc:
+            self.reply({'error': str(exc)}, getattr(exc, 'status', 400))
+        except Exception:
+            self.reply({'error': 'Unexpected server error; inspect the service journal'}, 500)
+
+    def get(self):
+        p = urllib.parse.urlsplit(self.path)
+        query = urllib.parse.parse_qs(p.query)
+        d = self.desk
+        if p.path in ('/', '/app.js', '/style.css', '/favicon.svg'):
+            file = HERE / 'static' / ('index.html' if p.path == '/' else p.path[1:])
+            raw = file.read_bytes()
+            self.send_response(200)
+            self.headers_common()
+            self.send_header('Content-Type', (mimetypes.guess_type(str(file))[0] or 'text/plain') + '; charset=utf-8')
+            self.send_header('Content-Length', str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+            return
+        if p.path == '/api/auth':
+            session = d.get_session(self.headers.get('Cookie'))
+            admin = d.rows('SELECT username FROM admin')
+            self.reply({'setup': not bool(admin), 'authenticated': bool(session),
+                        'username': admin[0]['username'] if session and admin else '',
+                        'csrf': session['csrf'] if session else ''})
+            return
+        self.require_session()
+        if p.path == '/api/state':
+            self.reply(d.snapshot())
+        elif p.path == '/api/folders':
+            relative = query.get('path', [''])[0]
+            path = d.destination(relative, reserve=False)
+            if not path.is_dir():
+                raise APIError('Folder not found', 404)
+            entries = []
+            for item in sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+                if item.is_symlink() or item.name.startswith('.'):
+                    continue
+                entries.append({'name': item.name, 'directory': item.is_dir(), 'size': item.stat().st_size if item.is_file() else 0})
+                if len(entries) >= 1000:
+                    break
+            self.reply({'path': relative, 'entries': entries, 'limit': 1000})
+        elif p.path == '/api/file':
+            file = d.destination(query.get('path', [''])[0], reserve=False)
+            if not file.is_file():
+                raise APIError('File not found', 404)
+            size = file.stat().st_size
+            start, end = 0, size-1
+            ranged = self.headers.get('Range')
+            if ranged:
+                m = re.fullmatch(r'bytes=(\d+)-(\d*)', ranged)
+                if not m:
+                    raise APIError('Unsupported byte range', 416)
+                start = int(m[1])
+                end = min(int(m[2]) if m[2] else size-1, size-1)
+                if start > end:
+                    raise APIError('Range outside file', 416)
+            with file.open('rb') as stream:
+                self.send_response(206 if ranged else 200)
+                self.headers_common()
+                self.send_header('Content-Type', 'application/octet-stream')
+                self.send_header('Content-Disposition', "attachment; filename*=UTF-8''" + urllib.parse.quote(file.name))
+                self.send_header('Accept-Ranges', 'bytes')
+                if ranged:
+                    self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
+                self.send_header('Content-Length', str(max(0, end-start+1)))
+                self.end_headers()
+                stream.seek(start)
+                remaining = end-start+1
+                while remaining > 0:
+                    block = stream.read(min(256*1024, remaining))
+                    if not block:
+                        break
+                    self.wfile.write(block)
+                    remaining -= len(block)
+        elif p.path == '/api/job':
+            job = d.job(query.get('id', [''])[0])
+            job.update(d.live.get(job['id'], {}))
+            self.reply(job)
+        elif p.path == '/api/torrent':
+            tid = query.get('id', [''])[0]
+            torrents = d.rpc.call('torrent-get', {'ids': [tid], 'fields': ['hashString', 'name', 'files', 'fileStats', 'downloadDir']}).get('torrents', [])
+            if not torrents or not d.owned_torrent(torrents[0]):
+                raise APIError('Torrent not found', 404)
+            self.reply(torrents[0])
+        else:
+            raise APIError('Not found', 404)
+
+    def do_POST(self):
+        try:
+            self.post()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        except (APIError, ValueError, OSError, KeyError, TypeError) as exc:
+            self.reply({'error': str(exc)}, getattr(exc, 'status', 400))
+        except Exception:
+            self.reply({'error': 'Unexpected server error; inspect the service journal'}, 500)
+
+    def post(self):
+        d = self.desk
+        path = urllib.parse.urlsplit(self.path).path
+        origin = self.headers.get('Origin')
+        if origin and urllib.parse.urlsplit(origin).netloc != self.headers.get('Host'):
+            self.close_connection = True
+            raise APIError('Cross-origin request refused', 403)
+        data = self.read_json()
+        if path in ('/api/setup', '/api/login'):
+            d.throttle(self.client_address[0])
+            username, password = data.get('username', ''), data.get('password', '')
+            if not isinstance(username, str) or not isinstance(password, str) or len(password) > 512:
+                raise APIError('Invalid credentials')
+            with d.lock:
+                admin = d.rows('SELECT * FROM admin')
+                if path.endswith('setup'):
+                    if admin:
+                        raise APIError('Administrator already exists', 409)
+                    supplied = data.get('setup_key', '')
+                    if not isinstance(supplied, str) or not hmac.compare_digest(digest(supplied), d.config.get('setup_key_hash', '')):
+                        raise APIError('Incorrect installation setup key', 403)
+                    if not re.fullmatch(r'[A-Za-z0-9_.-]{3,64}', username) or len(password) < 12:
+                        raise APIError('Use a 3–64 character username and a password of at least 12 characters')
+                    d.write('INSERT INTO admin VALUES (1,?,?)', (username, password_hash(password)))
+                elif not admin or username != admin[0]['username'] or not password_ok(password, admin[0]['password']):
+                    raise APIError('Incorrect username or password', 401)
+            token, csrf = d.new_session()
+            self.reply({'ok': True, 'csrf': csrf}, cookie=token)
+            return
+        session = self.require_session(mutation=True)
+        if path == '/api/logout':
+            d.write('DELETE FROM sessions WHERE token=?', (session['token'],))
+            self.reply({'ok': True}, cookie='')
+            return
+        if path == '/api/password':
+            admin = d.rows('SELECT * FROM admin')[0]
+            if not password_ok(data.get('old', ''), admin['password']):
+                raise APIError('Current password is incorrect', 403)
+            password = data.get('password', '')
+            if not isinstance(password, str) or not 12 <= len(password) <= 512:
+                raise APIError('Password must contain 12–512 characters')
+            d.write('UPDATE admin SET password=?', (password_hash(password),))
+            d.write('DELETE FROM sessions')
+            self.reply({'ok': True}, cookie='')
+            return
+        if path == '/api/jobs':
+            self.reply(d.add_jobs(data))
+            return
+        if path == '/api/job/action':
+            d.job_action(data.get('id'), data.get('action'))
+        elif path == '/api/history/clear':
+            d.write("DELETE FROM jobs WHERE status IN ('done','cancelled')")
+        elif path == '/api/folders':
+            d.destination(data.get('path', ''), create=True)
+        elif path == '/api/hold':
+            d.set_setting('hold', bool(data.get('hold')))
+        elif path == '/api/settings':
+            values = {}
+            for key, lo, hi in [('media_kib',0,100000), ('torrent_down_kib',0,100000),
+                                ('torrent_up_kib',1,100000), ('reserve_gib',1,100),
+                                ('playlist_limit',1,500), ('retry_count',0,8), ('seed_ratio',0,10)]:
+                value = float(data[key]) if key == 'seed_ratio' else int(data[key])
+                if not lo <= value <= hi:
+                    raise APIError(f'{key} must be between {lo} and {hi}')
+                values[key] = value
+            for key, value in values.items():
+                d.set_setting(key, value)
+            try:
+                d.apply_torrent_settings()
+            except APIError:
+                pass  # Saved settings are applied when the daemon returns.
+        elif path == '/api/cookies':
+            slot = data.get('slot')
+            if slot not in COOKIE_SLOTS:
+                raise APIError('Unknown cookie profile')
+            file = d.state / ('cookies-' + slot + '.txt')
+            if data.get('delete'):
+                file.unlink(missing_ok=True)
+            else:
+                content = data.get('content', '')
+                if not isinstance(content, str) or len(content.encode()) > 1024*1024:
+                    raise APIError('Cookie file must be smaller than 1 MiB')
+                if not content.startswith(('# Netscape HTTP Cookie File', '# HTTP Cookie File')):
+                    raise APIError('Upload a Netscape-format cookies.txt file')
+                temp = file.with_suffix('.new')
+                temp.write_text(content)
+                temp.chmod(0o600)
+                try:
+                    import http.cookiejar
+                    jar = http.cookiejar.MozillaCookieJar(str(temp))
+                    jar.load(ignore_discard=True, ignore_expires=True)
+                    if not list(jar):
+                        raise ValueError('No cookies found')
+                    os.replace(temp, file)
+                finally:
+                    temp.unlink(missing_ok=True)
+        elif path == '/api/torrents':
+            if d.get_setting('hold', False):
+                raise APIError('Resume the queue before adding a torrent', 409)
+            folder = d.destination(data.get('folder', ''), create=True)
+            arguments = {'download-dir': str(folder), 'paused': bool(data.get('paused')), 'peer-limit': 20}
+            if data.get('magnet'):
+                magnet = data['magnet']
+                if not isinstance(magnet, str) or len(magnet) > 16000 or not magnet.startswith('magnet:?') or 'xt=urn:btih:' not in magnet:
+                    raise APIError('Use a valid BitTorrent v1/hybrid magnet link')
+                arguments['filename'] = magnet
+            else:
+                meta = data.get('metainfo', '')
+                decoded = base64.b64decode(meta, validate=True)
+                if not 1 <= len(decoded) <= 8*1024*1024 or not decoded.startswith(b'd'):
+                    raise APIError('Invalid or oversized .torrent file')
+                arguments['metainfo'] = meta
+            self.reply(d.rpc.call('torrent-add', arguments))
+            return
+        elif path == '/api/torrent/action':
+            tid = data.get('id')
+            items = d.rpc.call('torrent-get', {'ids': [tid], 'fields': ['hashString','downloadDir','files']}).get('torrents', [])
+            if not items or not d.owned_torrent(items[0]):
+                raise APIError('Torrent not found', 404)
+            action = data.get('action')
+            if action == 'resume':
+                if d.get_setting('hold', False) or not d.storage()['ready']:
+                    raise APIError('Resume the queue and connect the SSD first', 409)
+                d.rpc.call('torrent-start', {'ids': [tid]})
+            elif action == 'pause':
+                d.rpc.call('torrent-stop', {'ids': [tid]})
+                d.set_setting('blocked_torrents', [x for x in d.get_setting('blocked_torrents', []) if x != tid])
+            elif action == 'remove':
+                d.rpc.call('torrent-remove', {'ids': [tid], 'delete-local-data': False})
+                d.set_setting('blocked_torrents', [x for x in d.get_setting('blocked_torrents', []) if x != tid])
+            elif action == 'files':
+                count = len(items[0].get('files', []))
+                wanted = data.get('wanted', [])
+                if not count:
+                    raise APIError('Metadata is not available yet. Start the torrent briefly, then reopen Files.')
+                if not isinstance(wanted, list) or any(type(i) is not int or i < 0 or i >= count for i in wanted):
+                    raise APIError('Invalid file selection')
+                unwanted = [i for i in range(count) if i not in wanted]
+                args = {'ids': [tid]}
+                # Empty lists mean ALL in Transmission, so omit them instead.
+                if wanted:
+                    args['files-wanted'] = wanted
+                if unwanted:
+                    args['files-unwanted'] = unwanted
+                d.rpc.call('torrent-set', args)
+            elif action == 'verify':
+                if not d.storage()['ready'] or d.get_setting('hold', False):
+                    raise APIError('Connect the SSD and resume the queue first', 409)
+                d.rpc.call('torrent-verify', {'ids': [tid]})
+            else:
+                raise APIError('Unknown torrent action')
+        else:
+            raise APIError('Not found', 404)
+        self.reply({'ok': True})
+
+
+class Server(ThreadingHTTPServer):
+    daemon_threads = True
+    request_queue_size = 32
+
+    def __init__(self, *args, **kwargs):
+        self.slots = threading.BoundedSemaphore(16)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, address):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, address)
+        except Exception:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, address):
+        try:
+            super().process_request_thread(request, address)
+        finally:
+            self.slots.release()
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config', default='/etc/zedair/config.json')
+    parser.add_argument('--port', type=int)
+    parser.add_argument('--host')
+    parser.add_argument('--strictPort', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--demo', action='store_true', help='Isolated preview; no download workers')
+    args = parser.parse_args()
+    config = json.loads(Path(args.config).read_text())
+    os.umask(0o077)
+    desk = Desk(config)
+    server = Server((args.host or config.get('host', '0.0.0.0'), args.port or config.get('port', 8787)), Handler)
+    server.desk = desk
+    if config.get('tls_cert'):
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(config['tls_cert'], config['tls_key'])
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+    if not args.demo:
+        desk.start()
+    def shutdown(*_):
+        threading.Thread(target=server.shutdown, daemon=True).start()
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    print(f'Zedair listening on port {server.server_port}', flush=True)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+        desk.close()
+
+
+if __name__ == '__main__':
+    main()
