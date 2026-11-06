@@ -27,7 +27,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from media import build_command, engine_for, validate_url
 import platforms
-from publishing import publish
+import profiles
+from systemstats import SystemStats
+from publishing import publish, MEDIA
 from speedcheck import SpeedTest, history_csv
 
 HERE = Path(__file__).resolve().parent
@@ -156,7 +158,7 @@ class Desk:
                 last_error TEXT DEFAULT '', position REAL);
         ''')
         columns = {r[1] for r in self.db.execute('PRAGMA table_info(jobs)')}
-        for key, definition in {'layout':'INTEGER DEFAULT 1', 'phase':"TEXT DEFAULT 'download'", 'error_kind':"TEXT DEFAULT ''"}.items():
+        for key, definition in {'container':"TEXT DEFAULT 'auto'", 'layout':'INTEGER DEFAULT 1', 'phase':"TEXT DEFAULT 'download'", 'error_kind':"TEXT DEFAULT ''", 'profile_mode':"TEXT DEFAULT ''", 'profile_username':"TEXT DEFAULT ''", 'scroll_limit':'INTEGER DEFAULT 2000', 'items':'INTEGER DEFAULT 0'}.items():
             if key not in columns:
                 self.db.execute('ALTER TABLE jobs ADD COLUMN '+key+' '+definition)
         self.db.execute('CREATE TABLE IF NOT EXISTS published(job TEXT, source TEXT, target TEXT, signature TEXT, complete INTEGER, PRIMARY KEY(job,source))')
@@ -173,6 +175,7 @@ class Desk:
         self.rpc = Transmission(config)
         self.threads = []
         self.speedtest = SpeedTest(self)
+        self.systemstats = SystemStats()
 
     def rows(self, sql, args=()):
         with self.lock:
@@ -296,6 +299,9 @@ class Desk:
         quality = data.get('quality', 'platform')
         if quality not in (*QUALITY, 'platform'):
             raise APIError('Unknown quality preset')
+        container = data.get('container','platform')
+        if container not in ('platform','auto','mp4'):
+            raise APIError('Choose automatic format or MP4 only')
         cookie = data.get('cookie_profile', 'auto')
         if cookie not in (*COOKIE_SLOTS, 'auto', 'none'):
             raise APIError('Unknown cookie profile')
@@ -331,9 +337,33 @@ class Desk:
                                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,2)''',
                     (jid, url, kind, folder, name or urllib.parse.urlsplit(url).hostname, subdir, selected_quality,
                      int(bool(data.get('playlist') or (quality=='platform' and prefs.get('playlist')))), int(bool(data.get('subtitles') or (quality=='platform' and prefs.get('subtitles')))), cookie, 'queued', now(), now(), now()))
+                selected_container=prefs.get('container','auto') if container=='platform' else container
+                self.db.execute('UPDATE jobs SET container=? WHERE id=?',(selected_container,jid))
                 result.append(jid)
             self.db.commit()
         return {'ids': result, 'skipped': len(urls)-len(result)}
+
+    def add_profile(self, data):
+        platform=data.get('platform')
+        username,url=profiles.profile_target(platform,data.get('profile',''))
+        mode=data.get('mode','everything')
+        if mode not in profiles.MODES:raise APIError('Choose posts, reels or everything')
+        limit=data.get('scroll_limit',2000)
+        if type(limit) is not int or not 10<=limit<=10000:raise APIError('Scroll limit must be between 10 and 10,000')
+        if not self.platform_settings()[platform]['enabled']:raise APIError('Enable this platform in Settings first')
+        if not platforms.cookie_status(self.state,platform)['usable']:raise APIError('Add a usable '+platform+' session in Settings → Platforms first')
+        if platform=='facebook' and not profiles.browser_ready():raise APIError('Install the optional collector on the laptop: sudo bash /opt/zedair/install-facebook.sh')
+        folder=safe_relative(data.get('folder',''))
+        subdir=safe_relative(('Instagram' if platform=='instagram' else 'Facebook')+'/'+username)
+        with self.lock:
+            if self.db.execute("SELECT id FROM jobs WHERE url=? AND profile_mode=? AND status IN ('queued','running','retry','paused','blocked')",(url,mode)).fetchone():
+                raise APIError('This profile and selection are already in the queue')
+            if self.db.execute('SELECT count(*) FROM jobs').fetchone()[0]>=1000:raise APIError('History is full. Clear finished jobs first.')
+            jid=secrets.token_hex(6)
+            self.db.execute("""INSERT INTO jobs(id,url,kind,folder,name,subdir,quality,playlist,subtitles,cookie_profile,status,created,updated,position,layout,profile_mode,profile_username,scroll_limit)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,2,?,?,?)""",(jid,url,engine_for(url),folder,platform.title()+' / '+username,subdir,'best',0,0,platform,'queued',now(),now(),now(),mode,username,limit))
+            self.db.commit()
+        return {'id':jid,'destination':'/'.join(x for x in ('Zedair',folder,subdir) if x)}
 
     def cookie_for(self, job):
         slot = job['cookie_profile']
@@ -389,7 +419,13 @@ class Desk:
             if not line:
                 continue
             live = self.live.setdefault(jid, {})
-            if line.startswith('ZEDPROG '):
+            if line.startswith('ZEDITEM '):
+                self.write('UPDATE jobs SET items=items+1 WHERE id=?',(jid,))
+                live['detail']='Profile media saved to staging; continuing…'
+            elif line.startswith('ZEDPROFILE '):
+                live['detail']=line[11:][:250]
+                live['log']=live['detail']
+            elif line.startswith('ZEDPROG '):
                 try:
                     info = json.loads(line[8:])
                     done = info.get('downloaded_bytes') or 0
@@ -436,8 +472,8 @@ class Desk:
             settings = self.settings()
             settings['platforms'] = self.platform_settings()
             cookie = self.cookie_for(job)
-            if key=='instagram' and cookie:
-                instagram_session = platforms.InstagramSession(cookie)
+            if key in ('instagram','facebook') and cookie:
+                instagram_session = platforms.CookieSession(cookie,key)
                 cookie = instagram_session.path
             args = build_command(job, dest, cookie, settings, self.state)
             env = dict(os.environ, TMPDIR=str(dest), XDG_CACHE_HOME=str(dest), PYTHONUNBUFFERED='1')
@@ -483,6 +519,10 @@ class Desk:
                 if job['layout']==2:
                     self.clean_metadata(dest)
             else:
+                if job.get('profile_mode') and job['layout']==2:
+                    # Keep the original authentication/rate-limit error if nothing was downloaded.
+                    if any(p.is_file() and p.suffix.lower() in MEDIA for p in dest.iterdir()) or self.rows('SELECT source FROM published WHERE job=?',(jid,)):
+                        publish(self,job,dest,output)
                 raise APIError(live.get('log', '')[-8000:] or f'Downloader exited with code {self.process.returncode}')
         except Exception as exc:
             fresh = self.job(jid)
@@ -501,6 +541,7 @@ class Desk:
             self.process = None
             self.live.pop(jid, None)
             (self.state / ('gallery-' + jid + '.json')).unlink(missing_ok=True)
+            (self.state / ('profile-' + jid + '.json')).unlink(missing_ok=True)
 
     def media_loop(self):
         while not self.stop.wait(1):
@@ -583,7 +624,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'settings': self.settings(), 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'uptime': int(now()-self.started), 'version': '1.2.0', 'session_days': DAYS}
+                'uptime': int(now()-self.started), 'version': '1.3.0', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def get_session(self, raw):
         jar = http.cookies.SimpleCookie()
@@ -711,20 +752,30 @@ class Handler(BaseHTTPRequestHandler):
         self.require_session()
         if p.path == '/api/state':
             self.reply(d.snapshot())
+        elif p.path == '/api/system':
+            storage=d.storage(reserve=False)
+            self.reply(d.systemstats.snapshot(d.root if storage['ready'] else None))
         elif p.path == '/api/folders':
             relative = query.get('path', [''])[0]
             path = d.destination(relative, reserve=False)
             if not path.is_dir():
                 raise APIError('Folder not found', 404)
-            entries = []
+            try:
+                offset=int(query.get('offset',['0'])[0]);limit=int(query.get('limit',['1000'])[0])
+                if offset<0 or not 1<=limit<=1000:raise ValueError()
+            except ValueError:raise APIError('Invalid file page')
+            entries = [];total=0
             reserved = {d.root/r['folder']/r['subdir']/r['target'] for r in d.rows('SELECT p.target,j.folder,j.subdir FROM published p JOIN jobs j ON p.job=j.id WHERE p.complete=0')}
             for item in sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-                if item.is_symlink() or item.name.startswith('.') or item in reserved:
-                    continue
-                entries.append({'name': item.name, 'directory': item.is_dir(), 'size': item.stat().st_size if item.is_file() else 0, 'preview': preview_type(item.suffix), 'stamp': str(item.stat().st_size)+':'+str(item.stat().st_mtime_ns)})
-                if len(entries) >= 1000:
-                    break
-            self.reply({'path': relative, 'entries': entries, 'limit': 1000})
+                if item.is_symlink() or item.name.startswith('.') or item in reserved:continue
+                total+=1
+                if total<=offset or len(entries)>=limit:continue
+                try:
+                    stat=item.stat();directory=item.is_dir()
+                    entries.append({'name': item.name, 'directory': directory, 'size': stat.st_size if not directory else 0,
+                        'preview': '' if directory else preview_type(item.suffix), 'stamp': str(stat.st_size)+':'+str(stat.st_mtime_ns)})
+                except FileNotFoundError:continue
+            self.reply({'path':relative,'entries':entries,'limit':limit,'offset':offset,'total':total,'more':offset+len(entries)<total})
         elif p.path == '/api/speedtest/history.csv':
             raw=history_csv(d.speedtest.history())
             self.send_response(200);self.headers_common()
@@ -833,10 +884,17 @@ class Handler(BaseHTTPRequestHandler):
             d.write('DELETE FROM sessions')
             self.reply({'ok': True}, cookie='')
             return
+        if path == '/api/profiles':
+            self.reply(d.add_profile(data));return
         if path == '/api/jobs':
             self.reply(d.add_jobs(data))
             return
-        if path == '/api/job/action':
+        if path == '/api/profiles/retry':
+            job=d.job(data.get('id'));limit=data.get('scroll_limit')
+            if not job.get('profile_mode') or job['status'] not in ('paused','error','blocked'):raise APIError('This profile cannot be retried now')
+            if type(limit) is not int or not 10<=limit<=10000:raise APIError('Scroll limit must be between 10 and 10,000')
+            d.update_job(job['id'],scroll_limit=limit);d.job_action(job['id'],'retry')
+        elif path == '/api/job/action':
             d.job_action(data.get('id'), data.get('action'))
         elif path == '/api/history/clear':
             d.write("DELETE FROM jobs WHERE status IN ('done','cancelled')")

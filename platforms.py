@@ -16,21 +16,23 @@ COOKIE_LOCK = threading.RLock()
 
 QUALITY = ('best', '2160', '1080', '720', '480', 'audio')
 DEFAULTS = {
-    'youtube': {'enabled': True, 'folder': 'YouTube', 'quality': 'best', 'subtitles': False, 'playlist': False, 'playlist_limit': 100},
+    'youtube': {'enabled': True, 'folder': 'YouTube', 'quality': 'best', 'container': 'auto', 'subtitles': False, 'playlist': False, 'playlist_limit': 100},
     'instagram': {'enabled': True, 'folder': 'Instagram', 'require_cookies': True, 'warn_images': True, 'videos': 'dash', 'sleep_request': 8},
-    'x': {'enabled': True, 'folder': 'X', 'quality': 'best', 'api': 'graphql'},
+    'facebook': {'enabled': True, 'folder': 'Facebook', 'quality': 'best', 'container': 'auto', 'subtitles': False},
+    'reddit': {'enabled': True, 'folder': 'Reddit', 'quality': 'best', 'container': 'auto', 'subtitles': False},
+    'x': {'enabled': True, 'folder': 'X', 'quality': 'best', 'container': 'auto', 'api': 'graphql'},
     'threads': {'enabled': True, 'folder': 'Threads'},
-    'other': {'enabled': True, 'folder': '', 'quality': 'best', 'subtitles': False},
+    'other': {'enabled': True, 'folder': '', 'quality': 'best', 'container': 'auto', 'subtitles': False},
 }
-DOMAINS = {'instagram': ('instagram.com',), 'youtube': ('youtube.com', 'google.com'),
+DOMAINS = {'facebook': ('facebook.com',), 'reddit': ('reddit.com',), 'instagram': ('instagram.com',), 'youtube': ('youtube.com', 'google.com'),
            'x': ('x.com', 'twitter.com'), 'threads': ('threads.com', 'threads.net', 'instagram.com')}
-RAW_FIELDS = {'instagram': ('sessionid', 'csrftoken', 'ds_user_id'), 'x': ('auth_token', 'ct0')}
+RAW_FIELDS = {'facebook': ('c_user','xs','datr','fr'), 'instagram': ('sessionid', 'csrftoken', 'ds_user_id'), 'x': ('auth_token', 'ct0')}
 
 
 def platform_for(url):
     host = (urlsplit(url).hostname or '').lower().removeprefix('www.')
     for key, domains in [('youtube',('youtube.com','youtu.be')),('instagram',('instagram.com',)),
-                         ('x',('x.com','twitter.com')),('threads',('threads.net','threads.com'))]:
+                         ('facebook',('facebook.com','fb.watch')),('reddit',('reddit.com','redd.it')),('x',('x.com','twitter.com')),('threads',('threads.net','threads.com'))]:
         if any(host == d or host.endswith('.'+d) for d in domains):
             return key
     return 'other'
@@ -65,6 +67,8 @@ def validate_preferences(key, values, safe_path):
         elif name == 'quality':
             if value not in QUALITY:
                 raise ValueError('Unknown quality preset')
+        elif name == 'container' and value not in ('auto','mp4'):
+            raise ValueError('Choose automatic format or MP4 only')
         elif name == 'api':
             allowed = ('auto','rest','graphql') if key == 'instagram' else ('graphql','legacy','syndication')
             if value not in allowed:
@@ -111,6 +115,8 @@ def cookie_status(state, slot):
                       usable=bool(valid), updated=path.stat().st_mtime)
         if slot == 'instagram':
             result['usable'] = any(c.name == 'sessionid' and c.value for c in valid)
+        elif slot == 'facebook':
+            result['usable'] = all(any(c.name == n and c.value for c in valid) for n in ('c_user','xs'))
         elif slot == 'x':
             result['usable'] = all(any(c.name == n and c.value for c in valid) for n in ('auth_token','ct0'))
     except Exception:
@@ -131,7 +137,7 @@ def _save_cookies(state, slot, data):
         return
     if data.get('fields') is not None:
         if slot not in RAW_FIELDS or not isinstance(data['fields'], dict):
-            raise ValueError('Manual session fields are available for Instagram and X')
+            raise ValueError('Manual session fields are available for Instagram, Facebook and X')
         fields = {}
         for name in RAW_FIELDS[slot]:
             value = str(data['fields'].get(name, '')).strip()
@@ -141,7 +147,7 @@ def _save_cookies(state, slot, data):
                 raise ValueError('Paste only the cookie value, without spaces, line breaks or semicolons')
             if value:
                 fields[name] = value
-        required = ('sessionid',) if slot=='instagram' else ('auth_token','ct0')
+        required = {'instagram':('sessionid',),'facebook':('c_user','xs'),'x':('auth_token','ct0')}[slot]
         if any(not fields.get(k) for k in required):
             raise ValueError('Required session fields: '+', '.join(required))
         # Empty expiry is the Netscape representation of a session cookie (not an expired epoch-zero cookie).
@@ -193,9 +199,10 @@ def cookie_revision(path):
         return None
 
 
-class InstagramSession:
+class CookieSession:
     """Private per-job jar; publish server-refreshed cookies without overwriting a GUI edit."""
-    def __init__(self, source):
+    def __init__(self, source, slot='instagram'):
+        self.slot = slot
         self.source = Path(source)
         self.path = None
         with COOKIE_LOCK:
@@ -219,10 +226,11 @@ class InstagramSession:
             return False
         for cookie in list(jar):
             domain = cookie.domain.lstrip('.').lower()
-            if not (domain == 'instagram.com' or domain.endswith('.instagram.com')):
+            if not any(domain == d or domain.endswith('.'+d) for d in DOMAINS.get(self.slot,())):
                 jar.clear(cookie.domain, cookie.path, cookie.name)
-        if not any(c.name == 'sessionid' and c.value and
-                   (c.expires is None or c.expires > time.time()) for c in jar):
+        required={'instagram':('sessionid',),'facebook':('c_user','xs')}.get(self.slot,())
+        if any(not any(c.name == name and c.value and
+                   (c.expires is None or c.expires > time.time()) for c in jar) for name in required) or not list(jar):
             return False
         with COOKIE_LOCK:
             # Removal or replacement in Settings wins over an older running download.
@@ -241,6 +249,8 @@ class InstagramSession:
             self.path = None
 
 
+InstagramSession = CookieSession
+
 def redact(text, state):
     text = str(text)
     for path in Path(state).glob('cookies-*.txt'):
@@ -250,7 +260,7 @@ def redact(text, state):
                 text = text.replace(value, '[redacted]')
         except Exception:
             pass
-    text = re.sub(r'(?i)((?:sessionid|auth_token|csrftoken|ct0|authorization)[\s\"\x27:=]+)[^\s;,\"\x27]+', r'\1[redacted]', text)
+    text = re.sub(r'(?i)((?:sessionid|auth_token|csrftoken|ct0|c_user|xs|datr|fr|authorization)[\s\"\x27:=]+)[^\s;,\"\x27]+', r'\1[redacted]', text)
     return text
 
 
@@ -265,9 +275,10 @@ def failure_kind(message):
                               'cookie has expired','cookies have expired','login_required','invalid session','sessionid is required',
                               'http error 401','401 unauthorized')):
         return 'auth', 'Authentication was not accepted. Check Details and Settings → Platforms. A rejected request does not prove the browser session expired; replace cookies only if the session is missing, expired or revoked.'
-    if any(s in low for s in ('unsupported url','no video could be found','no video formats found',
+    if any(s in low for s in ('requested format is not available','unsupported url','no video could be found','no video formats found',
                               'does not contain a video','this tweet is unavailable','404 not found')):
         return 'unsupported', 'No accessible supported media. Check the link and platform availability.'
-    if any(s in low for s in ('403 forbidden','http error 403','no downloadable media','threads did not expose media','reserved output file changed','published output file is missing')):
+    if any(s in low for s in ('403 forbidden','http error 403','no downloadable media','threads did not expose media','reserved output file changed','published output file is missing',
+                              'configured scroll limit','no accessible media found')):
         return 'access', 'Website access or output needs attention. Check the error details before retrying.'
     return 'transient', 'Automatic retry scheduled'

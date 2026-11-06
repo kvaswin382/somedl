@@ -41,6 +41,7 @@ def publish(desk, job, stage, destination):
     for row in desk.rows('SELECT * FROM published WHERE job=? AND complete=0',(jid,)):
         finish(desk,row,stage,destination)
     candidates=sorted(p for p in stage.iterdir() if p.is_file() and not p.is_symlink() and p.suffix.lower() in MEDIA)
+    occupied={p.name.casefold() for p in destination.iterdir()}
     for source in candidates:
         if desk.rows('SELECT source FROM published WHERE job=? AND source=?',(jid,source.name)):
             continue
@@ -50,11 +51,12 @@ def publish(desk, job, stage, destination):
         for index in range(100000):
             target=destination/(stem+(f' ({index})' if index else '')+source.suffix.lower())
             # Explicit casefold also protects Windows use when tests run on case-sensitive Linux.
-            if any(p.name.casefold()==target.name.casefold() for p in destination.iterdir()):
+            if target.name.casefold() in occupied:
                 continue
             try:
                 with target.open('xb') as out:
                     out.write(marker); out.flush(); os.fsync(out.fileno())
+                occupied.add(target.name.casefold())
                 break
             except FileExistsError:
                 continue

@@ -1,4 +1,4 @@
-# Zedair Download Desk — v1.2
+# Zedair Download Desk — v1.3
 
 A private web downloader for your Ubuntu 24.04 laptop. Open it from your phone, tablet or computer on the same home network. The laptop does the downloading and saves files on the USB SSD.
 
@@ -6,7 +6,7 @@ Built for your x86_64 Zedair with 2 GB RAM, 32 GB eMMC and an existing exFAT SSD
 
 ## Already installed? Update from GitHub
 
-First copy the contents of this updated package into your GitHub project, commit and push them. Include the new Python modules, `upgrade.py`, `upgrade.sh`, `static/`, README and tests. Keep `server.py` and `upgrade.sh` together at the repository root. Do not commit cookies, private configuration, databases or backups.
+First copy the contents of this updated package into your GitHub project, commit and push them. Copy every supplied source file, including `profiles.py`, `facebook_profile.py`, `systemstats.py`, the optional installer/setup scripts, `upgrade.py`, `upgrade.sh`, `static/`, README and tests. Keep `server.py` and `upgrade.sh` together at the repository root. Do not commit cookies, private configuration, databases or backups.
 
 On the **Ubuntu laptop**, open a terminal or SSH session. Replace the first path with your actual Git checkout:
 
@@ -35,7 +35,7 @@ The upgrade:
 
 It **does not format, move or delete your SSD files**, change `/etc/fstab`, or reinstall Python engine versions. Existing login sessions remain valid. If the SSD is disconnected, the web interface can start while the torrent service waits for the drive.
 
-For the new speed-test engine, run these **once after upgrading to v1.2** (the same steps apply to a first installation):
+For the new speed-test engine, run these **once if the Ookla engine is not installed yet** (the same steps apply to a first installation):
 
 ```bash
 sudo bash /opt/zedair/install-speedtest.sh
@@ -50,7 +50,7 @@ After success:
 systemctl status zedair zedair-transmission --no-pager
 ```
 
-Refresh the page with **Ctrl+F5** on Windows. On your phone, reload the page. The footer should show **v1.2.0**. Existing jobs keep their old folders so they can resume; newly added jobs use platform folders. To use the new layout for a failed old job, cancel it and add the URL again. Existing files are not relocated automatically.
+Refresh the page with **Ctrl+F5** on Windows. On your phone, reload the page. The footer should show **v1.3.0**. Existing jobs keep their old folders so they can resume; newly added jobs use platform folders. To use the new layout for a failed old job, cancel it and add the URL again. Existing files are not relocated automatically.
 
 ### First time using Git on this laptop
 
@@ -88,15 +88,17 @@ Backups contain private account sessions. Keep them private and keep at least th
 | Source | Downloads | Default destination |
 | --- | --- | --- |
 | YouTube / youtu.be | Videos, audio-only, optional playlists and subtitles | `Zedair/YouTube` |
-| Instagram | Single posts, all carousel items, photos, reels and videos | `Zedair/Instagram` |
+| Instagram | Direct posts/carousels/reels; profile Posts / Reels / Everything in Tools | `Zedair/Instagram` or `Zedair/Instagram/<username>` |
+| Facebook | Direct video/reel links; experimental profile collector in Tools | `Zedair/Facebook` or `Zedair/Facebook/<username>` |
+| Reddit | Video posts and supported direct Reddit video links | `Zedair/Reddit` |
 | X.com / Twitter | Video posts and animated GIFs via a direct status URL | `Zedair/X` |
 | Threads | Experimental photos/videos from an exact public post | `Zedair/Threads` |
 | Other supported video sites | yt-dlp-supported URLs, including supported adult sites | `Zedair/website-domain` |
 | BitTorrent | v1/hybrid magnets and `.torrent` files | `Zedair/Torrents` by default |
 
-This is a downloader, not a website search directory. Availability depends on the source website and your session. DRM-protected media, Instagram profile-wide crawling and X photo/feed crawling are not included. Threads support is experimental: login walls and changes to embedded page data can prevent downloads. It will not substitute profile pictures for missing post media.
+This is a downloader, not a website search directory. Availability depends on the source website and your session. DRM-protected media and X photo/feed crawling are not included. Profile collection only includes media the website exposes to your session; Facebook collection is experimental and cannot guarantee a complete archive. Threads support is experimental: login walls and changes to embedded page data can prevent downloads. It will not substitute profile pictures for missing post media.
 
-The interface includes a charcoal sidebar, light/dark themes, platform settings, a persistent background queue, image/video previews, file browsing/deletion and an **Ookla speed test run on the laptop**, with saved reports. Closing your browser does not stop work. There is one media job and one active torrent download at a time to keep resource use modest.
+The interface includes a charcoal sidebar, light/dark themes, platform settings, a persistent background queue, image/video previews, list/grid file browsing, deletion, server CPU/RAM/storage gauges, and an **Ookla speed test run on the laptop**, with saved reports. Closing your browser does not stop work. There is one media job and one active torrent download at a time to keep resource use modest.
 
 ## First installation
 
@@ -173,12 +175,21 @@ That key works only before an administrator exists. Browser logins last **35 day
 1. Open **Downloads → Add downloads**.
 2. Paste one direct URL per line, up to 30. For X, use `https://x.com/USERNAME/status/POST_ID`; old `twitter.com` links also work. Instagram uses a `/p/`, `/reel/` or `/tv/` link.
 3. Leave the destination empty for `Zedair`, or click **Browse** to choose/create a subfolder.
-4. Keep **Use platform defaults**, or choose a video quality/audio preset. Quality options are ceilings, not promises that a source offers that resolution.
+4. Choose **Best available** for the highest available quality without a resolution cap, or an explicit ceiling such as 1080p. Select **Video file format → MP4 only** to prevent WebM output, or keep the platform default. A source may not offer your preferred format/resolution.
 5. Optionally add a queue display label. This label does not rename the video file.
 6. Leave **Website cookies** on automatic selection unless you deliberately need another profile.
 7. Add to the queue. You may close the browser.
 
 With destination `Travel`, a YouTube download lands in `Zedair/Travel/YouTube`. The platform folder is always appended. Change its name in **Settings → Platforms & cookies** if wanted. For unknown video sites, the hostname is used unless you set a shared Other websites folder.
+
+
+### MP4 only and highest quality
+
+In **Add downloads**, choose **Video quality → Best available** and **Video file format → MP4 only**. To make this permanent for new YouTube jobs, open **Settings → Platforms & cookies → YouTube**, set the quality and default format, then save.
+
+MP4-only requests the best MP4 video stream and M4A audio, or the best combined MP4 if separate streams are unavailable. FFmpeg merges/remuxes them without re-encoding. There is no 1080p cap and no fallback to WebM. If the website offers only WebM, the job needs attention instead of silently ignoring your choice. “Best” means best within your chosen format; a website can offer a higher resolution only in another format. MP4 is a container, not a guarantee of H.264: high-resolution MP4 can use AV1/HEVC and may need a compatible player.
+
+**Automatic · any format** permits the engine's best format, including WebM. Audio-only keeps its audio format. Instagram/Threads image and gallery handling is unchanged by this video-engine option. Existing queue jobs retain their format; cancel and re-add a pending job to change it. Downloaded WebM files are not converted retroactively.
 
 ### Filenames and duplicates
 
@@ -202,13 +213,107 @@ Temporary failures use bounded retries: one initial attempt plus three retries b
 
 Video progress usually measures the current stream, not a whole playlist. Merging can continue after 100%. Instagram shows engine activity, but not every gallery exposes a dependable percentage or ETA. Downloading the best quality does not involve video re-encoding; FFmpeg can merge separate audio/video streams.
 
+
+## Tools: collect profiles
+
+### Instagram
+
+1. Save your Instagram cookies in **Settings → Platforms & cookies → Instagram** (instructions below).
+2. Open **Tools → Instagram**. Enter `@username`, `username`, or its profile URL.
+3. Select **Posts** (images, carousel items and non-reel feed videos), **Reels**, or **Everything** (both).
+4. Leave the optional parent folder empty for `Zedair/Instagram/<username>`, or enter e.g. `Collections` for `Zedair/Collections/Instagram/<username>`.
+5. Click **Queue profile**. Watch **Profile jobs** or the main download queue. **Details** has the engine log; the folder button opens its saved files.
+
+Gallery-dl follows the profile's pagination until the accessible feed ends; there is no fixed post-count cap in this tool. Carousel media items are saved separately. Everything uses both feeds with a per-job media-ID archive to avoid downloading the same item twice. Stories, highlights and tagged feeds are not included. A platform restriction or unavailable page can still prevent a complete collection.
+
+Profile usernames are normalized to lowercase. Tools uses the fixed `Instagram/<username>` and `Facebook/<username>` layout; the custom folder preference for individual downloads does not replace these profile folders.
+
+### Facebook — optional, experimental
+
+Direct Facebook video/reel downloads work through the main downloader and do **not** need this installation. For whole profiles, run these commands **once on Ubuntu after the app upgrade**:
+
+```bash
+df -h /
+sudo bash /opt/zedair/install-facebook.sh
+sudo systemctl restart zedair
+```
+
+The installer requires at least 1.5 GiB free on the system disk and installs pinned Playwright 1.64.1, its Chromium headless shell and Ubuntu browser dependencies. Keep additional free space for normal operation. It does not run a browser permanently. Existing app upgrades preserve this optional installation.
+
+1. In Firefox, sign into Facebook and open the intended profile/page normally.
+2. Use **Shift+F9 → Cookies → facebook.com**. Copy **c_user** and **xs** values; optionally also **datr** and **fr**.
+3. In **Settings → Platforms & cookies → Facebook**, save those fields, or import the site's Netscape cookies.txt file.
+4. Open **Tools → Facebook**. Enter a profile/page username, numeric profile ID, or `https://www.facebook.com/profile.php?id=NUMBER` URL. Groups and arbitrary feed URLs are not accepted.
+5. Select **Posts**, **Reels**, or **Everything** and queue the job. Files go under `Facebook/<username-or-id>`.
+
+Posts visits the accessible posts/photos views and expands media links; Reels visits the reels view; Everything visits both. Photos use the largest exposed image matched to the specific photo ID, not a profile-avatar fallback. It scrolls with a delay, records discovered links on the SSD, and stops after repeated scrolls yield no new links. The **scroll limit** is a guard per view, default 2,000. Reaching it reports an incomplete attempt; increase it in the job's Tools card and retry if appropriate. Facebook may stop returning items earlier, change layouts or expose only part of a profile. A finished job means the collected accessible links were processed, **not proof of every historical post being archived**.
+
+The browser uses the stored session and saves response-cookie changes after a successful job. It stops at detected login/verification requirements; it does not solve challenges. On your 2 GB laptop, large Facebook collections may be slow or reach a memory limit. The browser closes before video downloads, but torrents can still consume memory; pause torrents if needed. Do not disable Chromium's sandbox to work around a launch failure. Check the job log and Ubuntu's sandbox/AppArmor diagnostics instead.
+
+### Pause, retry and long collections
+
+A whole profile occupies one background media job. Its count grows with completed media; a percentage is not shown because the full total is unknown. Completed files become visible when an attempt finishes or stops with a downloadable partial result. A large collection can therefore take hours before publishing its files. Pause/retry preserves working files and the archive; a resumed discovery pass may start from the beginning, skipping items already recorded. Keep the same job to resume it.
+
+A **new** profile job starts a separate collection and can download the same items again, using numbered names on collisions. Deleting a published file does not erase its ID from an unfinished job's resume archive. Re-add the individual post or start a new collection to fetch it again. Cancelling retains partials; remove them only when you no longer need recovery.
+
+Authentication/rate-limit/verification failures need attention rather than repeated automatic attempts. Inspect Details, resolve the cause, then retry. No live Facebook or Instagram account was available during development; the collection logic is tested with fixtures, and real-account access must be checked on your laptop.
+
+## Open the downloader at http://zed.local
+
+After installing/upgrading, run **once on Ubuntu**:
+
+```bash
+sudo bash /opt/zedair/setup-local.sh
+```
+
+Then open **http://zed.local** on your phone/computer. No port is needed. Sign in once at the new hostname; browser login cookies for an IP address do not transfer to a different hostname. Your account, queue and saved platform sessions stay on the server. The old IP:8787 address remains usable.
+
+This installs Avahi for multicast-DNS and a small systemd socket proxy from port 80 to the existing app port. It advertises `zed.local` without changing the Ubuntu machine hostname, and refuses an occupied port 80, a detected conflicting name, or an existing unmanaged proxy unit. It expects the app's normal HTTP configuration and refuses a TLS-enabled backend. It does not change the router or firewall and does not publish the service to the internet.
+
+**Device support matters:** `.local` works when the client supports mDNS and the network allows multicast discovery. Phones on cellular data, guest networks, isolated Wi-Fi clients or a different VLAN may not reach it. It cannot be guaranteed on every device/router automatically. Test:
+
+```bash
+systemctl status avahi-daemon zedair-local.socket --no-pager
+avahi-resolve-host-name -4 zed.local
+curl -I http://zed.local
+```
+
+If the IP:8787 URL works but `zed.local` does not, check mDNS/client support and guest isolation. Reserve the laptop's IP in the router. For clients that cannot use mDNS, a router with local hostname/DNS support can provide a local address; configuration depends on that router. Do not enter a public DNS record for this private service.
+
+If UFW is active, find your real LAN subnet using `ip -4 route`. Replace this **example** subnet with yours:
+
+```bash
+sudo ufw allow from 192.168.1.0/24 to any port 80 proto tcp comment 'Zedair home LAN web'
+sudo ufw allow from 192.168.1.0/24 to any port 5353 proto udp comment 'Zedair home LAN mDNS'
+```
+
+Do not enable UFW over SSH without preserving SSH access. No WAN port forwarding is needed. HTTP does not encrypt credentials; the HTTPS section explains the separate TLS option.
+
+To undo only this optional address setup:
+
+```bash
+sudo systemctl disable --now zedair-local.socket
+sudo systemctl stop zedair-local.service
+sudo rm -f /etc/zedair/local-address-enabled
+```
+
+Your IP:8787 app still works. The original Avahi configuration is backed up as `/etc/avahi/avahi-daemon.conf.zedair-before`. If you have not made later Avahi changes, restore that file with `sudo cp /etc/avahi/avahi-daemon.conf.zedair-before /etc/avahi/avahi-daemon.conf` and `sudo systemctl restart avahi-daemon`. Do not blindly restore it over later intentional configuration. App rollback does not undo these optional system packages/units.
+
+## View the laptop's system usage
+
+Open **Settings → System usage**. Circular gauges show whole-laptop CPU load, RAM, swap, internal system-disk usage and external SSD usage. Uptime, 1/5/15-minute load average, available RAM and CPU temperature (when the kernel exposes a recognized sensor) appear below.
+
+These readings come from Ubuntu on the **server**, never the phone/computer displaying the webpage. CPU is calculated from differences in Linux CPU counters across samples; the first sample may show a dash. RAM usage excludes memory Linux reports as available/reclaimable. Disk gauges describe the complete filesystem, including files outside Zedair; they do not expose those files. Missing SSD/sensors display unavailable instead of invented values.
+
+The page refreshes roughly every four seconds while visible and backs off when the browser tab is hidden. It uses standard-library reads of `/proc` and `/sys`, with no extra monitoring daemon or continuous database history. These gauges are live usage, not a CPU benchmark or speed test. System readings are protected by the normal login.
+
 ## Settings and website login cookies
 
-Open **Settings**. The submenu has **General & transfers**, **Platforms & cookies**, **Storage**, and **Account & appearance**.
+Open **Settings**. The submenu has **General & transfers**, **Platforms & cookies**, **Storage**, **System usage**, and **Account & appearance**.
 
 General settings include media/torrent speed limits, torrent seeding ratio, free-space reserve and retry count. Defaults are a 5 GiB SSD reserve, unlimited download speed, 256 KiB/s torrent upload and seeding ratio 0. KiB/s means kibibytes/second; 1,024 KiB/s is about 8.4 Mbps. Threads currently has no speed cap. YouTube has its own playlist limit in its platform tab; the general playlist limit is the fallback for other video extractors.
 
-Each platform tab has its folder, enable switch and applicable options. YouTube has quality, playlist and subtitle defaults. Instagram has session requirements, best-stream/pre-merged video selection, resolution warnings and request delay. X has quality and an advanced API selector; keep **GraphQL** unless troubleshooting an upstream compatibility issue. Disabled platforms reject new jobs; they do not cancel existing ones.
+Each platform tab has its folder, enable switch and applicable options. YouTube has quality, video-format, playlist and subtitle defaults. Facebook, Reddit, X and other video sites also expose their applicable format/quality defaults. Instagram has session requirements, best-stream/pre-merged video selection, resolution warnings and request delay. X has quality and an advanced API selector; keep **GraphQL** unless troubleshooting an upstream compatibility issue. Disabled platforms reject new jobs; they do not cancel existing ones.
 
 Defaults are copied into newly queued jobs. Cookie replacements and live engine options apply on the next attempt. Checking playlist/subtitle options in Add downloads also enables them when using platform defaults. To override platform defaults with those options off, select an explicit quality preset and leave the checkboxes unchecked.
 
@@ -239,7 +344,7 @@ Cookies do not guarantee access to protected, deleted, region-limited or otherwi
 
 ### Import cookies.txt for any platform
 
-You can use **Import cookies.txt** instead of the manual fields. YouTube, Threads and Other websites use this import method.
+You can use **Import cookies.txt** instead of the manual fields. YouTube, Reddit, Threads and Other websites use this import method. Facebook also accepts a cookies.txt import.
 
 Export the relevant website’s cookies in **Netscape/Mozilla cookies.txt** format using a trusted local browser exporter/tool. The first line is `# Netscape HTTP Cookie File`. Do not paste JSON or a raw HTTP Cookie header. Select the matching platform tab, import the file, and retry the affected download. For YouTube, follow the upstream yt-dlp cookie guidance linked at the end.
 
@@ -261,7 +366,7 @@ If a request still fails, open **Details**. Verification/challenge errors, rate 
 
 ## Preview, download and delete files
 
-Open **SSD files** and enter a platform folder. Click an image/video filename marked **Preview** to open it inside the page. Videos have native playback, volume, seeking and fullscreen controls; supported audio files also have a player. Closing the preview stops playback. Click the separate **Download** button only when you want a copy on the current phone/computer. **New folder** creates a subfolder. Lists show up to 1,000 entries per folder.
+Open **SSD files** and enter a platform folder. Click an image/video filename marked **Preview** to open it inside the page. Videos have native playback, volume, seeking and fullscreen controls; supported audio files also have a player. Closing the preview stops playback. Click the separate **Download** button only when you want a copy on the current phone/computer. **New folder** creates a subfolder. **List / Grid** switches the layout and remembers your preference on that browser. Both layouts have Previous/Next navigation with 24 entries per page. Grid images load lazily from the real file, with the filename below; videos have a static placeholder and load only when you open Preview. Images are not server-generated thumbnails, so large originals can still use significant LAN bandwidth.
 
 Previews require your normal login and stream the original file from the SSD. They do not convert video or use FFmpeg in the background, which keeps CPU/RAM usage low on the laptop. Your browser still transfers media bytes to display/play them. MP4 with H.264/AAC and common JPEG/PNG/WebP images usually have the broadest browser support. MKV, HEVC, some audio formats and unfinished torrent files may not play in your browser even when the download is valid. Use **Download** and a compatible player in that case. SVG/HTML files are not rendered inline. Seeking uses HTTP byte ranges; a disconnected SSD or expired login can interrupt playback.
 
@@ -360,7 +465,7 @@ Keep ventilation clear and the charger connected. A desktop environment is unnec
 
 ## Network access and HTTPS
 
-Reserve the laptop’s IP in your router’s DHCP settings so its URL stays stable. Phone/computer and laptop must be on the same LAN; guest Wi-Fi isolation can block access. Do not forward web port **8787** or torrent RPC port **9092** to the internet.
+Reserve the laptop’s IP in your router’s DHCP settings so its URL stays stable. Phone/computer and laptop must be on the same LAN; guest Wi-Fi isolation can block access. Do not forward web ports **80 / 8787** or torrent RPC port **9092** to the internet.
 
 The default webpage uses HTTP. For a trusted home LAN this keeps setup simple; HTTP does not encrypt credentials. If you need encrypted access, supply a certificate/key trusted by your devices, with the laptop’s hostname/IP in its SAN. Store them in `/etc/zedair`, readable by the zedair group, and add `tls_cert` and `tls_key` to the existing JSON using `sudoedit /etc/zedair/config.json`:
 
@@ -409,17 +514,20 @@ df -h /srv/zedair-ssd
 | SSD offline | USB power/cable, mount UUID and `findmnt`. Reconnect with the Windows/SSD steps. Never disable `require_mount` to hide the error. |
 | Free-space reserve reached | Delete unwanted files through SSD files, or free space in Windows. Browsing/deletion work below the reserve. |
 | Instagram fails | Read Details; renew cookies, finish a browser challenge, wait for a rate limit or update engines as appropriate. |
+| Facebook profile stops | Inspect the experimental collector log; check session, scroll limit, layout changes and browser installation. A finished job is not proof of a complete archive. |
+| MP4-only format unavailable | The source offers no matching MP4/M4A combination at the selected ceiling. Try Automatic if another format is acceptable. |
+| Reddit video fails | Use a direct Reddit post/video link, update engines, and import Reddit cookies if that content needs login. |
 | X video fails | Confirm it is a video status URL; check your session and update engines. Private/deleted/restricted posts can remain unavailable. |
 | YouTube fails | Update engines, check Deno, inspect Details, and add YouTube cookies when required. |
 | Threads finds no media | Embedded exact-post media is unavailable or changed. Experimental extraction cannot handle every login wall/page format. |
 | Torrent offline after reconnect | Mount the SSD, then `sudo systemctl start zedair-transmission`. |
 | File deletion blocked | Remove the owning torrent first, cancel the unfinished legacy job, or refresh if the file changed. |
 | Speed test fails | Check laptop internet/DNS and endpoint reachability. Proxy/firewall restrictions or endpoint errors can prevent a test. No result is fabricated. |
-| RAM limit reached | Reduce video quality or playlist size. One media worker and one torrent still share the 2 GB RAM. |
+| RAM limit reached | Pause torrents during Facebook collection; reduce playlist size. One media worker and one torrent still share the 2 GB RAM. |
 
 ### Storage and partial-file cleanup
 
-Media lives on the SSD. Account/queue state is on eMMC. History is limited to 1,000 jobs; clear finished history periodically. Keep only a few torrents loaded. Metadata and logs are bounded per job, but cancelled partials, engine caches and backups can accumulate.
+Media lives on the SSD. Account/queue state is on eMMC. History is limited to 1,000 jobs; clear finished history periodically. Keep only a few torrents loaded. Logs are bounded per job. Profile manifests/archives grow with the collection on the SSD; partials, engine caches and backups can accumulate.
 
 New jobs use `.incomplete/JOB_ID` on the SSD. Completed-job metadata is cleaned after publication. Cancelled/failed partials are retained. To reclaim them manually, stop **zedair**, inspect the exact job ID/path, and remove only that job’s working folder when you no longer need to resume it. Never delete all working folders while jobs are active. Old releases placed partials in visible per-job folders; finish or cancel those jobs before managing their files.
 
@@ -445,6 +553,9 @@ Open the webpage and create the administrator again with that key. There is no u
 
 ```bash
 sudo systemctl disable --now zedair zedair-transmission
+# If you enabled zed.local, also stop its socket so it cannot start the app:
+sudo systemctl disable --now zedair-local.socket
+sudo systemctl stop zedair-local.service
 ```
 
 This keeps files and configuration. To re-enable: `sudo systemctl enable --now zedair-transmission zedair` with the SSD connected.
@@ -455,18 +566,20 @@ This keeps files and configuration. To re-enable: `sudo systemctl enable --now z
 | --- | --- |
 | Your Git checkout, e.g. `~/Zedair-Download-Desk` | Source you pull from GitHub |
 | `/opt/zedair` | Installed application, Python environment and Deno |
+| `/opt/zedair/browsers` | Optional Facebook Chromium installation |
+| `/etc/systemd/system/zedair-local.socket` and `.service` | Optional port-80 local address proxy |
 | `/etc/zedair` | Private service configuration and setup key |
 | `/var/lib/zedair` | Account, login sessions, queue, preferences, cookies and torrent state |
 | `/srv/zedair-ssd/Zedair` | Downloads on the USB SSD |
 | `/var/backups/zedair` | Private backups made by the app upgrader |
 
-The implementation uses Python’s standard library for the server, plain HTML/CSS/JS, yt-dlp, gallery-dl, FFmpeg, Deno and a private Transmission daemon. No Docker, Redis, Node server or browser automation runs on your laptop. The service has CPU/memory limits; these are safeguards, not a measured performance guarantee on your hardware.
+The implementation uses Python’s standard library for the server, plain HTML/CSS/JS, yt-dlp, gallery-dl, FFmpeg, Deno and a private Transmission daemon. No Docker, Redis or Node server is required. The optional Facebook profile tool launches one sandboxed Playwright Chromium browser only during collection, then closes it before video downloads. Direct Facebook videos do not need that browser. The service has CPU/memory limits; these are safeguards, not a measured performance guarantee on your hardware.
 
 ## Development and checks
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m py_compile server.py media.py platforms.py publishing.py speedcheck.py install.py upgrade.py install-speedtest.py
+python3 -m py_compile server.py media.py platforms.py publishing.py speedcheck.py systemstats.py profiles.py facebook_profile.py setup-local.py install.py upgrade.py install-speedtest.py
 ```
 
 With FFmpeg and `requirements.txt` installed in your development Python environment:
@@ -474,6 +587,7 @@ With FFmpeg and `requirements.txt` installed in your development Python environm
 ```bash
 python tests/integration_media.py
 python tests/integration_instagram_cookies.py
+python tests/integration_profiles_formats.py
 ```
 
 See `TEST-REPORT.md` for actual verification and its limits. This release was not installed on your physical laptop. Live account-specific Instagram/X access, real torrent swarms, SSD/systemd behavior and real laptop speed need confirmation there. No preview account, browser screenshot, cookie file or populated database is included in the release.
@@ -486,6 +600,8 @@ See `TEST-REPORT.md` for actual verification and its limits. This release was no
 - [YouTube JavaScript runtime](https://github.com/yt-dlp/yt-dlp/wiki/EJS)
 - [gallery-dl](https://github.com/mikf/gallery-dl)
 - [gallery-dl configuration](https://gdl-org.github.io/docs/configuration.html)
+- [Playwright browser installation](https://playwright.dev/python/docs/browsers)
+- [Avahi](https://github.com/avahi/avahi)
 - [Transmission](https://github.com/transmission/transmission)
 - [Deno](https://github.com/denoland/deno)
 - [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli)

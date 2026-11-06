@@ -13,6 +13,7 @@ import urllib.request
 from html.parser import HTMLParser
 from pathlib import Path
 import platforms
+import profiles
 
 
 def validate_url(url, dns=True):
@@ -48,11 +49,20 @@ def engine_for(url):
     return 'video'
 
 
+def video_format(quality='best',mp4=False):
+    if quality=='audio':return 'ba/b'
+    ceiling=f'[height<={quality}]' if quality in ('2160','1080','720','480') else ''
+    if mp4:return f'bv*[ext=mp4]{ceiling}+ba[ext=m4a]/b[ext=mp4]{ceiling}'
+    return f'bv*{ceiling}+ba/b{ceiling}'
+
+
 def build_command(job, dest, cookie, settings, state):
     """Use argument arrays only. Every job owns one resumable destination directory."""
     url, kind = job['url'], job['kind']
     key = platforms.platform_for(url)
     prefs = platforms.preferences(settings.get('platforms'))[key]
+    if job.get('profile_mode') and key=='facebook':
+        return profiles.facebook_command(job,dest,cookie,settings,state)
     if kind == 'threads':
         return [sys.executable, str(Path(__file__).resolve()), '--threads', url, str(dest), str(cookie or '')]
     if kind == 'instagram':
@@ -71,23 +81,28 @@ def build_command(job, dest, cookie, settings, state):
             'cache': {'file': str(state / 'gallery-cache.sqlite3')},
             'output': {'progress': False},
         }
+        if job.get('profile_mode'):
+            config['extractor']['instagram']['max-posts'] = None
+            config['extractor']['instagram']['include'] = {'posts':['photos'],'reels':['reels'],'everything':['posts','reels']}[job['profile_mode']]
+            config['extractor']['archive'] = str(dest/'.profile-archive.sqlite3')
+            config['extractor']['archive-event'] = ['file']
+            config['extractor']['archive-pragma'] = ['journal_mode=WAL']
         # A single post/reel is intentional; it prevents an accidental whole-account crawl.
-        if not re.search(r'/(p|reel|reels|tv)/[^/]+', urllib.parse.urlsplit(url).path):
+        if not job.get('profile_mode') and not re.search(r'/(p|reel|reels|tv)/[^/]+', urllib.parse.urlsplit(url).path):
             raise ValueError('For Instagram, paste a single post, carousel or reel link')
         config_path = state / ('gallery-' + job['id'] + '.json')
         config_path.write_text(json.dumps(config))
         config_path.chmod(0o600)
         args = [sys.executable, '-m', 'gallery_dl', '--config-ignore', '--config', str(config_path),
                 '--directory', str(dest), '--write-metadata']
+        if job.get('profile_mode'):
+            args += ['--print','after:ZEDITEM {post_shortcode}']
         if cookie:
             args += ['--cookies', str(cookie)]
         return args + ['--', url]
     quality = job['quality']
-    fmt = 'bv*+ba/b'
-    if quality in ('2160', '1080', '720', '480'):
-        fmt = f'bv*[height<={quality}]+ba/b[height<={quality}]'
-    elif quality == 'audio':
-        fmt = 'ba/b'
+    mp4 = job.get('container')=='mp4' and quality!='audio'
+    fmt = video_format(quality,mp4)
     args = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-cache-dir',
             '--newline', '--progress', '--no-colors', '--windows-filenames', '--trim-filenames', '160',
             '--continue', '--write-info-json', '--no-overwrites', '--retries', '3', '--fragment-retries', '3',
@@ -99,6 +114,8 @@ def build_command(job, dest, cookie, settings, state):
             '--postprocessor-args', 'ffmpeg:-threads 1',
             '--yes-playlist' if job['playlist'] else '--no-playlist',
             '--playlist-end', str(prefs.get('playlist_limit',settings['playlist_limit']))]
+    if mp4:
+        args += ['--merge-output-format','mp4','--remux-video','mp4']
     if key == 'x':
         args += ['--extractor-args', 'twitter:api='+prefs['api']]
     if quality == 'audio':

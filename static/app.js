@@ -3,7 +3,8 @@ const $ = (q, root = document) => root.querySelector(q);
 const $$ = (q, root = document) => [...root.querySelectorAll(q)];
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const E = escapeHTML;
-let selectedPlatform='instagram', settingsTab='general';
+let selectedPlatform='instagram', settingsTab='general', toolPlatform='instagram';
+let fileView=localStorage.getItem('zedair-file-view')==='grid'?'grid':'list',fileOffset=0,fileEntries=[],fileTotal=0,fileRequest=0,loadedFilePath=null;
 let csrf = '', state = null, page = 'queue', filter = 'all', filePath = '', folderPath = '', folderTarget = '', cookieSlot = '', timer, toastTimer, busy = false;
 const bytes = n => { n=Number(n)||0; const units=['B','KiB','MiB','GiB','TiB']; let i=0; while(n>=1024&&i<4){n/=1024;i++;} return `${n.toFixed(i>1?1:0)} ${units[i]}`; };
 const eta = n => !n || n<0 ? '—' : n<60 ? `${Math.ceil(n)}s` : n<3600 ? `${Math.ceil(n/60)}m` : `${(n/3600).toFixed(1)}h`;
@@ -42,7 +43,7 @@ async function refresh(){
   if(busy)return;busy=true;clearTimeout(timer);
   try{
     state=await api('state'); $('#connection').textContent='● Connected';$('#connection').classList.remove('offline');
-    renderOverview(); if(page==='queue')renderJobs(); if(page==='torrents')renderTorrents(); if(page==='speed')renderSpeed();
+    renderOverview(); if(page==='queue')renderJobs(); if(page==='torrents')renderTorrents(); if(page==='speed')renderSpeed(); if(page==='tools')renderProfileJobs(); if(page==='settings'&&settingsTab==='system'&&!document.hidden)await renderSystem();
   }catch(error){$('#connection').textContent='● Reconnecting';$('#connection').classList.add('offline');}
   finally{busy=false;if(!$('#shell').hidden)timer=setTimeout(refresh,document.hidden?15000:4000);}
 }
@@ -66,9 +67,9 @@ function renderJobs(){
   if(!jobs.length){$('#jobs').innerHTML=empty('↙',state.jobs.length?'No matches here.':'Your next download starts here.',state.jobs.length?'Try another filter or search.':'Add a YouTube or X video, an Instagram carousel, or a Threads post. Your laptop takes it from there.',state.jobs.length?'':'<button class="secondary" data-open="downloadDialog">＋ Paste your first link</button>');return;}
   $('#jobs').innerHTML=jobs.map(j=>{
     const active=['queued','running','retry','blocked'].includes(j.status);
-    const info=j.status==='running'?`${bytes(j.speed)}/s · ETA ${eta(j.eta)}`:j.status==='retry'?`Retry in ${eta(Math.max(1,j.next_try-Date.now()/1000))}`:j.status==='done'?'On the SSD':`Attempt ${j.attempts} · ${j.kind==='instagram'?'Carousel / reel':j.kind==='threads'?'Public post':'Video engine'}`;
+    const info=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · ${j.status==='running'?'total unknown':labels[j.status]||j.status}`:j.status==='running'?`${bytes(j.speed)}/s · ETA ${eta(j.eta)}`:j.status==='retry'?`Retry in ${eta(Math.max(1,j.next_try-Date.now()/1000))}`:j.status==='done'?'On the SSD':`Attempt ${j.attempts} · ${j.kind==='instagram'?'Carousel / reel':j.kind==='threads'?'Public post':'Video engine'}`;
     const percent=Math.max(0,Math.min(100,Number(j.progress)||0));
-    return `<article class="job"><div class="source-icon ${E(j.kind)}">${symbols[j.kind]||'↙'}</div><div class="job-info"><span class="job-title" title="${E(j.name)}">${E(j.name)}</span><div class="job-meta" title="${E(shortFolder(j))}">${E(shortFolder(j))}</div>${j.status==='error'?`<span class="attention-note">${E(j.detail)}</span>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><span>${j.status==='running'?percent.toFixed(1)+'%':''}</span></div><div class="progress"><i style="width:${percent}%"></i></div><div class="job-speed">${E(info)}</div></div><div class="job-controls">${active?button('Ⅱ','Pause',`data-job="${j.id}" data-action="pause"`):j.status!=='done'?button('▶','Resume / retry',`data-job="${j.id}" data-action="retry"`):button('▤','Open destination',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Details and log',`data-detail="${j.id}"`)}</div></article>`;
+    return `<article class="job"><div class="source-icon ${E(j.kind)}">${symbols[j.kind]||'↙'}</div><div class="job-info"><span class="job-title" title="${E(j.name)}">${E(j.name)}</span><div class="job-meta" title="${E(shortFolder(j))}">${E(shortFolder(j))}</div>${j.status==='error'?`<span class="attention-note">${E(j.detail)}</span>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><span>${j.status==='running'?(j.profile_mode?'Working…':percent.toFixed(1)+'%'):''}</span></div><div class="progress"><i style="width:${percent}%"></i></div><div class="job-speed">${E(info)}</div></div><div class="job-controls">${active?button('Ⅱ','Pause',`data-job="${j.id}" data-action="pause"`):j.status!=='done'?button('▶','Resume / retry',`data-job="${j.id}" data-action="retry"`):button('▤','Open destination',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Details and log',`data-detail="${j.id}"`)}</div></article>`;
   }).join('');
 }
 function renderTorrents(){
@@ -78,31 +79,52 @@ function renderTorrents(){
   $('#torrents').innerHTML=state.torrents.map(t=>`<article class="job"><div class="source-icon torrent">⇄</div><div><div class="job-title">${E(t.name)}</div><div class="job-meta">${bytes(t.totalSize)} <b>·</b> Ratio ${Number(t.uploadRatio||0).toFixed(2)}</div>${t.errorString?`<p class="form-error">${E(t.errorString)}</p>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${t.status===4?'running':''}">${E(status[t.status]||'Waiting')}</span><span>${(100*t.percentDone).toFixed(1)}%</span></div><div class="progress"><i style="width:${100*t.percentDone}%"></i></div><div class="job-speed">↓ ${bytes(t.rateDownload)}/s · ↑ ${bytes(t.rateUpload)}/s</div></div><div class="job-controls">${button(t.status===0?'▶':'Ⅱ',t.status===0?'Resume':'Pause',`data-torrent="${E(t.hashString)}" data-action="${t.status===0?'resume':'pause'}"`)}${button('▤','Select files',`data-torrent-files="${E(t.hashString)}"`)}${button('×','Remove torrent, keep files',`data-torrent="${E(t.hashString)}" data-action="remove"`)}</div></article>`).join('');
 }
 async function setPage(next){
-  page=next; for(const name of ['queue','torrents','files','speed','settings'])$('#'+name+'Page').hidden=name!==next;
+  page=next; for(const name of ['queue','torrents','files','tools','speed','settings'])$('#'+name+'Page').hidden=name!==next;
   $$('[data-page]').forEach(b=>b.classList.toggle('active',b.dataset.page===next));
   $('#pageCrumb').textContent=next==='queue'?'DOWNLOADS':next.toUpperCase();
   if(!state)return;
-  if(next==='queue')renderJobs();if(next==='torrents')renderTorrents();if(next==='files')await loadFiles();if(next==='settings')renderSettings();if(next==='speed')renderSpeed();
+  if(next==='queue')renderJobs();if(next==='torrents')renderTorrents();if(next==='files')await loadFiles();if(next==='settings')renderSettings();if(next==='speed')renderSpeed();if(next==='tools'){renderTools();renderProfileJobs();}
 }
 async function loadFiles(){
-  $('#filePath').textContent='Zedair/'+filePath; $('#filesUp').disabled=!filePath;
-  try{const result=await api('folders?path='+encodeURIComponent(filePath));$('#fileList').innerHTML=result.entries.length?result.entries.map(entry=>{
-    const path=join(filePath,entry.name);
-    if(entry.directory)return `<button class="file-row" data-file-folder="${E(path)}"><span>▰</span><strong>${E(entry.name)}</strong><small>Open folder →</small></button>`;
-    const row=entry.preview?`<button class="file-row" data-preview-file="${E(path)}" data-preview-kind="${E(entry.preview)}"><span>${entry.preview==='image'?'▧':'▷'}</span><strong>${E(entry.name)}<span class="file-preview-label"> · Preview</span></strong><small>${bytes(entry.size)}</small></button>`:`<div class="file-row"><span>▤</span><strong>${E(entry.name)}</strong><small>${bytes(entry.size)}</small></div>`;
-    return `<div class="file-entry">${row}<div class="file-actions"><a class="secondary compact" href="/api/file?path=${encodeURIComponent(path)}" download aria-label="Download ${E(entry.name)}">Download</a><button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div></div>`;
-  }).join(''):empty('▤','This folder is empty.','Create a subfolder or point your next download here.');}
-  catch(error){$('#fileList').innerHTML=empty('!','Storage unavailable',error.message);}
+  if(loadedFilePath!==filePath){fileOffset=0;loadedFilePath=filePath;}
+  const request=++fileRequest;
+  $('#filePath').textContent='Zedair/'+filePath;$('#filesUp').disabled=!filePath;
+  try{const result=await api('folders?path='+encodeURIComponent(filePath)+'&offset='+fileOffset+'&limit=24');if(request!==fileRequest)return;
+    fileEntries=result.entries;fileTotal=result.total??result.entries.length;
+    if(!fileEntries.length&&fileOffset){fileOffset=Math.max(0,fileOffset-24);return loadFiles();}
+    renderFiles();
+  }catch(error){$('#fileList').innerHTML=empty('!','Storage unavailable',error.message);}
 }
+function renderFiles(){
+  $('#fileList').classList.toggle('file-grid',fileView==='grid');
+  $$('[data-file-view]').forEach(b=>{b.classList.toggle('selected',b.dataset.fileView===fileView);b.setAttribute('aria-pressed',String(b.dataset.fileView===fileView));});
+  $('#filesCount').textContent=fileTotal+' items';$('#filesPrev').disabled=fileOffset===0;$('#filesNext').disabled=fileOffset+24>=fileTotal;
+  $('#filesPageLabel').textContent=fileTotal?`${fileOffset+1}–${Math.min(fileOffset+24,fileTotal)} of ${fileTotal}`:'No files';
+  $('#fileList').innerHTML=fileEntries.length?fileEntries.map(entry=>{
+    const path=join(filePath,entry.name),attrs=entry.directory?`data-file-folder="${E(path)}"`:`data-preview-file="${E(path)}" data-preview-kind="${E(entry.preview)}"`;
+    const icon=entry.directory?'▰':entry.preview==='video'?'▷':entry.preview==='image'?'▧':entry.preview==='audio'?'♫':'▤';
+    const actions=entry.directory?'':`<div class="file-actions"><a class="secondary compact" href="/api/file?path=${encodeURIComponent(path)}" download aria-label="Download ${E(entry.name)}">Download</a><button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div>`;
+    if(fileView==='grid'){
+      const media=entry.preview==='image'?`<span class="file-thumb"><span class="thumb-fallback">▧</span><img src="/api/preview?path=${encodeURIComponent(path)}" loading="lazy" decoding="async" alt="${E(entry.name)}"></span>`:`<span class="file-thumb placeholder"><span>${icon}</span><small>${entry.directory?'FOLDER':entry.preview==='video'?'VIDEO · PREVIEW TO PLAY':entry.preview==='audio'?'AUDIO':'FILE'}</small></span>`;
+      const tag=entry.directory||entry.preview?'button':'div';
+      return `<article class="file-card"><${tag} class="file-tile" ${tag==='button'?attrs:''}>${media}<strong>${E(entry.name)}</strong><small>${entry.directory?'Open folder':bytes(entry.size)}</small></${tag}>${actions}</article>`;
+    }
+    if(entry.directory)return `<button class="file-row" ${attrs}><span>${icon}</span><strong>${E(entry.name)}</strong><small>Open folder →</small></button>`;
+    const tag=entry.preview?'button':'div';return `<div class="file-entry"><${tag} class="file-row" ${tag==='button'?attrs:''}><span>${icon}</span><strong>${E(entry.name)}${entry.preview?'<span class="file-preview-label"> · Preview</span>':''}</strong><small>${bytes(entry.size)}</small></${tag}>${actions}</div>`;
+  }).join(''):empty('▤','This folder is empty.','Create a subfolder or point your next download here.');
+}
+$('#filesPrev').onclick=()=>{fileOffset=Math.max(0,fileOffset-24);loadFiles();};
+$('#filesNext').onclick=()=>{fileOffset+=24;loadFiles();};
+document.addEventListener('error',event=>{if(event.target.matches?.('.file-thumb img'))event.target.remove();},true);
 async function loadFolders(){
   $('#folderPath').textContent='Zedair/'+folderPath;$('#folderUp').disabled=!folderPath;
   const result=await api('folders?path='+encodeURIComponent(folderPath));
   const dirs=result.entries.filter(e=>e.directory);
   $('#folderList').innerHTML=dirs.length?dirs.map(e=>`<button class="file-row" data-folder="${E(join(folderPath,e.name))}"><span>▰</span><strong>${E(e.name)}</strong><small>→</small></button>`).join(''):empty('▤','No subfolders.','Use this folder, or create one below.');
 }
-const platformNames={youtube:'YouTube',instagram:'Instagram',x:'X / Twitter',threads:'Threads',other:'Other websites'};
+const platformNames={youtube:'YouTube',facebook:'Facebook',reddit:'Reddit',instagram:'Instagram',x:'X / Twitter',threads:'Threads',other:'Other websites'};
 function selectSettingsTab(tab){
-  settingsTab=tab; $$('[data-settings-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.settingsTab===tab));
+  settingsTab=tab; if(tab==='system')renderSystem(); $$('[data-settings-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.settingsTab===tab));
   $$('[data-settings-panel]').forEach(p=>p.hidden=p.dataset.settingsPanel!==tab);
 }
 function renderSettings(){
@@ -116,19 +138,22 @@ function renderPlatform(){
   const select=(name,label,choices)=>`<label>${label}<select name="${name}">${choices.map(([v,t])=>`<option value="${v}" ${p[name]===v?'selected':''}>${t}</option>`).join('')}</select></label>`;
   let fields=check('enabled','Enable this platform')+`<label>Platform folder<input name="folder" value="${E(p.folder)}" placeholder="${key==='other'?'Automatic website domain':'Folder name'}" maxlength="150" ${key==='other'?'':'required'}><small>Under the destination chosen when adding a link.</small></label>`;
   if('quality' in p)fields+=select('quality','Default video quality',[['best','Best available'],['2160','Up to 4K'],['1080','Up to 1080p'],['720','Up to 720p'],['480','Up to 480p'],['audio','Audio only']]);
+  if('container' in p)fields+=select('container','Default video file format',[['auto','Automatic · any format'],['mp4','MP4 only']]);
   if('subtitles' in p)fields+=check('subtitles','English / Malayalam subtitles');
   if(key==='youtube')fields+=check('playlist','Include playlists by default')+`<label>Playlist item limit<input type="number" name="playlist_limit" min="1" max="500" value="${p.playlist_limit}" required></label>`;
   if(key==='instagram')fields+=check('require_cookies','Require session cookies before downloading')+check('warn_images','Warn if original image resolution is unavailable')+select('videos','Video source',[['dash','DASH · best available streams'],['merged','Pre-merged video']])+`<label>Delay between requests (seconds)<input type="number" name="sleep_request" min="6" max="60" value="${p.sleep_request}" required></label><p class="hint">Downloads every image/video in a single post or carousel. Highest quality available to your session; the website can limit it.</p>`;
+  if(key==='facebook')fields+='<p class="hint">Direct videos and reels use yt-dlp. Whole profiles are in Tools with an optional browser collector.</p>';
+  if(key==='reddit')fields+='<p class="hint">Use a Reddit post URL for hosted videos with audio. FFmpeg joins separate audio/video streams. Some posts require account cookies.</p>';
   if(key==='x')fields+=select('api','X video API',[['graphql','GraphQL (recommended)'],['legacy','Legacy'],['syndication','Syndication · public posts']])+`<p class="hint">Paste an x.com or twitter.com status URL. Video posts and animated GIFs use the video engine. Photos and whole feeds are not supported.</p>`;
   if(key==='threads')fields+='<p class="hint">Experimental: exact public posts and carousels from embedded page data. Login walls or page changes can prevent extraction.</p>';
   if(key==='other')fields+='<p class="hint">Supported video sites, including supported adult sites, use yt-dlp. Availability varies; DRM media is not supported. An empty folder uses the source hostname.</p>';
-  const raw=key==='instagram'?['sessionid','csrftoken','ds_user_id']:key==='x'?['auth_token','ct0']:[];
-  const manual=raw.length?`<form id="sessionForm" autocomplete="off"><h3>Paste session values</h3><p class="hint">From your browser’s cookies for ${key==='x'?'x.com':'instagram.com'}. Paste the value only. Saving replaces this platform’s cookie file.</p>${raw.map(n=>`<label>${n}${key==='instagram'&&n!=='sessionid'?' (optional)':''}<input type="password" name="${n}" autocomplete="new-password" spellcheck="false" maxlength="8192" ${key==='x'||n==='sessionid'?'required':''}></label>`).join('')}<button class="secondary" type="submit">Save private session</button></form>`:'';
+  const raw=key==='instagram'?['sessionid','csrftoken','ds_user_id']:key==='facebook'?['c_user','xs','datr','fr']:key==='x'?['auth_token','ct0']:[];
+  const manual=raw.length?`<form id="sessionForm" autocomplete="off"><h3>Paste session values</h3><p class="hint">From your browser’s cookies for ${key==='x'?'x.com':key==='facebook'?'facebook.com':'instagram.com'}. Paste the value only. Saving replaces this platform’s cookie file.</p>${raw.map(n=>`<label>${n}${(key==='instagram'&&n!=='sessionid')||(key==='facebook'&&['datr','fr'].includes(n))?' (optional)':''}<input type="password" name="${n}" autocomplete="new-password" spellcheck="false" maxlength="8192" ${key==='x'||n==='sessionid'||['c_user','xs'].includes(n)?'required':''}></label>`).join('')}<button class="secondary" type="submit">Save private session</button></form>`:'';
   $('#platformEditor').innerHTML=`<div class="platform-editor"><form id="platformForm"><h3>${platformNames[key]} defaults</h3>${fields}<button class="primary" type="submit">Save platform settings</button></form><div><h3>Website authentication</h3><div class="cookie-status"><strong>${c.usable?'Session stored':c.present?'Cookies need attention':'No session stored'}</strong><small>${c.present?`${c.count} cookies · ${c.expired} expired`:'Public downloads may work without cookies.'}${c.updated?' · Saved '+E(new Date(c.updated*1000).toLocaleString()):''} This checks file contents, not live login validity.</small></div><div class="cookie-actions"><button class="secondary" data-cookie="${key}">${c.present?'Replace':'Import'} cookies.txt</button>${c.present?`<button class="secondary danger" data-cookie-delete="${key}">Remove session</button>`:''}</div>${manual}${key==='instagram'?'<p class="hint">Automatic session updates: after a successful download, cookies refreshed by Instagram are saved for the next job. Session cookies with no fixed expiry remain valid locally; only Instagram can renew or revoke the login.</p>':''}<p class="hint">Cookie values stay private on the laptop and are never returned to this page. They expire independently of your 35-day desk login. After replacing them, retry the affected job from Attention. See README for Firefox instructions.</p></div></div>`;
 }
 async function showDetail(id){
   const j=await api('job?id='+encodeURIComponent(id));$('#detailTitle').textContent=j.name;
-  $('#detailBody').innerHTML=`<p class="detail-label">SOURCE URL</p><p class="detail-value">${E(j.url)}</p><p class="detail-label">DESTINATION</p><p class="detail-value">${E(shortFolder(j))}</p><p class="detail-label">STATUS</p><p class="detail-value">${E(labels[j.status])} · ${j.attempts} attempt(s)</p><p class="detail-value">${E(j.detail)}</p>${j.error_kind==='auth'?'<button class="secondary" data-open-platforms>Open platform settings</button>':''}<p class="detail-label">RECENT ENGINE OUTPUT</p><pre class="log">${E(j.log||j.last_error||j.detail||'No engine output yet.')}</pre><p class="hint">Gallery jobs report completed items rather than a reliable overall percentage. Video progress is for the current stream/item; merging can continue after it reaches 100%.</p><div class="dialog-footer"><button class="secondary" data-job="${j.id}" data-action="first">Move to front</button><button class="secondary" data-job="${j.id}" data-action="cancel">Cancel job · keep files</button><button class="primary" data-job-folder="${E(join(j.folder,j.subdir))}">Open folder</button></div>`;
+  $('#detailBody').innerHTML=`<p class="detail-label">SOURCE URL</p><p class="detail-value">${E(j.url)}</p><p class="detail-label">DESTINATION</p><p class="detail-value">${E(shortFolder(j))}</p><p class="detail-label">VIDEO OPTIONS</p><p class="detail-value">${E(j.quality==='best'?'Highest available':j.quality)} · ${j.kind==='video'&&!j.profile_mode&&j.quality!=='audio'?(j.container==='mp4'?'MP4 only':'Automatic format'):'Platform media format'}</p><p class="detail-label">STATUS</p><p class="detail-value">${E(labels[j.status])} · ${j.attempts} attempt(s)</p><p class="detail-value">${E(j.detail)}</p>${j.error_kind==='auth'?'<button class="secondary" data-open-platforms>Open platform settings</button>':''}<p class="detail-label">RECENT ENGINE OUTPUT</p><pre class="log">${E(j.log||j.last_error||j.detail||'No engine output yet.')}</pre><p class="hint">Gallery jobs report completed items rather than a reliable overall percentage. Video progress is for the current stream/item; merging can continue after it reaches 100%.</p><div class="dialog-footer"><button class="secondary" data-job="${j.id}" data-action="first">Move to front</button><button class="secondary" data-job="${j.id}" data-action="cancel">Cancel job · keep files</button><button class="primary" data-job-folder="${E(join(j.folder,j.subdir))}">Open folder</button></div>`;
   openDialog('detailDialog');
 }
 async function showTorrentFiles(id){
@@ -159,6 +184,10 @@ $('#cookieFile').addEventListener('change',event=>action(async()=>{const file=ev
 document.addEventListener('click',event=>{
   const el=event.target.closest('button');if(!el)return;
   action(async()=>{
+    if(el.dataset.fileView){fileView=el.dataset.fileView;localStorage.setItem('zedair-file-view',fileView);renderFiles();}
+    if(el.dataset.toolPlatform){toolPlatform=el.dataset.toolPlatform;renderTools();}
+    if(el.hasAttribute('data-tool-cookies')){selectedPlatform=toolPlatform;settingsTab='platforms';await setPage('settings');}
+    if(el.dataset.profileRetry){const limit=Number($('#profile-limit-'+el.dataset.profileRetry).value);await api('profiles/retry',{id:el.dataset.profileRetry,scroll_limit:limit});await refresh();}
     if(el.dataset.settingsTab)selectSettingsTab(el.dataset.settingsTab);
     if(el.dataset.platform){selectedPlatform=el.dataset.platform;renderPlatform();}
     if(el.hasAttribute('data-open-platforms')){closeDialog($('#detailDialog'));settingsTab='platforms';await setPage('settings');}
@@ -235,3 +264,42 @@ function clearPreview(){const media=$('video,audio',$('#previewBody'));if(media)
 $('#previewDialog').addEventListener('close',clearPreview);
 $('#startSpeed').onclick=()=>action(async()=>{if(!state.speedtest.consent&&!$('#acceptSpeedTerms').checked)throw Error('Review and accept the Ookla agreement before starting.');await api('speedtest',{action:'start',accept_terms:$('#acceptSpeedTerms').checked});await refresh();});
 $('#cancelSpeed').onclick=()=>action(async()=>{await api('speedtest',{action:'cancel'});await refresh();});
+
+function renderTools(){
+  const facebook=toolPlatform==='facebook';
+  $$('[data-tool-platform]').forEach(b=>b.classList.toggle('selected',b.dataset.toolPlatform===toolPlatform));
+  $('#profileToolTitle').textContent=facebook?'Facebook profile · experimental':'Instagram profile';
+  $('#profileToolHint').textContent=facebook?'Scroll accessible posts, photos and reels. Facebook can hide or stop returning content; completeness cannot be guaranteed.':'Follow every available page. Posts excludes reels; Everything combines both feeds and skips repeated media within this job.';
+  $('#profileTarget').placeholder=facebook?'Username, numeric ID or Facebook profile URL':'@username or Instagram profile URL';
+  $('#profileDestination').textContent='Saves to Zedair/'+(facebook?'Facebook':'Instagram')+'/<username>';
+  $('#facebookScrollField').hidden=!facebook;$('#facebookInstall').hidden=!facebook||state.tools?.facebook_browser;
+  $('#startProfile').disabled=facebook&&!state.tools?.facebook_browser;
+  const session=state.cookie_status[toolPlatform];$('#profileSessionNotice').hidden=session?.usable;
+  $('#profileSessionNotice').textContent='Add your '+(facebook?'Facebook':'Instagram')+' session in Settings before queuing a profile.';
+  $('#localAddressStatus').textContent=state.tools?.local_enabled?'Local-address setup has run on this laptop. Open http://zed.local on your other devices.':'Not configured yet. Your current address continues to work.';
+}
+function renderProfileJobs(){
+  const jobs=state.jobs.filter(j=>j.profile_mode);
+  $('#profileJobs').innerHTML=jobs.length?jobs.map(j=>{
+    const active=['queued','running','retry','blocked'].includes(j.status),facebook=j.cookie_profile==='facebook';
+    return `<article class="profile-job"><div><strong>${E(j.name)}</strong><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><p class="hint">${E(j.profile_mode)} · ${j.items||0} media files saved during this job</p><p class="job-meta">${E(shortFolder(j))}</p><p class="profile-job-detail">${E(j.detail)}${facebook?' · Facebook completeness is unverified.':''}</p></div><div class="profile-job-actions">${active?button('Ⅱ','Pause profile',`data-job="${j.id}" data-action="pause"`):!['done','cancelled'].includes(j.status)?facebook?`<label>Scroll limit<input id="profile-limit-${j.id}" type="number" min="10" max="10000" value="${j.scroll_limit}"></label><button class="secondary compact" data-profile-retry="${j.id}">Resume / retry</button>`:`<button class="secondary compact" data-job="${j.id}" data-action="retry">Resume / retry</button>`:''}${!['done','cancelled'].includes(j.status)?button('×','Cancel profile',`data-job="${j.id}" data-action="cancel"`):''}${button('▤','Open profile folder',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Profile details and log',`data-detail="${j.id}"`)}</div></article>`;
+  }).join(''):empty('▦','No profile jobs yet.','Choose a profile and the media you want to collect.');
+}
+$('#profileForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{
+  const form=event.target,result=await api('profiles',{platform:toolPlatform,profile:form.profile.value,mode:form.mode.value,folder:form.folder.value,scroll_limit:Number(form.scroll_limit.value)});
+  toast('Profile queued → '+result.destination);await refresh();renderProfileJobs();
+});});
+
+let systemBusy=false;
+async function renderSystem(){
+  if(systemBusy)return;systemBusy=true;
+  try{
+    const data=await api('system');
+    const gauge=(title,pct,detail)=>{const known=Number.isFinite(pct),value=known?Math.max(0,Math.min(100,pct)):0;return `<article class="usage-card"><div class="usage-ring" role="img" aria-label="${E(title)}: ${known?value.toFixed(1)+' percent':'unavailable'}" style="--usage:${value}%"><strong>${known?Math.round(value)+'<small>%</small>':'—'}</strong></div><h3>${E(title)}</h3><p>${E(detail)}</p></article>`;};
+    const size=d=>d?`${bytes(d.used)} / ${bytes(d.total)}`:'Unavailable';
+    $('#systemGauges').innerHTML=gauge('CPU',data.cpu_percent,data.cpu_percent===null?'Waiting for next sample':`${data.cores} logical cores · whole laptop`)+gauge('RAM',data.memory?.percent,size(data.memory))+gauge('Swap',data.swap?.percent,data.swap?.total?size(data.swap):'No swap configured')+gauge('System disk',data.system_disk?.percent,size(data.system_disk))+gauge('External SSD',data.ssd?.percent,data.ssd?size(data.ssd):'SSD unavailable');
+    $('#systemDetails').innerHTML=`<div><span>Uptime</span><strong>${data.uptime_seconds===null?'Unavailable':Math.floor(data.uptime_seconds/86400)+'d '+Math.floor(data.uptime_seconds%86400/3600)+'h '+Math.floor(data.uptime_seconds%3600/60)+'m'}</strong></div><div><span>Load average · 1 / 5 / 15 min</span><strong>${data.load?.map(x=>x.toFixed(2)).join(' / ')||'Unavailable'}</strong></div><div><span>CPU temperature</span><strong>${data.temperature_c===null?'Sensor unavailable':data.temperature_c.toFixed(1)+' °C'}</strong></div><div><span>RAM available</span><strong>${data.memory?bytes(data.memory.available):'Unavailable'}</strong></div>`;
+    $('#systemUpdated').textContent='Updated '+new Date(data.sampled_at*1000).toLocaleTimeString();$('#systemError').hidden=true;
+  }catch(error){$('#systemError').textContent='Unable to read laptop usage: '+error.message;$('#systemError').hidden=false;$('#systemUpdated').textContent='Readings may be stale';}
+  finally{systemBusy=false;}
+}

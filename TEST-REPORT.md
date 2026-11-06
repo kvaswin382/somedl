@@ -1,10 +1,10 @@
-# Verification report — Zedair 1.2.0
+# Verification report — Zedair 1.3.0
 
-Date: 5 November 2026. Target: Ubuntu 24.04 x86_64, Python 3.12, exFAT USB SSD.
+Date: 6 November 2026. Target: Ubuntu 24.04 x86_64, Python 3.12, exFAT USB SSD.
 
 ## Passed
 
-- **54 automated tests** with `python3 -m unittest discover -s tests -v`.
+- **69 automated tests** with `python3 -m unittest discover -s tests -v`.
 - Real gallery-dl cookie serialization regression: its writer exports session expiry as `0`; the old MozillaCookieJar reader interprets that as epoch zero. The new reader correctly recognizes it as a session cookie. Three simulated server rotations survive real gallery-dl write/reload cycles. This test makes no Instagram requests and uses no real account.
 - Two consecutive queue jobs with a controlled downloader process exercise private working cookies, successful-session publication and next-job reuse.
 - Real yt-dlp loopback integration downloads a generated MP4 with FFmpeg available. Verified exact media bytes, title/progress output, metadata naming, numbered publication and preservation of an existing file.
@@ -13,6 +13,21 @@ Date: 5 November 2026. Target: Ubuntu 24.04 x86_64, Python 3.12, exFAT USB SSD.
 - Desktop browser checks: image preview loaded its actual pixels; MP4 metadata loaded and native video playback advanced; closing the dialog removed the media element. The separate Download action remains available.
 - Dark theme and mobile speed-test layout checked at a 375 CSS-pixel content viewport: body width equals viewport width. Main background is RGB(21,21,23); speed card is RGB(32,32,35). Historical report details opened successfully.
 - Browser speed values were explicitly labelled test fixtures, not network measurements. No production account or authentication bypass is included.
+
+## v1.3 additions verified
+
+- Direct Facebook/fb.watch and Reddit/redd.it routing, private Facebook cookie fields and default destination folders.
+- Profile API authorization, username/URL validation, duplicate unfinished jobs, fixed platform/username paths, Instagram Posts/Reels/Everything configuration, unlimited profile post count and required optional Facebook dependency.
+- Partial profile publication preserves completed files. Empty failed collections retain their original authentication error. Reaching Facebook's scroll limit requires attention; a video rate-limit response stops before the next video is requested.
+- Facebook canonical link scoping and exact-photo-ID/highest-image selection with allowed CDN hosts. These are fixtures, not live Facebook downloads.
+- Real gallery-dl 1.32.19 traverses three controlled pagination responses, filters reels from the posts feed and preserves its actual SQLite media-ID archive across reopening. No Instagram requests are made.
+- Real yt-dlp 2026.10.26 format selection chooses the 2160p MP4 over a lower MP4 and higher WebM when MP4-only is selected; an explicit 1080p ceiling picks the lower matching MP4, and a WebM-only set has no match. The real loopback media download and existing cookie-serialization integration checks also pass.
+- MP4 preference validation, per-job persistence and platform defaults. Merge/remux options are present; re-encoding is absent. Audio-only remains independent.
+- CPU tick-delta calculation (including guest-counter handling), RAM availability, swap, missing sensors, zero swap and shared sample caching. `/api/system` requires login.
+- Avahi configuration updates preserve unrelated settings and are idempotent; systemd proxy unit generation is checked. Root installation and LAN name resolution were not executed here.
+- Desktop browser QA: Tools form, queued Instagram fixture and Facebook controls; real 600×400 image loaded in Grid while the file list contained zero video elements; MP4-only submission was persisted and displayed as “Highest available · MP4 only” in job details.
+- Browser QA at 320 CSS-pixel content width: Tools, Settings/System usage, Files and queued downloads had body scroll width equal to viewport width. Gauges wrap into two columns and mobile navigation into two rows. Charcoal dark mode and light mode were inspected.
+- Live system gauges displayed this development server's `/proc` readings, not measurements of the user's laptop. Speed history and sample downloads remained explicitly isolated test fixtures. No QA wrapper or authentication bypass is shipped.
 
 ## Automated coverage
 
@@ -33,9 +48,9 @@ New v1.2 coverage includes:
 
 ## Limits
 
-No connection to the physical laptop or GitHub repository was available. This package was not installed there and nothing was pushed to GitHub. Actual exFAT power-loss behavior, mount/fstab/systemd installation, Atom CPU/RAM usage, torrent swarms, YouTube challenges and account-specific Instagram/X access require validation there. Upgrade tests simulate service control.
+No connection to the physical laptop, live Facebook/Instagram account or GitHub repository was available. This package was not installed there and nothing was pushed to GitHub. Actual exFAT power-loss behavior, mount/fstab/systemd/Avahi installation, cross-device zed.local resolution, Chromium sandbox launch, Atom CPU/RAM usage, torrent swarms, YouTube challenges and account-specific Instagram/Facebook/Reddit/X access require validation there. Upgrade tests simulate service control.
 
-The Instagram expiry-zero bug is reproduced and fixed. That does not prove it was the only cause of the user's failures. Session refresh preserves cookies supplied during successful normal requests; it does not force Instagram to renew a login, bypass a challenge or guarantee a session lifetime. Threads remains experimental.
+The Instagram expiry-zero bug is reproduced and fixed. That does not prove it was the only cause of the user's failures. Session refresh preserves cookies supplied during successful normal requests; it does not force Instagram to renew a login, bypass a challenge or guarantee a session lifetime. Threads and Facebook profile collection remain experimental. Facebook scroll exhaustion is not proof of a complete archive. Its live page structure, session acceptance and memory consumption require validation on the target laptop. MP4-only is best quality among matching MP4/M4A sources and cannot manufacture an unavailable format.
 
 Speed testing now uses the official Ookla engine, but actual internet throughput and the precise reason for prior inflated readings were not measured on the laptop. The engine remains subject to the app service's resource limits. Browser-native codec support varies; there is no server transcoding.
 
