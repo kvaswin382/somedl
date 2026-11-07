@@ -84,7 +84,7 @@ def build_command(job, dest, cookie, settings, state):
         if job.get('profile_mode'):
             config['extractor']['instagram']['max-posts'] = None
             config['extractor']['instagram']['include'] = {'posts':['photos'],'reels':['reels'],'everything':['posts','reels']}[job['profile_mode']]
-            config['extractor']['archive'] = str(dest/'.profile-archive.sqlite3')
+            config['extractor']['archive'] = str(dest/'.profile-downloads-v2.sqlite3')
             config['extractor']['archive-event'] = ['file']
             config['extractor']['archive-pragma'] = ['journal_mode=WAL']
         # A single post/reel is intentional; it prevents an accidental whole-account crawl.
@@ -96,7 +96,8 @@ def build_command(job, dest, cookie, settings, state):
         args = [sys.executable, '-m', 'gallery_dl', '--config-ignore', '--config', str(config_path),
                 '--directory', str(dest), '--write-metadata']
         if job.get('profile_mode'):
-            args += ['--print','after:ZEDITEM {post_shortcode}']
+            # Lowercase --print disables downloads AND can populate the archive.
+            args += ['--Print','after:ZEDITEM {post_shortcode}']
         if cookie:
             args += ['--cookies', str(cookie)]
         return args + ['--', url]

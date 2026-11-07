@@ -4,6 +4,8 @@ const $$ = (q, root = document) => [...root.querySelectorAll(q)];
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const E = escapeHTML;
 let selectedPlatform='instagram', settingsTab='general', toolPlatform='instagram';
+let fileSort=localStorage.getItem('zedair-file-sort')||'date-desc';
+if(!['date-desc','date-asc','name-asc','name-desc','size-desc','size-asc'].includes(fileSort))fileSort='date-desc';
 let fileView=localStorage.getItem('zedair-file-view')==='grid'?'grid':'list',fileOffset=0,fileEntries=[],fileTotal=0,fileRequest=0,loadedFilePath=null;
 let csrf = '', state = null, page = 'queue', filter = 'all', filePath = '', folderPath = '', folderTarget = '', cookieSlot = '', timer, toastTimer, busy = false;
 const bytes = n => { n=Number(n)||0; const units=['B','KiB','MiB','GiB','TiB']; let i=0; while(n>=1024&&i<4){n/=1024;i++;} return `${n.toFixed(i>1?1:0)} ${units[i]}`; };
@@ -89,13 +91,14 @@ async function loadFiles(){
   if(loadedFilePath!==filePath){fileOffset=0;loadedFilePath=filePath;}
   const request=++fileRequest;
   $('#filePath').textContent='Zedair/'+filePath;$('#filesUp').disabled=!filePath;
-  try{const result=await api('folders?path='+encodeURIComponent(filePath)+'&offset='+fileOffset+'&limit=24');if(request!==fileRequest)return;
+  try{const result=await api('folders?path='+encodeURIComponent(filePath)+'&offset='+fileOffset+'&limit=24&sort='+fileSort.split('-')[0]+'&order='+fileSort.split('-')[1]);if(request!==fileRequest)return;
     fileEntries=result.entries;fileTotal=result.total??result.entries.length;
     if(!fileEntries.length&&fileOffset){fileOffset=Math.max(0,fileOffset-24);return loadFiles();}
     renderFiles();
-  }catch(error){$('#fileList').innerHTML=empty('!','Storage unavailable',error.message);}
+  }catch(error){if(request===fileRequest)$('#fileList').innerHTML=empty('!','Storage unavailable',error.message);}
 }
 function renderFiles(){
+  $('#fileSort').value=fileSort;
   $('#fileList').classList.toggle('file-grid',fileView==='grid');
   $$('[data-file-view]').forEach(b=>{b.classList.toggle('selected',b.dataset.fileView===fileView);b.setAttribute('aria-pressed',String(b.dataset.fileView===fileView));});
   $('#filesCount').textContent=fileTotal+' items';$('#filesPrev').disabled=fileOffset===0;$('#filesNext').disabled=fileOffset+24>=fileTotal;
@@ -113,12 +116,14 @@ function renderFiles(){
     const tag=entry.preview?'button':'div';return `<div class="file-entry"><${tag} class="file-row" ${tag==='button'?attrs:''}><span>${icon}</span><strong>${E(entry.name)}${entry.preview?'<span class="file-preview-label"> · Preview</span>':''}</strong><small>${bytes(entry.size)}</small></${tag}>${actions}</div>`;
   }).join(''):empty('▤','This folder is empty.','Create a subfolder or point your next download here.');
 }
+$('#fileSort').value=fileSort;
+$('#fileSort').onchange=()=>{fileSort=$('#fileSort').value;localStorage.setItem('zedair-file-sort',fileSort);fileOffset=0;loadFiles();};
 $('#filesPrev').onclick=()=>{fileOffset=Math.max(0,fileOffset-24);loadFiles();};
 $('#filesNext').onclick=()=>{fileOffset+=24;loadFiles();};
 document.addEventListener('error',event=>{if(event.target.matches?.('.file-thumb img'))event.target.remove();},true);
 async function loadFolders(){
   $('#folderPath').textContent='Zedair/'+folderPath;$('#folderUp').disabled=!folderPath;
-  const result=await api('folders?path='+encodeURIComponent(folderPath));
+  const result=await api('folders?path='+encodeURIComponent(folderPath)+'&sort=name&order=asc');
   const dirs=result.entries.filter(e=>e.directory);
   $('#folderList').innerHTML=dirs.length?dirs.map(e=>`<button class="file-row" data-folder="${E(join(folderPath,e.name))}"><span>▰</span><strong>${E(e.name)}</strong><small>→</small></button>`).join(''):empty('▤','No subfolders.','Use this folder, or create one below.');
 }

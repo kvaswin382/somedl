@@ -1,8 +1,24 @@
-# Zedair Download Desk — v1.3
+# Zedair Download Desk — v1.3.1
 
 A private web downloader for your Ubuntu 24.04 laptop. Open it from your phone, tablet or computer on the same home network. The laptop does the downloading and saves files on the USB SSD.
 
 Built for your x86_64 Zedair with 2 GB RAM, 32 GB eMMC and an existing exFAT SSD. **Do not format the SSD.** Its existing files can stay where they are. This package needs to be installed or upgraded on your laptop; downloading this source does not change the running server.
+
+## v1.3.1: fix Instagram profile downloads
+
+The v1.3 profile command accidentally used gallery-dl's lowercase `--print`, which disables downloading. It still emitted “saved” messages and recorded media IDs in an archive, so the counter increased without any media files. The app then tried to publish an empty folder. Direct post/reel downloads did not use that flag, which is why they could still work with the same session.
+
+This release uses `--Print` (print **and download**), ignores the old false-completion archive, resets affected false counters once, and repairs empty jobs stuck in the publication phase. It keeps existing files and cookies. Counts now come from the engine's after-download event; carousel items count as separate media files, not separate posts.
+
+1. Put this updated source into your GitHub repository, commit and push it.
+2. On Ubuntu, use the Git pull + `upgrade.sh` steps below. No new package or browser installation is required for this fix.
+3. Reload the webpage and check the footer says **v1.3.1**.
+4. Open **Tools → Profile jobs**, find the failed Instagram profile, and click **Resume / retry**. You can reuse the same job and saved cookies; do not delete SSD folders or replace a working session just for this bug.
+5. Watch the media count and open its destination after the attempt finishes. Completed files are published under `Instagram/<username>`.
+
+Old false counts may drop to zero after the upgrade: they did not represent downloaded media. The new archive is stored separately in the existing job's hidden working folder; the old archive is left intact and is not used for skipping. New jobs work with the same corrected command. If the website subsequently returns a real authentication/rate-limit error, inspect Details normally; this fix cannot override a website restriction.
+
+The regression test reproduces the original false counter and archive with the real gallery-dl CLI, then upgrades the same job and verifies actual file bytes, publication, accurate counts and duplicate-free retry using local fixture media. It does not use a live Instagram account.
 
 ## Already installed? Update from GitHub
 
@@ -50,7 +66,7 @@ After success:
 systemctl status zedair zedair-transmission --no-pager
 ```
 
-Refresh the page with **Ctrl+F5** on Windows. On your phone, reload the page. The footer should show **v1.3.0**. Existing jobs keep their old folders so they can resume; newly added jobs use platform folders. To use the new layout for a failed old job, cancel it and add the URL again. Existing files are not relocated automatically.
+Refresh the page with **Ctrl+F5** on Windows. On your phone, reload the page. The footer should show **v1.3.1**. Existing jobs keep their old folders so they can resume; newly added jobs use platform folders. For a legacy individual-download job that uses an old folder layout, cancel it and add the URL again only if you want to change that layout. For the Instagram profile bug fixed in v1.3.1, retry the existing job as described above. Existing files are not relocated automatically.
 
 ### First time using Git on this laptop
 
@@ -366,7 +382,9 @@ If a request still fails, open **Details**. Verification/challenge errors, rate 
 
 ## Preview, download and delete files
 
-Open **SSD files** and enter a platform folder. Click an image/video filename marked **Preview** to open it inside the page. Videos have native playback, volume, seeking and fullscreen controls; supported audio files also have a player. Closing the preview stops playback. Click the separate **Download** button only when you want a copy on the current phone/computer. **New folder** creates a subfolder. **List / Grid** switches the layout and remembers your preference on that browser. Both layouts have Previous/Next navigation with 24 entries per page. Grid images load lazily from the real file, with the filename below; videos have a static placeholder and load only when you open Preview. Images are not server-generated thumbnails, so large originals can still use significant LAN bandwidth.
+Open **SSD files** and enter a platform folder. Click an image/video filename marked **Preview** to open it inside the page. Videos have native playback, volume, seeking and fullscreen controls; supported audio files also have a player. Closing the preview stops playback. Click the separate **Download** button only when you want a copy on the current phone/computer. **New folder** creates a subfolder. **List / Grid** switches the layout and remembers your preference on that browser. Both layouts have Previous/Next navigation with 24 entries per page. **Sort files** offers filename A–Z/Z–A, size smallest/largest first, and date oldest/newest first. **Newest first is the default**; your selected order is remembered in this browser. Sorting covers the complete folder before pagination, and folders appear before files. Grid images load lazily from the real file, with the filename below; videos have a static placeholder and load only when you open Preview. Images are not server-generated thumbnails, so large originals can still use significant LAN bandwidth.
+
+Date sorting uses the completion time recorded by v1.3.1 and later for newly published media. That remains correct even when the source website supplies an old file modification time. Older files, files imported through Windows and torrent-managed files use their filesystem modification time because their original download time was not recorded. Changing sorting does not rename files or change their timestamps. Download dates survive clearing queue history; replacing/renaming a file outside the app can make it use the modification-time fallback.
 
 Previews require your normal login and stream the original file from the SSD. They do not convert video or use FFmpeg in the background, which keeps CPU/RAM usage low on the laptop. Your browser still transfers media bytes to display/play them. MP4 with H.264/AAC and common JPEG/PNG/WebP images usually have the broadest browser support. MKV, HEVC, some audio formats and unfinished torrent files may not play in your browser even when the download is valid. Use **Download** and a compatible player in that case. SVG/HTML files are not rendered inline. Seeking uses HTTP byte ranges; a disconnected SSD or expired login can interrupt playback.
 
@@ -513,6 +531,7 @@ df -h /srv/zedair-ssd
 | Webpage cannot connect | Laptop IP, port 8787, service status, firewall and guest-network isolation. |
 | SSD offline | USB power/cable, mount UUID and `findmnt`. Reconnect with the Windows/SSD steps. Never disable `require_mount` to hide the error. |
 | Free-space reserve reached | Delete unwanted files through SSD files, or free space in Windows. Browsing/deletion work below the reserve. |
+| Instagram profile shows a count but no files | Upgrade to v1.3.1, then retry the same profile job; see the recovery section at the top. Existing working cookies need no replacement for this bug. |
 | Instagram fails | Read Details; renew cookies, finish a browser challenge, wait for a rate limit or update engines as appropriate. |
 | Facebook profile stops | Inspect the experimental collector log; check session, scroll limit, layout changes and browser installation. A finished job is not proof of a complete archive. |
 | MP4-only format unavailable | The source offers no matching MP4/M4A combination at the selected ceiling. Try Automatic if another format is acceptable. |
@@ -588,6 +607,7 @@ With FFmpeg and `requirements.txt` installed in your development Python environm
 python tests/integration_media.py
 python tests/integration_instagram_cookies.py
 python tests/integration_profiles_formats.py
+python tests/integration_instagram_profile_download.py
 ```
 
 See `TEST-REPORT.md` for actual verification and its limits. This release was not installed on your physical laptop. Live account-specific Instagram/X access, real torrent swarms, SSD/systemd behavior and real laptop speed need confirmation there. No preview account, browser screenshot, cookie file or populated database is included in the release.

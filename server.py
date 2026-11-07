@@ -162,6 +162,15 @@ class Desk:
             if key not in columns:
                 self.db.execute('ALTER TABLE jobs ADD COLUMN '+key+' '+definition)
         self.db.execute('CREATE TABLE IF NOT EXISTS published(job TEXT, source TEXT, target TEXT, signature TEXT, complete INTEGER, PRIMARY KEY(job,source))')
+        self.db.execute('CREATE TABLE IF NOT EXISTS file_dates(folder TEXT,name TEXT,size INTEGER,mtime_ns INTEGER,downloaded REAL,PRIMARY KEY(folder,name))')
+        if not self.db.execute("SELECT 1 FROM settings WHERE key='instagram_download_fix_v131'").fetchone():
+            # v1.3's print-only profile command produced false counts and could leave
+            # an empty job stuck in publication. Do not touch direct URLs or files.
+            self.db.execute("""UPDATE jobs SET items=0,phase='download',progress=0,
+                detail='Profile download fix applied. Resume/retry this job to download its media.'
+                WHERE kind='instagram' AND profile_mode!='' AND NOT EXISTS
+                (SELECT 1 FROM published p WHERE p.job=jobs.id AND p.complete=1)""")
+            self.db.execute("INSERT INTO settings(key,value) VALUES('instagram_download_fix_v131','true')")
         self.db.execute("UPDATE jobs SET status='queued', detail='Recovering after service restart' WHERE status='running'")
         self.db.commit()
         self.stop = threading.Event()
@@ -233,6 +242,7 @@ class Desk:
                 if any(path.resolve()==(Path(torrent['downloadDir'])/f['name']).resolve() for f in torrent.get('files',[])):
                     raise APIError('Remove this torrent from the torrent list first, then delete its files here',409)
             path.unlink()
+            self.write('DELETE FROM file_dates WHERE folder=? AND name=?',('' if path.parent==self.root else path.parent.relative_to(self.root).as_posix(),path.name))
 
     def storage(self, reserve=True):
         status = {'ready': False, 'root': str(self.root), 'mount': str(self.mount), 'free': 0, 'total': 0, 'reason': ''}
@@ -624,7 +634,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'settings': self.settings(), 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'uptime': int(now()-self.started), 'version': '1.3.0', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'uptime': int(now()-self.started), 'version': '1.3.1', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def get_session(self, raw):
         jar = http.cookies.SimpleCookie()
@@ -764,18 +774,31 @@ class Handler(BaseHTTPRequestHandler):
                 offset=int(query.get('offset',['0'])[0]);limit=int(query.get('limit',['1000'])[0])
                 if offset<0 or not 1<=limit<=1000:raise ValueError()
             except ValueError:raise APIError('Invalid file page')
-            entries = [];total=0
+            sort=query.get('sort',['date'])[0];order=query.get('order',['desc'])[0]
+            if sort not in ('name','size','date') or order not in ('asc','desc'):
+                raise APIError('Invalid file sort')
+            entries=[]
+            dates={r['name']:r for r in d.rows('SELECT name,size,mtime_ns,downloaded FROM file_dates WHERE folder=?',(relative,))}
             reserved = {d.root/r['folder']/r['subdir']/r['target'] for r in d.rows('SELECT p.target,j.folder,j.subdir FROM published p JOIN jobs j ON p.job=j.id WHERE p.complete=0')}
-            for item in sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+            # Sort the complete directory before slicing a page; never sort just 24 items.
+            for item in path.iterdir():
                 if item.is_symlink() or item.name.startswith('.') or item in reserved:continue
-                total+=1
-                if total<=offset or len(entries)>=limit:continue
                 try:
                     stat=item.stat();directory=item.is_dir()
-                    entries.append({'name': item.name, 'directory': directory, 'size': stat.st_size if not directory else 0,
-                        'preview': '' if directory else preview_type(item.suffix), 'stamp': str(stat.st_size)+':'+str(stat.st_mtime_ns)})
+                    if not directory and not item.is_file():continue
+                    saved=dates.get(item.name)
+                    recorded=not directory and saved and saved['size']==stat.st_size and saved['mtime_ns']==stat.st_mtime_ns
+                    date=saved['downloaded'] if recorded else stat.st_mtime
+                    entries.append({'name':item.name,'directory':directory,'size':stat.st_size if not directory else 0,
+                        'date':date,'date_source':'downloaded' if recorded else 'modified',
+                        'preview':'' if directory else preview_type(item.suffix),'stamp':str(stat.st_size)+':'+str(stat.st_mtime_ns)})
                 except FileNotFoundError:continue
-            self.reply({'path':relative,'entries':entries,'limit':limit,'offset':offset,'total':total,'more':offset+len(entries)<total})
+            # Deterministic tie ordering prevents repeated/missing files on adjacent pages.
+            entries.sort(key=lambda e:(e['name'].casefold(),e['name']))
+            entries.sort(key=lambda e:e['name'].casefold() if sort=='name' else e[sort],reverse=order=='desc')
+            entries.sort(key=lambda e:not e['directory'])
+            total=len(entries);entries=entries[offset:offset+limit]
+            self.reply({'path':relative,'entries':entries,'limit':limit,'offset':offset,'total':total,'more':offset+len(entries)<total,'sort':sort,'order':order})
         elif p.path == '/api/speedtest/history.csv':
             raw=history_csv(d.speedtest.history())
             self.send_response(200);self.headers_common()

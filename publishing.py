@@ -3,6 +3,7 @@ import hashlib
 import json
 import os
 import re
+import time
 from pathlib import Path
 
 MEDIA = {'.mp4','.mkv','.webm','.mov','.avi','.m4v','.mp3','.m4a','.ogg','.opus','.flac','.wav','.aac','.jpg','.jpeg','.png','.webp','.gif','.avif','.srt','.vtt','.ass','.ts','.m4b'}
@@ -78,4 +79,11 @@ def finish(desk,row,stage,destination):
         os.replace(source,target)
     elif not target.is_file() or target.is_symlink() or fingerprint(target)!=row['signature']:
         raise ValueError('A published output file is missing or changed; inspect the SSD before retrying')
-    desk.write('UPDATE published SET complete=1 WHERE job=? AND source=?',(row['job'],row['source']))
+    # Persist completion time separately from the source website's original mtime.
+    stat=target.stat();folder=destination.relative_to(desk.root).as_posix()
+    if folder=='.':folder=''
+    with desk.lock:
+        desk.db.execute('INSERT INTO file_dates(folder,name,size,mtime_ns,downloaded) VALUES(?,?,?,?,?) ON CONFLICT(folder,name) DO UPDATE SET size=excluded.size,mtime_ns=excluded.mtime_ns,downloaded=excluded.downloaded',
+                        (folder,target.name,stat.st_size,stat.st_mtime_ns,time.time()))
+        desk.db.execute('UPDATE published SET complete=1 WHERE job=? AND source=?',(row['job'],row['source']))
+        desk.db.commit()

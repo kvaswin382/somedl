@@ -1,10 +1,10 @@
-# Verification report — Zedair 1.3.0
+# Verification report — Zedair 1.3.1
 
-Date: 6 November 2026. Target: Ubuntu 24.04 x86_64, Python 3.12, exFAT USB SSD.
+Date: 7 November 2026. Target: Ubuntu 24.04 x86_64, Python 3.12, exFAT USB SSD.
 
 ## Passed
 
-- **69 automated tests** with `python3 -m unittest discover -s tests -v`.
+- **75 automated tests** with `python3 -m unittest discover -s tests -v`.
 - Real gallery-dl cookie serialization regression: its writer exports session expiry as `0`; the old MozillaCookieJar reader interprets that as epoch zero. The new reader correctly recognizes it as a session cookie. Three simulated server rotations survive real gallery-dl write/reload cycles. This test makes no Instagram requests and uses no real account.
 - Two consecutive queue jobs with a controlled downloader process exercise private working cookies, successful-session publication and next-job reuse.
 - Real yt-dlp loopback integration downloads a generated MP4 with FFmpeg available. Verified exact media bytes, title/progress output, metadata naming, numbered publication and preservation of an existing file.
@@ -13,6 +13,17 @@ Date: 6 November 2026. Target: Ubuntu 24.04 x86_64, Python 3.12, exFAT USB SSD.
 - Desktop browser checks: image preview loaded its actual pixels; MP4 metadata loaded and native video playback advanced; closing the dialog removed the media element. The separate Download action remains available.
 - Dark theme and mobile speed-test layout checked at a 375 CSS-pixel content viewport: body width equals viewport width. Main background is RGB(21,21,23); speed card is RGB(32,32,35). Historical report details opened successfully.
 - Browser speed values were explicitly labelled test fixtures, not network measurements. No production account or authentication bypass is included.
+
+## v1.3.1 regression and sorting verification
+
+- The real gallery-dl 1.32.19 CLI reproduced v1.3's bug: `--print` emitted four completed-item messages, made zero media HTTP requests, created zero media files, and wrote four false archive entries.
+- The same failed job was placed in its old `publish` phase with a false count, then reopened through the v1.3.1 startup migration. Its phase/count were repaired, the corrected `--Print` command fetched four exact-byte fixture images across two pages, the normal server worker published them, and the job finished successfully with a count of four.
+- Repeating that job's download phase used the real replacement archive and made zero additional media requests, created no duplicate outputs and retained the count of four. All media came from a loopback HTTP server; only Instagram extraction responses were substituted. No live Instagram requests were made.
+- Startup migration is one-time, retains old archive bytes and does not reset direct post jobs. Real published files are excluded from the empty-job repair.
+- File HTTP tests cover all six sort orders, newest-first default, folder priority, hidden/symlink exclusion, validation/authentication, ordering before pagination, stable ties, stored download dates and modification-time fallback for an externally replaced file.
+- Browser checks confirmed newest-first default, alphabetical ordering, largest-first ordering in list and grid, and oldest-first ordering on mobile. The sort selection persisted across page navigation; at 320 CSS pixels the file page had equal body/client scroll widths and the sort control wrapped below the view buttons.
+- Publication records completion time without changing original file modification time. Clearing job history retains recorded dates; deleting a file removes its date record.
+- The three earlier real-engine integration scripts also passed, alongside Python/JavaScript syntax checks. The previous profile test checked pagination/archive primitives but missed the CLI print flag; the new test exercises the CLI parser and actual media writes through the worker.
 
 ## v1.3 additions verified
 
