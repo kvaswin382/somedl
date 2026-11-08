@@ -37,6 +37,10 @@ def title_for(path):
     return filename(re.sub(r' \[[^\]]+\]$', '', path.stem))
 
 def publish(desk, job, stage, destination):
+    with desk.file_lock:
+        return _publish(desk, job, stage, destination)
+
+def _publish(desk, job, stage, destination):
     jid=job['id']
     # Journal commits precede rename. A restart in the publish phase never re-downloads.
     for row in desk.rows('SELECT * FROM published WHERE job=? AND complete=0',(jid,)):
@@ -47,7 +51,8 @@ def publish(desk, job, stage, destination):
         if desk.rows('SELECT source FROM published WHERE job=? AND source=?',(jid,source.name)):
             continue
         desk.destination(str(destination.relative_to(desk.root)),reserve=False)
-        stem=title_for(source)
+        custom=job.get('filename','')
+        stem=filename(Path(custom).stem if Path(custom).suffix.lower() in MEDIA else custom) if custom else title_for(source)
         marker=('ZEDAIR-RESERVED:'+jid+':'+source.name).encode()
         for index in range(100000):
             target=destination/(stem+(f' ({index})' if index else '')+source.suffix.lower())

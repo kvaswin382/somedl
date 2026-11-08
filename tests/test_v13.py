@@ -56,11 +56,11 @@ class ProfileTests(Fixture):
             result=self.desk.add_profile({'platform':'instagram','profile':'@Example.User','mode':mode})
             job=self.desk.job(result['id']);self.assertEqual(job['subdir'],'Instagram/example.user')
             dest=self.desk.staging(job['id']);args=build_command(job,dest,self.desk.cookie_for(job),self.desk.settings(),self.desk.state)
-            config=json.loads((self.desk.state/('gallery-'+job['id']+'.json')).read_text())['extractor']
+            config=json.loads((self.desk.state/('profile-'+job['id']+'.json')).read_text())['config']['extractor']
             self.assertIsNone(config['instagram']['max-posts'])
             self.assertEqual(config['instagram']['include'],{'posts':['photos'],'reels':['reels'],'everything':['posts','reels']}[mode])
             self.assertTrue(config['archive'].startswith(str(dest)))
-            self.assertIn('after:ZEDITEM {post_shortcode}',args)
+            self.assertTrue(args[1].endswith('instagram_profile.py'))
         with self.assertRaises(APIError):self.desk.add_profile({'platform':'instagram','profile':'example.user','mode':'posts'})
 
     def test_individual_instagram_posts_still_one_post(self):
@@ -79,7 +79,7 @@ class ProfileTests(Fixture):
             self.desk.add_profile({'platform':'facebook','profile':'someuser'})
         with patch('profiles.browser_ready',return_value=True):
             result=self.desk.add_profile({'platform':'facebook','profile':'https://www.facebook.com/profile.php?id=12345','folder':'Collections','mode':'reels'})
-        job=self.desk.job(result['id']);self.assertEqual(job['subdir'],'Facebook/12345');self.assertEqual(job['folder'],'Collections')
+        job=self.desk.job(result['id']);self.assertEqual(job['subdir'],'');self.assertEqual(job['folder'],'Collections')
         args=build_command(job,self.desk.staging(job['id']),self.desk.cookie_for(job),self.desk.settings(),self.desk.state)
         self.assertTrue(args[1].endswith('facebook_profile.py'))
 

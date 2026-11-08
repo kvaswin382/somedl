@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Zedair Download Desk — a small, single-user LAN download server."""
 import argparse
+import importlib.metadata
 import base64
+import random
 import collections
 import hashlib
 import hmac
@@ -158,7 +160,7 @@ class Desk:
                 last_error TEXT DEFAULT '', position REAL);
         ''')
         columns = {r[1] for r in self.db.execute('PRAGMA table_info(jobs)')}
-        for key, definition in {'container':"TEXT DEFAULT 'auto'", 'layout':'INTEGER DEFAULT 1', 'phase':"TEXT DEFAULT 'download'", 'error_kind':"TEXT DEFAULT ''", 'profile_mode':"TEXT DEFAULT ''", 'profile_username':"TEXT DEFAULT ''", 'scroll_limit':'INTEGER DEFAULT 2000', 'items':'INTEGER DEFAULT 0'}.items():
+        for key, definition in {'container':"TEXT DEFAULT 'auto'", 'layout':'INTEGER DEFAULT 1', 'phase':"TEXT DEFAULT 'download'", 'error_kind':"TEXT DEFAULT ''", 'profile_mode':"TEXT DEFAULT ''", 'profile_username':"TEXT DEFAULT ''", 'scroll_limit':'INTEGER DEFAULT 2000', 'items':'INTEGER DEFAULT 0', 'filename':"TEXT DEFAULT ''", 'images_only':'INTEGER DEFAULT 0', 'browser_fallback':'INTEGER DEFAULT 1'}.items():
             if key not in columns:
                 self.db.execute('ALTER TABLE jobs ADD COLUMN '+key+' '+definition)
         self.db.execute('CREATE TABLE IF NOT EXISTS published(job TEXT, source TEXT, target TEXT, signature TEXT, complete INTEGER, PRIMARY KEY(job,source))')
@@ -173,6 +175,11 @@ class Desk:
             self.db.execute("INSERT INTO settings(key,value) VALUES('instagram_download_fix_v131','true')")
         self.db.execute("UPDATE jobs SET status='queued', detail='Recovering after service restart' WHERE status='running'")
         self.db.commit()
+        self.engine_versions={}
+        for package in ('yt-dlp','gallery-dl','playwright'):
+            try:self.engine_versions[package]=importlib.metadata.version(package)
+            except importlib.metadata.PackageNotFoundError:self.engine_versions[package]='Not installed'
+        self.file_lock = threading.RLock()
         self.stop = threading.Event()
         self.current = None
         self.process = None
@@ -223,7 +230,7 @@ class Desk:
     def delete_file(self, data):
         if data.get('confirm') is not True:
             raise APIError('Confirm permanent deletion first')
-        with self.lock:
+        with self.file_lock, self.lock:
             path = self.destination(data.get('path',''), reserve=False)
             if not path.is_file():
                 raise APIError('File not found',404)
@@ -302,8 +309,8 @@ class Desk:
 
     def add_jobs(self, data):
         urls = data.get('urls', [])
-        if not isinstance(urls, list) or not 1 <= len(urls) <= 30:
-            raise APIError('Paste between 1 and 30 URLs')
+        if not isinstance(urls, list) or not 1 <= len(urls) <= 100:
+            raise APIError('Paste between 1 and 100 URLs')
         if len(self.rows('SELECT id FROM jobs')) + len(urls) > 1000:
             raise APIError('History is full (1,000 jobs). Clear finished history first.')
         quality = data.get('quality', 'platform')
@@ -317,6 +324,8 @@ class Desk:
             raise APIError('Unknown cookie profile')
         folder = safe_relative(data.get('folder', ''))
         name = safe_relative(data.get('name', ''))
+        custom = safe_relative(data.get('filename', '').strip())
+        if '/' in custom or len(custom.encode())>110:raise APIError('Use a filename of at most 110 bytes, without folders')
         if '/' in name or len(name) > 80:
             raise APIError('Use one short display label')
         # Validate the whole batch before recording any work. Queuing while unplugged is allowed.
@@ -341,14 +350,14 @@ class Desk:
                     continue
                 jid = secrets.token_hex(6)
                 prefs = self.platform_settings()[platforms.platform_for(url)]
-                subdir = platforms.platform_folder(url,self.platform_settings())
+                subdir = '' if folder or data.get('folder_selected') is True else platforms.platform_folder(url,self.platform_settings())
                 selected_quality = prefs.get('quality','best') if quality=='platform' else quality
                 self.db.execute('''INSERT INTO jobs(id,url,kind,folder,name,subdir,quality,playlist,subtitles,cookie_profile,status,created,updated,position,layout)
                                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,2)''',
                     (jid, url, kind, folder, name or urllib.parse.urlsplit(url).hostname, subdir, selected_quality,
                      int(bool(data.get('playlist') or (quality=='platform' and prefs.get('playlist')))), int(bool(data.get('subtitles') or (quality=='platform' and prefs.get('subtitles')))), cookie, 'queued', now(), now(), now()))
                 selected_container=prefs.get('container','auto') if container=='platform' else container
-                self.db.execute('UPDATE jobs SET container=? WHERE id=?',(selected_container,jid))
+                self.db.execute('UPDATE jobs SET container=?,filename=?,browser_fallback=? WHERE id=?',(selected_container,custom,int(data.get('browser_fallback',True) is True),jid))
                 result.append(jid)
             self.db.commit()
         return {'ids': result, 'skipped': len(urls)-len(result)}
@@ -357,14 +366,16 @@ class Desk:
         platform=data.get('platform')
         username,url=profiles.profile_target(platform,data.get('profile',''))
         mode=data.get('mode','everything')
-        if mode not in profiles.MODES:raise APIError('Choose posts, reels or everything')
+        if mode not in (*profiles.MODES,'avatar') or (mode=='avatar' and platform!='instagram'):raise APIError('Choose a supported profile mode')
+        images_only=data.get('images_only',False) is True
+        if images_only and (platform!='instagram' or mode=='reels'):raise APIError('Images only is available for Instagram posts or everything')
         limit=data.get('scroll_limit',2000)
         if type(limit) is not int or not 10<=limit<=10000:raise APIError('Scroll limit must be between 10 and 10,000')
         if not self.platform_settings()[platform]['enabled']:raise APIError('Enable this platform in Settings first')
         if not platforms.cookie_status(self.state,platform)['usable']:raise APIError('Add a usable '+platform+' session in Settings → Platforms first')
         if platform=='facebook' and not profiles.browser_ready():raise APIError('Install the optional collector on the laptop: sudo bash /opt/zedair/install-facebook.sh')
         folder=safe_relative(data.get('folder',''))
-        subdir=safe_relative(('Instagram' if platform=='instagram' else 'Facebook')+'/'+username)
+        subdir='' if folder else safe_relative(('Instagram' if platform=='instagram' else 'Facebook')+'/'+username)
         with self.lock:
             if self.db.execute("SELECT id FROM jobs WHERE url=? AND profile_mode=? AND status IN ('queued','running','retry','paused','blocked')",(url,mode)).fetchone():
                 raise APIError('This profile and selection are already in the queue')
@@ -372,6 +383,7 @@ class Desk:
             jid=secrets.token_hex(6)
             self.db.execute("""INSERT INTO jobs(id,url,kind,folder,name,subdir,quality,playlist,subtitles,cookie_profile,status,created,updated,position,layout,profile_mode,profile_username,scroll_limit)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,2,?,?,?)""",(jid,url,engine_for(url),folder,platform.title()+' / '+username,subdir,'best',0,0,platform,'queued',now(),now(),now(),mode,username,limit))
+            self.db.execute('UPDATE jobs SET images_only=? WHERE id=?',(int(images_only),jid))
             self.db.commit()
         return {'id':jid,'destination':'/'.join(x for x in ('Zedair',folder,subdir) if x)}
 
@@ -486,6 +498,11 @@ class Desk:
                 instagram_session = platforms.CookieSession(cookie,key)
                 cookie = instagram_session.path
             args = build_command(job, dest, cookie, settings, self.state)
+            if job['kind']=='video' and not job.get('profile_mode') and job.get('browser_fallback',1) and 'yt_dlp' in args:
+                spec=self.state/('video-'+jid+'.json')
+                spec.write_text(json.dumps({'args':args,'url':job['url'],'dest':str(dest),'cookie':str(cookie or ''),'enabled':True}))
+                spec.chmod(0o600)
+                args=[sys.executable,str(Path(__file__).with_name('browser_video.py')),str(spec)]
             env = dict(os.environ, TMPDIR=str(dest), XDG_CACHE_HOME=str(dest), PYTHONUNBUFFERED='1')
             self.current = jid
             self.live[jid] = {}
@@ -515,6 +532,15 @@ class Desk:
             if self.job(jid)['status'] != 'running':
                 return
             live = self.live.get(jid, {})
+            if self.process.returncode == 79 and job.get('images_only') and key=='instagram':
+                self.update_job(jid,status='done',progress=100,detail='Available feed examined; no matching images were exposed by Instagram.')
+                return
+            if self.process.returncode == 75 and job.get('profile_mode') and key=='instagram':
+                if instagram_session:instagram_session.commit()
+                if any(p.is_file() and p.suffix.lower() in MEDIA for p in dest.iterdir()):publish(self,job,dest,output)
+                self.update_job(jid,status='retry',next_try=now()+random.randint(120,300),position=now(),
+                    detail='Page checkpoint saved. Short rest before continuing; other downloads can run.',last_error=live.get('log',''))
+                return
             if self.process.returncode == 0:
                 if instagram_session:
                     try:
@@ -524,7 +550,7 @@ class Desk:
                 if job['layout']==2:
                     self.update_job(jid,phase='publish',name=live.get('name',job['name']))
                     publish(self, job, dest, output)
-                self.update_job(jid, status='done', progress=100, detail='Saved to ' + relative,
+                self.update_job(jid, status='done', progress=100, detail=('Available profile feed finished; saved to ' if job.get('profile_mode') else 'Saved to ') + relative,
                     name=live.get('name', job['name']), last_error=live.get('log', '')[-8000:])
                 if job['layout']==2:
                     self.clean_metadata(dest)
@@ -540,9 +566,12 @@ class Desk:
                 attempts = max(fresh['attempts'], job['attempts'] + 1)
                 error = platforms.redact(str(exc), self.state)[-8000:]
                 category, detail = platforms.failure_kind(error)
-                again = category=='transient' and attempts <= self.get_setting('retry_count', 3)
+                profile_retry=job.get('profile_mode') and job['kind']=='instagram' and category in ('transient','rate_limit','access') and attempts<=96
+                again = profile_retry or (category=='transient' and attempts <= self.get_setting('retry_count', 3))
+                delay=random.randint(1800,3600)*min(8,2**min(attempts-1,3)) if profile_retry else min(1800,60*2**min(attempts-1,5))
+                if profile_retry:detail='Collection incomplete. Saved progress kept; cooling down before automatic retry.'
                 self.update_job(jid, status='retry' if again else 'error', attempts=attempts,
-                    next_try=now() + min(1800, 60 * 2**min(attempts-1, 5)),
+                    next_try=now() + delay,
                     last_error=error, error_kind=category, detail=detail if category!='transient' or again else 'Needs attention')
         finally:
             if instagram_session:
@@ -550,6 +579,7 @@ class Desk:
             self.current = None
             self.process = None
             self.live.pop(jid, None)
+            (self.state / ('video-' + jid + '.json')).unlink(missing_ok=True)
             (self.state / ('gallery-' + jid + '.json')).unlink(missing_ok=True)
             (self.state / ('profile-' + jid + '.json')).unlink(missing_ok=True)
 
@@ -634,7 +664,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'settings': self.settings(), 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'uptime': int(now()-self.started), 'version': '1.3.1', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '1.4.0', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def get_session(self, raw):
         jar = http.cookies.SimpleCookie()
@@ -765,6 +795,11 @@ class Handler(BaseHTTPRequestHandler):
         elif p.path == '/api/system':
             storage=d.storage(reserve=False)
             self.reply(d.systemstats.snapshot(d.root if storage['ready'] else None))
+        elif p.path == '/api/progress':
+            jobs=d.rows("SELECT id,status,name,progress,items FROM jobs WHERE status='running'")
+            for job in jobs:
+                job.update({k:v for k,v in d.live.get(job['id'],{}).items() if k in ('progress','name','speed','eta','detail')})
+            self.reply({'jobs':jobs})
         elif p.path == '/api/folders':
             relative = query.get('path', [''])[0]
             path = d.destination(relative, reserve=False)
@@ -797,6 +832,15 @@ class Handler(BaseHTTPRequestHandler):
             entries.sort(key=lambda e:(e['name'].casefold(),e['name']))
             entries.sort(key=lambda e:e['name'].casefold() if sort=='name' else e[sort],reverse=order=='desc')
             entries.sort(key=lambda e:not e['directory'])
+            if 'adjacent' in query:
+                media=[e for e in entries if e['preview']]
+                selected=query['adjacent'][0]
+                direction=query.get('direction',['0'])[0]
+                if direction not in ('-1','0','1'):raise APIError('Invalid preview direction')
+                indices=[i for i,e in enumerate(media) if e['name']==selected]
+                if not indices:raise APIError('Preview file no longer exists',404)
+                i=indices[0];n=i+int(direction)
+                self.reply({'entry':media[n] if 0<=n<len(media) else None,'previous':i>0,'next':i+1<len(media)});return
             total=len(entries);entries=entries[offset:offset+limit]
             self.reply({'path':relative,'entries':entries,'limit':limit,'offset':offset,'total':total,'more':offset+len(entries)<total,'sort':sort,'order':order})
         elif p.path == '/api/speedtest/history.csv':
@@ -921,6 +965,12 @@ class Handler(BaseHTTPRequestHandler):
             d.job_action(data.get('id'), data.get('action'))
         elif path == '/api/history/clear':
             d.write("DELETE FROM jobs WHERE status IN ('done','cancelled')")
+        elif path == '/api/file/manage':
+            from fileops import manage
+            self.reply(manage(d,data));return
+        elif path == '/api/folders/delete':
+            from fileops import delete_folder
+            delete_folder(d,data)
         elif path == '/api/folders':
             d.destination(data.get('path', ''), create=True)
         elif path == '/api/hold':

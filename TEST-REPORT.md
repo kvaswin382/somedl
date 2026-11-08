@@ -1,10 +1,10 @@
-# Verification report — Zedair 1.3.1
+# Verification report — Zedair 1.4.0
 
-Date: 7 November 2026. Target: Ubuntu 24.04 x86_64, Python 3.12, exFAT USB SSD.
+Date: 8 November 2026. Target: Ubuntu 24.04 x86_64, Python 3.12, exFAT USB SSD.
 
 ## Passed
 
-- **75 automated tests** with `python3 -m unittest discover -s tests -v`.
+- **85 automated tests** with `python3 -m unittest discover -s tests -v`.
 - Real gallery-dl cookie serialization regression: its writer exports session expiry as `0`; the old MozillaCookieJar reader interprets that as epoch zero. The new reader correctly recognizes it as a session cookie. Three simulated server rotations survive real gallery-dl write/reload cycles. This test makes no Instagram requests and uses no real account.
 - Two consecutive queue jobs with a controlled downloader process exercise private working cookies, successful-session publication and next-job reuse.
 - Real yt-dlp loopback integration downloads a generated MP4 with FFmpeg available. Verified exact media bytes, title/progress output, metadata naming, numbered publication and preservation of an existing file.
@@ -13,6 +13,16 @@ Date: 7 November 2026. Target: Ubuntu 24.04 x86_64, Python 3.12, exFAT USB SSD.
 - Desktop browser checks: image preview loaded its actual pixels; MP4 metadata loaded and native video playback advanced; closing the dialog removed the media element. The separate Download action remains available.
 - Dark theme and mobile speed-test layout checked at a 375 CSS-pixel content viewport: body width equals viewport width. Main background is RGB(21,21,23); speed card is RGB(32,32,35). Historical report details opened successfully.
 - Browser speed values were explicitly labelled test fixtures, not network measurements. No production account or authentication bypass is included.
+
+## v1.4 verification
+
+- The automated suite covers optional names/extensions, 100-link batches, explicit/root/default destinations, file copy/move/rename and collision handling, date preservation, stale-file and path guards, torrent ownership, empty-folder rules, profile-picture selection, image-only configuration, long rate-limit cooldowns, invalid feed responses, media selection, authenticated preview neighbors across pagination, and existing regression coverage.
+- Real gallery-dl processed a controlled 300-post feed across 30 pages and downloaded **330 exact-byte images**, including all images in mixed carousels. No video or lower-resolution thumbnail request was made. A forced mid-page HTTP failure kept that page's checkpoint; the next attempt replayed it without duplicate media. Short work slices resumed through the final page, and a completed retry made no further requests.
+- The earlier false-counter/archive regression passes through the new profile worker: old print-only behavior is reproduced, the same failed job is recovered, and actual files are published without duplicates.
+- Real yt-dlp downloaded local MP4 bytes through the new fallback handoff, preserving the detected webpage title and Referer and removing temporary cookies. **Browser detection itself was substituted in this test.** Media-candidate rules and refusal of DRM/challenge fallback are checked separately.
+- Desktop UI checks confirmed optional images-only job submission, 100-entry preference, renaming a fixture without an extension (the `.png` extension remained), and image → video → image preview with arrow keys/Next and correct boundary buttons.
+- The browser session reset during final QA. Remaining v1.4 mobile-form and real Chromium detector checks were not completed; prior 320-pixel layout checks belong to v1.3/v1.3.1. Do not interpret those earlier checks as fresh v1.4 validation.
+- No live Instagram profile, adult video page or physical Zedair laptop was used. The compatibility feed, actual player detection, Ubuntu AppArmor setup and memory behavior still require target-machine validation. Neither universal website support nor complete access to every Instagram post is claimed.
 
 ## v1.3.1 regression and sorting verification
 

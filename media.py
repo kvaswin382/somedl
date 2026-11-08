@@ -83,10 +83,23 @@ def build_command(job, dest, cookie, settings, state):
         }
         if job.get('profile_mode'):
             config['extractor']['instagram']['max-posts'] = None
-            config['extractor']['instagram']['include'] = {'posts':['photos'],'reels':['reels'],'everything':['posts','reels']}[job['profile_mode']]
+            config['extractor']['instagram']['include'] = {'posts':['photos'],'reels':['reels'],'everything':['posts','reels'],'avatar':['avatar']}[job['profile_mode']]
             config['extractor']['archive'] = str(dest/'.profile-downloads-v2.sqlite3')
             config['extractor']['archive-event'] = ['file']
             config['extractor']['archive-pragma'] = ['journal_mode=WAL']
+        if job.get('profile_mode'):
+            ig=config['extractor']['instagram']
+            minimum=max(10,prefs['sleep_request'])
+            ig.update({'sleep-request':f'{minimum}-{minimum+15}','sleep-download':'15-40',
+                       'sleep-retries':'60-120','sleep-429':60,'retries':1,'timeout':45,
+                       'videos':False if job.get('images_only') or job['profile_mode']=='avatar' else prefs['videos']})
+            config['extractor']['postprocessors']=[{'name':'metadata','mode':'json'}]
+            if cookie:ig['cookies']=str(cookie)
+            path=state/('profile-'+job['id']+'.json')
+            path.write_text(json.dumps({'url':url,'dest':str(dest),'mode':job['profile_mode'],
+                'images_only':bool(job.get('images_only')),'config':config}))
+            path.chmod(0o600)
+            return [sys.executable,str(Path(__file__).with_name('instagram_profile.py')),str(path)]
         # A single post/reel is intentional; it prevents an accidental whole-account crawl.
         if not job.get('profile_mode') and not re.search(r'/(p|reel|reels|tv)/[^/]+', urllib.parse.urlsplit(url).path):
             raise ValueError('For Instagram, paste a single post, carousel or reel link')
@@ -127,7 +140,8 @@ def build_command(job, dest, cookie, settings, state):
         args += ['--limit-rate', str(settings['media_kib']) + 'K']
     if cookie:
         args += ['--cookies', str(cookie)]
-    return args + ['--', url]
+    args += ['--',url]
+    return args
 
 
 class JSONScripts(HTMLParser):

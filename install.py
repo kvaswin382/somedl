@@ -159,7 +159,7 @@ def main():
         (root/folder).mkdir(exist_ok=True)
     if previous and Path('/etc/systemd/system/zedair.service').exists():
         run('systemctl', 'stop', 'zedair.service')
-    for name in ('server.py', 'media.py', 'platforms.py', 'publishing.py', 'speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-speedtest.py', 'install-speedtest.sh', 'README.md', 'TEST-REPORT.md', 'LICENSE', 'requirements.txt', 'update.sh', 'upgrade.sh', 'upgrade.py'):
+    for name in ('server.py', 'media.py', 'platforms.py', 'publishing.py', 'speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'fileops.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-browser.sh', 'install-speedtest.py', 'install-speedtest.sh', 'README.md', 'TEST-REPORT.md', 'LICENSE', 'requirements.txt', 'update.sh', 'upgrade.sh', 'upgrade.py'):
         shutil.copy2(BASE/name, APP/name)
     shutil.copytree(BASE/'static', APP/'static', dirs_exist_ok=True)
     run('python3', '-m', 'venv', APP/'venv')

@@ -6,6 +6,10 @@ const E = escapeHTML;
 let selectedPlatform='instagram', settingsTab='general', toolPlatform='instagram';
 let fileSort=localStorage.getItem('zedair-file-sort')||'date-desc';
 if(!['date-desc','date-asc','name-asc','name-desc','size-desc','size-asc'].includes(fileSort))fileSort='date-desc';
+let filePageSize=Number(localStorage.getItem('zedair-page-size'))||24;
+if(![24,50,100].includes(filePageSize))filePageSize=24;
+let lastFullRefresh=0;
+let previewPath='',previewKind='',previewRequest=0,previewBusy=false;
 let fileView=localStorage.getItem('zedair-file-view')==='grid'?'grid':'list',fileOffset=0,fileEntries=[],fileTotal=0,fileRequest=0,loadedFilePath=null;
 let csrf = '', state = null, page = 'queue', filter = 'all', filePath = '', folderPath = '', folderTarget = '', cookieSlot = '', timer, toastTimer, busy = false;
 const bytes = n => { n=Number(n)||0; const units=['B','KiB','MiB','GiB','TiB']; let i=0; while(n>=1024&&i<4){n/=1024;i++;} return `${n.toFixed(i>1?1:0)} ${units[i]}`; };
@@ -41,13 +45,18 @@ async function showAuth(){
   $('#authForm [name=password]').minLength=auth.setup?12:1;
   $('#authForm [name=password]').autocomplete=auth.setup?'new-password':'current-password';
 }
-async function refresh(){
+async function refresh(tick=false){
   if(busy)return;busy=true;clearTimeout(timer);
   try{
-    state=await api('state'); $('#connection').textContent='● Connected';$('#connection').classList.remove('offline');
+    if(tick&&!document.hidden&&page==='queue'&&state?.jobs.some(j=>j.status==='running')&&Date.now()-lastFullRefresh<4000){
+      const progress=await api('progress');
+      const old=state.jobs.filter(j=>j.status==='running').map(j=>j.id).sort().join(',');
+      if(progress.jobs.map(j=>j.id).sort().join(',')===old){for(const live of progress.jobs)Object.assign(state.jobs.find(j=>j.id===live.id),live);renderJobs(true);return;}
+    }
+    state=await api('state');lastFullRefresh=Date.now(); $('#connection').textContent='● Connected';$('#connection').classList.remove('offline');
     renderOverview(); if(page==='queue')renderJobs(); if(page==='torrents')renderTorrents(); if(page==='speed')renderSpeed(); if(page==='tools')renderProfileJobs(); if(page==='settings'&&settingsTab==='system'&&!document.hidden)await renderSystem();
   }catch(error){$('#connection').textContent='● Reconnecting';$('#connection').classList.add('offline');}
-  finally{busy=false;if(!$('#shell').hidden)timer=setTimeout(refresh,document.hidden?15000:4000);}
+  finally{busy=false;if(!$('#shell').hidden)timer=setTimeout(()=>refresh(true),document.hidden?15000:page==='queue'&&state?.jobs.some(j=>j.status==='running')?1000:4000);}
 }
 function renderOverview(){
   const s=state, jobs=s.jobs;
@@ -63,7 +72,9 @@ function renderOverview(){
   $('#storageAlert').textContent=s.settings.hold?'Queue is held. Active transfers are stopping; resume when you are ready.':s.storage.reason;
   $('#holdBtn').textContent=s.settings.hold?'▶ Resume queue':'Ⅱ Hold queue';
 }
-function renderJobs(){
+function renderJobs(fast=false){
+  if(fast){for(const j of state.jobs.filter(j=>j.status==='running')){const node=$('[data-progress-job="'+j.id+'"]');if(!node)continue;const percent=Math.max(0,Math.min(100,Number(j.progress)||0));$('.job-title',node).textContent=j.name;$('.job-state span:last-child',node).textContent=j.profile_mode?'Working…':percent.toFixed(1)+'%';$('.progress i',node).style.width=percent+'%';$('.job-speed',node).textContent=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · total unknown`:`${bytes(j.speed)}/s · ETA ${eta(j.eta)}`;}return;}
+
   const query=$('#searchJobs').value.trim().toLowerCase();
   const jobs=state.jobs.filter(j=>(!query||`${j.name} ${j.url} ${j.folder}`.toLowerCase().includes(query))&&(filter==='all'||(filter==='active'&&j.status==='running')||(filter==='waiting'&&['queued','retry','blocked','paused'].includes(j.status))||(filter==='error'&&j.status==='error')||(filter==='done'&&['done','cancelled'].includes(j.status))));
   if(!jobs.length){$('#jobs').innerHTML=empty('↙',state.jobs.length?'No matches here.':'Your next download starts here.',state.jobs.length?'Try another filter or search.':'Add a YouTube or X video, an Instagram carousel, or a Threads post. Your laptop takes it from there.',state.jobs.length?'':'<button class="secondary" data-open="downloadDialog">＋ Paste your first link</button>');return;}
@@ -71,7 +82,7 @@ function renderJobs(){
     const active=['queued','running','retry','blocked'].includes(j.status);
     const info=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · ${j.status==='running'?'total unknown':labels[j.status]||j.status}`:j.status==='running'?`${bytes(j.speed)}/s · ETA ${eta(j.eta)}`:j.status==='retry'?`Retry in ${eta(Math.max(1,j.next_try-Date.now()/1000))}`:j.status==='done'?'On the SSD':`Attempt ${j.attempts} · ${j.kind==='instagram'?'Carousel / reel':j.kind==='threads'?'Public post':'Video engine'}`;
     const percent=Math.max(0,Math.min(100,Number(j.progress)||0));
-    return `<article class="job"><div class="source-icon ${E(j.kind)}">${symbols[j.kind]||'↙'}</div><div class="job-info"><span class="job-title" title="${E(j.name)}">${E(j.name)}</span><div class="job-meta" title="${E(shortFolder(j))}">${E(shortFolder(j))}</div>${j.status==='error'?`<span class="attention-note">${E(j.detail)}</span>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><span>${j.status==='running'?(j.profile_mode?'Working…':percent.toFixed(1)+'%'):''}</span></div><div class="progress"><i style="width:${percent}%"></i></div><div class="job-speed">${E(info)}</div></div><div class="job-controls">${active?button('Ⅱ','Pause',`data-job="${j.id}" data-action="pause"`):j.status!=='done'?button('▶','Resume / retry',`data-job="${j.id}" data-action="retry"`):button('▤','Open destination',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Details and log',`data-detail="${j.id}"`)}</div></article>`;
+    return `<article class="job" data-progress-job="${j.id}"><div class="source-icon ${E(j.kind)}">${symbols[j.kind]||'↙'}</div><div class="job-info"><span class="job-title" title="${E(j.name)}">${E(j.name)}</span><div class="job-meta" title="${E(shortFolder(j))}">${E(shortFolder(j))}</div>${j.status==='error'?`<span class="attention-note">${E(j.detail)}</span>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><span>${j.status==='running'?(j.profile_mode?'Working…':percent.toFixed(1)+'%'):''}</span></div><div class="progress"><i style="width:${percent}%"></i></div><div class="job-speed">${E(info)}</div></div><div class="job-controls">${active?button('Ⅱ','Pause',`data-job="${j.id}" data-action="pause"`):j.status!=='done'?button('▶','Resume / retry',`data-job="${j.id}" data-action="retry"`):button('▤','Open destination',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Details and log',`data-detail="${j.id}"`)}</div></article>`;
   }).join('');
 }
 function renderTorrents(){
@@ -91,22 +102,22 @@ async function loadFiles(){
   if(loadedFilePath!==filePath){fileOffset=0;loadedFilePath=filePath;}
   const request=++fileRequest;
   $('#filePath').textContent='Zedair/'+filePath;$('#filesUp').disabled=!filePath;
-  try{const result=await api('folders?path='+encodeURIComponent(filePath)+'&offset='+fileOffset+'&limit=24&sort='+fileSort.split('-')[0]+'&order='+fileSort.split('-')[1]);if(request!==fileRequest)return;
+  try{const result=await api('folders?path='+encodeURIComponent(filePath)+'&offset='+fileOffset+'&limit='+filePageSize+'&sort='+fileSort.split('-')[0]+'&order='+fileSort.split('-')[1]);if(request!==fileRequest)return;
     fileEntries=result.entries;fileTotal=result.total??result.entries.length;
-    if(!fileEntries.length&&fileOffset){fileOffset=Math.max(0,fileOffset-24);return loadFiles();}
+    if(!fileEntries.length&&fileOffset){fileOffset=Math.max(0,fileOffset-filePageSize);return loadFiles();}
     renderFiles();
   }catch(error){if(request===fileRequest)$('#fileList').innerHTML=empty('!','Storage unavailable',error.message);}
 }
 function renderFiles(){
-  $('#fileSort').value=fileSort;
+  $('#fileSort').value=fileSort;$('#filePageSize').value=String(filePageSize);$('#deleteFolder').disabled=!filePath;
   $('#fileList').classList.toggle('file-grid',fileView==='grid');
   $$('[data-file-view]').forEach(b=>{b.classList.toggle('selected',b.dataset.fileView===fileView);b.setAttribute('aria-pressed',String(b.dataset.fileView===fileView));});
-  $('#filesCount').textContent=fileTotal+' items';$('#filesPrev').disabled=fileOffset===0;$('#filesNext').disabled=fileOffset+24>=fileTotal;
-  $('#filesPageLabel').textContent=fileTotal?`${fileOffset+1}–${Math.min(fileOffset+24,fileTotal)} of ${fileTotal}`:'No files';
+  $('#filesCount').textContent=fileTotal+' items';$('#filesPrev').disabled=fileOffset===0;$('#filesNext').disabled=fileOffset+filePageSize>=fileTotal;
+  $('#filesPageLabel').textContent=fileTotal?`${fileOffset+1}–${Math.min(fileOffset+filePageSize,fileTotal)} of ${fileTotal}`:'No files';
   $('#fileList').innerHTML=fileEntries.length?fileEntries.map(entry=>{
     const path=join(filePath,entry.name),attrs=entry.directory?`data-file-folder="${E(path)}"`:`data-preview-file="${E(path)}" data-preview-kind="${E(entry.preview)}"`;
     const icon=entry.directory?'▰':entry.preview==='video'?'▷':entry.preview==='image'?'▧':entry.preview==='audio'?'♫':'▤';
-    const actions=entry.directory?'':`<div class="file-actions"><a class="secondary compact" href="/api/file?path=${encodeURIComponent(path)}" download aria-label="Download ${E(entry.name)}">Download</a><button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div>`;
+    const actions=entry.directory?'':`<div class="file-actions"><button class="secondary compact" data-organize-file="${E(path)}" data-stamp="${E(entry.stamp)}">Organize</button><a class="secondary compact" href="/api/file?path=${encodeURIComponent(path)}" download aria-label="Download ${E(entry.name)}">Download</a><button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div>`;
     if(fileView==='grid'){
       const media=entry.preview==='image'?`<span class="file-thumb"><span class="thumb-fallback">▧</span><img src="/api/preview?path=${encodeURIComponent(path)}" loading="lazy" decoding="async" alt="${E(entry.name)}"></span>`:`<span class="file-thumb placeholder"><span>${icon}</span><small>${entry.directory?'FOLDER':entry.preview==='video'?'VIDEO · PREVIEW TO PLAY':entry.preview==='audio'?'AUDIO':'FILE'}</small></span>`;
       const tag=entry.directory||entry.preview?'button':'div';
@@ -118,8 +129,10 @@ function renderFiles(){
 }
 $('#fileSort').value=fileSort;
 $('#fileSort').onchange=()=>{fileSort=$('#fileSort').value;localStorage.setItem('zedair-file-sort',fileSort);fileOffset=0;loadFiles();};
-$('#filesPrev').onclick=()=>{fileOffset=Math.max(0,fileOffset-24);loadFiles();};
-$('#filesNext').onclick=()=>{fileOffset+=24;loadFiles();};
+$('#filePageSize').value=String(filePageSize);
+$('#filePageSize').onchange=()=>{filePageSize=Number($('#filePageSize').value);localStorage.setItem('zedair-page-size',String(filePageSize));fileOffset=0;loadFiles();};
+$('#filesPrev').onclick=()=>{fileOffset=Math.max(0,fileOffset-filePageSize);loadFiles();};
+$('#filesNext').onclick=()=>{fileOffset+=filePageSize;loadFiles();};
 document.addEventListener('error',event=>{if(event.target.matches?.('.file-thumb img'))event.target.remove();},true);
 async function loadFolders(){
   $('#folderPath').textContent='Zedair/'+folderPath;$('#folderUp').disabled=!folderPath;
@@ -133,6 +146,7 @@ function selectSettingsTab(tab){
   $$('[data-settings-panel]').forEach(p=>p.hidden=p.dataset.settingsPanel!==tab);
 }
 function renderSettings(){
+  $('#engineVersions').innerHTML=Object.entries(state.engine_versions||{}).map(([key,value])=>`<p><strong>${E(key)}</strong> · ${E(value)}</p>`).join('');
   Object.entries(state.settings).forEach(([k,v])=>{const field=$(`[name="${k}"]`,$('#settingsForm'));if(field)field.value=v;});
   selectSettingsTab(settingsTab);renderPlatform();
 }
@@ -141,7 +155,7 @@ function renderPlatform(){
   $('#platformTabs').innerHTML=Object.entries(platformNames).map(([k,n])=>`<button class="${k===key?'selected':''}" data-platform="${k}">${n}</button>`).join('');
   const check=(name,label)=>`<label class="check"><input type="checkbox" name="${name}" ${p[name]?'checked':''}>${label}</label>`;
   const select=(name,label,choices)=>`<label>${label}<select name="${name}">${choices.map(([v,t])=>`<option value="${v}" ${p[name]===v?'selected':''}>${t}</option>`).join('')}</select></label>`;
-  let fields=check('enabled','Enable this platform')+`<label>Platform folder<input name="folder" value="${E(p.folder)}" placeholder="${key==='other'?'Automatic website domain':'Folder name'}" maxlength="150" ${key==='other'?'':'required'}><small>Under the destination chosen when adding a link.</small></label>`;
+  let fields=check('enabled','Enable this platform')+`<label>Platform folder<input name="folder" value="${E(p.folder)}" placeholder="${key==='other'?'Automatic website domain':'Folder name'}" maxlength="150" ${key==='other'?'':'required'}><small>Used only when no explicit destination is selected.</small></label>`;
   if('quality' in p)fields+=select('quality','Default video quality',[['best','Best available'],['2160','Up to 4K'],['1080','Up to 1080p'],['720','Up to 720p'],['480','Up to 480p'],['audio','Audio only']]);
   if('container' in p)fields+=select('container','Default video file format',[['auto','Automatic · any format'],['mp4','MP4 only']]);
   if('subtitles' in p)fields+=check('subtitles','English / Malayalam subtitles');
@@ -168,13 +182,13 @@ async function showTorrentFiles(id){
   openDialog('detailDialog');
 }
 $('#authForm').addEventListener('submit',async event=>{event.preventDefault();const form=event.target;const button=$('button[type=submit]',form);button.disabled=true;$('#authError').textContent='';try{const data=Object.fromEntries(new FormData(form));await api(form.dataset.setup==='true'?'setup':'login',data);form.reset();await showAuth();}catch(error){$('#authError').textContent=error.message;}finally{button.disabled=false;}});
-$('#downloadForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target,data=Object.fromEntries(new FormData(form));data.urls=data.urls.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);data.playlist=form.playlist.checked;data.subtitles=form.subtitles.checked;const result=await api('jobs',data);closeDialog($('#downloadDialog'));form.urls.value='';toast(`${result.ids.length} download(s) queued${result.skipped?`; ${result.skipped} duplicate(s) skipped`:''}.`);await refresh();});});
+$('#downloadForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target,data=Object.fromEntries(new FormData(form));data.urls=data.urls.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);data.filename=form.filename.value.trim();data.folder_selected=form.folder_selected.checked;data.browser_fallback=form.browser_fallback.checked;data.playlist=form.playlist.checked;data.subtitles=form.subtitles.checked;const result=await api('jobs',data);closeDialog($('#downloadDialog'));form.urls.value='';toast(`${result.ids.length} download(s) queued${result.skipped?`; ${result.skipped} duplicate(s) skipped`:''}.`);await refresh();});});
 $('#torrentForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target;const data={folder:form.folder.value,magnet:form.magnet.value.trim(),paused:form.paused.checked};if(!data.magnet){const file=form.torrent.files[0];if(!file)throw Error('Paste a magnet link or choose a .torrent file.');if(file.size>8*1024*1024)throw Error('Torrent file must be smaller than 8 MiB.');const array=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<array.length;i+=8192)binary+=String.fromCharCode(...array.subarray(i,i+8192));data.metainfo=btoa(binary);}await api('torrents',data);closeDialog($('#torrentDialog'));form.reset();toast('Torrent added.');await setPage('torrents');await refresh();});});
 $('#settingsForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{await api('settings',Object.fromEntries(new FormData(event.target)));toast('Settings saved. Media limits apply to the next job.');await refresh();});});
 $('#passwordForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{await api('password',Object.fromEntries(new FormData(event.target)));event.target.reset();toast('Password changed. Sign in again on each device.');await showAuth();});});
 $('#folderCreate').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const path=join(folderPath,event.target.elements.name.value.trim());await api('folders',{path});event.target.reset();folderPath=path;await loadFolders();});});
 $('#folderUp').onclick=()=>action(async()=>{folderPath=parent(folderPath);await loadFolders();});
-$('#chooseFolder').onclick=()=>{$('#'+folderTarget+' [name=folder]').value=folderPath;closeDialog($('#folderDialog'));};
+$('#chooseFolder').onclick=()=>{if(folderTarget==='downloadForm')$('#downloadForm [name=folder_selected]').checked=true;$('#'+folderTarget+' [name=folder]').value=folderPath;closeDialog($('#folderDialog'));};
 $('#filesUp').onclick=()=>action(async()=>{filePath=parent(filePath);await loadFiles();});
 $('#refreshFiles').onclick=()=>action(loadFiles);
 $('#newFileFolder').onclick=()=>action(async()=>{const name=prompt('New subfolder name inside Zedair/'+filePath);if(!name)return;await api('folders',{path:join(filePath,name.trim())});await loadFiles();});
@@ -197,6 +211,7 @@ document.addEventListener('click',event=>{
     if(el.dataset.platform){selectedPlatform=el.dataset.platform;renderPlatform();}
     if(el.hasAttribute('data-open-platforms')){closeDialog($('#detailDialog'));settingsTab='platforms';await setPage('settings');}
     if(el.dataset.deleteFile){if(!confirm('Permanently delete Zedair/'+el.dataset.deleteFile+' from the SSD? This cannot be undone.'))return;await api('file/delete',{path:el.dataset.deleteFile,stamp:el.dataset.stamp,confirm:true});await loadFiles();toast('File permanently deleted.');}
+    if(el.dataset.organizeFile){const form=$('#organizeForm');form.dataset.path=el.dataset.organizeFile;form.dataset.stamp=el.dataset.stamp;form.elements.name.value=el.dataset.organizeFile.split('/').pop();form.folder.value=parent(el.dataset.organizeFile);$('#organizeSource').textContent='Zedair/'+el.dataset.organizeFile;organizeFields();openDialog('organizeDialog');}
     if(el.dataset.previewFile)showPreview(el.dataset.previewFile,el.dataset.previewKind);
     if(el.dataset.speedReport)showSpeedReport(el.dataset.speedReport);
     if(el.dataset.theme!==undefined)$('#themeBtn').click();
@@ -254,7 +269,8 @@ function showSpeedReport(id){
   $('#detailBody').innerHTML=`<p class="detail-value">${E(new Date(r.finished*1000).toLocaleString())} · ${E(r.status||'done')}</p>${r.engine==='legacy-http'?'<p class="notice">This report used the old short HTTP test. Its speeds are not reliable and are not used as the latest result.</p>':''}<div class="speed-report-grid">${metric('Download',E(r.download_mbps??'—'),'Mbps')}${metric('Upload',E(r.upload_mbps??'—'),'Mbps')}${metric('Ping',E(r.latency_ms??'—'),'ms')}${metric('Jitter',E(r.jitter_ms??'—'),'ms')}</div><p class="detail-label">SERVER / NETWORK</p><p class="detail-value">${E([r.server,r.location,r.isp].filter(Boolean).join(' · ')||'Not recorded')}</p><p class="detail-label">TEST DETAILS</p><p class="detail-value">Duration: ${E(r.duration_seconds??'—')} s · Download data: ${bytes(r.download_bytes)} · Upload data: ${bytes(r.upload_bytes)}${r.packet_loss!==undefined?' · Packet loss: '+E(r.packet_loss)+'%':''}</p><p class="hint">${E(r.detail||'')}</p>${r.result_url?`<a class="secondary" href="${E(r.result_url)}" target="_blank" rel="noopener noreferrer">Open Ookla result</a>`:''}`;
   openDialog('detailDialog');
 }
-function showPreview(path,kind){
+async function showPreview(path,kind){
+  clearPreview();previewPath=path;previewKind=kind;const request=++previewRequest;
   if(!['image','video','audio'].includes(kind))return;
   $('#previewTitle').textContent=path.split('/').pop();$('#previewError').hidden=true;
   const url='/api/preview?path='+encodeURIComponent(path);
@@ -264,9 +280,11 @@ function showPreview(path,kind){
   if(kind==='image')element.alt=path.split('/').pop();else{element.controls=true;element.preload='metadata';element.setAttribute('playsinline','');}
   element.addEventListener('error',()=>$('#previewError').hidden=false,{once:true});
   $('.preview-stage').appendChild(element);openDialog('previewDialog');
+  $('#previewPrev').disabled=true;$('#previewNext').disabled=true;
+  try{const adjacent=await adjacentPreview(path,0);if(request!==previewRequest)return;$('#previewPrev').disabled=!adjacent.previous;$('#previewNext').disabled=!adjacent.next;}catch(error){toast(error.message);}
 }
 function clearPreview(){const media=$('video,audio',$('#previewBody'));if(media){media.pause();media.removeAttribute('src');media.load();}$('#previewBody').replaceChildren();}
-$('#previewDialog').addEventListener('close',clearPreview);
+$('#previewDialog').addEventListener('close',()=>{previewRequest++;clearPreview();});
 $('#startSpeed').onclick=()=>action(async()=>{if(!state.speedtest.consent&&!$('#acceptSpeedTerms').checked)throw Error('Review and accept the Ookla agreement before starting.');await api('speedtest',{action:'start',accept_terms:$('#acceptSpeedTerms').checked});await refresh();});
 $('#cancelSpeed').onclick=()=>action(async()=>{await api('speedtest',{action:'cancel'});await refresh();});
 
@@ -276,7 +294,8 @@ function renderTools(){
   $('#profileToolTitle').textContent=facebook?'Facebook profile · experimental':'Instagram profile';
   $('#profileToolHint').textContent=facebook?'Scroll accessible posts, photos and reels. Facebook can hide or stop returning content; completeness cannot be guaranteed.':'Follow every available page. Posts excludes reels; Everything combines both feeds and skips repeated media within this job.';
   $('#profileTarget').placeholder=facebook?'Username, numeric ID or Facebook profile URL':'@username or Instagram profile URL';
-  $('#profileDestination').textContent='Saves to Zedair/'+(facebook?'Facebook':'Instagram')+'/<username>';
+  const chosen=$('#profileForm [name=folder]').value.trim();$('#profileDestination').textContent='Saves to Zedair/'+(chosen||((facebook?'Facebook':'Instagram')+'/<username>'));
+  $('#imagesOnlyField').hidden=facebook;$('#avatarMode').hidden=facebook;if(facebook&&$('#profileForm [name=mode]:checked').value==='avatar')$('#profileForm [value=everything]').checked=true;
   $('#facebookScrollField').hidden=!facebook;$('#facebookInstall').hidden=!facebook||state.tools?.facebook_browser;
   $('#startProfile').disabled=facebook&&!state.tools?.facebook_browser;
   const session=state.cookie_status[toolPlatform];$('#profileSessionNotice').hidden=session?.usable;
@@ -287,11 +306,11 @@ function renderProfileJobs(){
   const jobs=state.jobs.filter(j=>j.profile_mode);
   $('#profileJobs').innerHTML=jobs.length?jobs.map(j=>{
     const active=['queued','running','retry','blocked'].includes(j.status),facebook=j.cookie_profile==='facebook';
-    return `<article class="profile-job"><div><strong>${E(j.name)}</strong><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><p class="hint">${E(j.profile_mode)} · ${j.items||0} media files saved during this job</p><p class="job-meta">${E(shortFolder(j))}</p><p class="profile-job-detail">${E(j.detail)}${facebook?' · Facebook completeness is unverified.':''}</p></div><div class="profile-job-actions">${active?button('Ⅱ','Pause profile',`data-job="${j.id}" data-action="pause"`):!['done','cancelled'].includes(j.status)?facebook?`<label>Scroll limit<input id="profile-limit-${j.id}" type="number" min="10" max="10000" value="${j.scroll_limit}"></label><button class="secondary compact" data-profile-retry="${j.id}">Resume / retry</button>`:`<button class="secondary compact" data-job="${j.id}" data-action="retry">Resume / retry</button>`:''}${!['done','cancelled'].includes(j.status)?button('×','Cancel profile',`data-job="${j.id}" data-action="cancel"`):''}${button('▤','Open profile folder',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Profile details and log',`data-detail="${j.id}"`)}</div></article>`;
+    return `<article class="profile-job"><div><strong>${E(j.name)}</strong><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><p class="hint">${E(j.profile_mode)}${j.images_only?' · images only':''} · ${j.items||0} media files saved during this job</p><p class="job-meta">${E(shortFolder(j))}</p><p class="profile-job-detail">${E(j.detail)}${facebook?' · Facebook completeness is unverified.':''}</p></div><div class="profile-job-actions">${active?button('Ⅱ','Pause profile',`data-job="${j.id}" data-action="pause"`):!['done','cancelled'].includes(j.status)?facebook?`<label>Scroll limit<input id="profile-limit-${j.id}" type="number" min="10" max="10000" value="${j.scroll_limit}"></label><button class="secondary compact" data-profile-retry="${j.id}">Resume / retry</button>`:`<button class="secondary compact" data-job="${j.id}" data-action="retry">Resume / retry</button>`:''}${!['done','cancelled'].includes(j.status)?button('×','Cancel profile',`data-job="${j.id}" data-action="cancel"`):''}${button('▤','Open profile folder',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Profile details and log',`data-detail="${j.id}"`)}</div></article>`;
   }).join(''):empty('▦','No profile jobs yet.','Choose a profile and the media you want to collect.');
 }
 $('#profileForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{
-  const form=event.target,result=await api('profiles',{platform:toolPlatform,profile:form.profile.value,mode:form.mode.value,folder:form.folder.value,scroll_limit:Number(form.scroll_limit.value)});
+  const form=event.target,result=await api('profiles',{platform:toolPlatform,profile:form.profile.value,mode:form.mode.value,images_only:toolPlatform==='instagram'&&!form.images_only.disabled&&form.images_only.checked,folder:form.folder.value,scroll_limit:Number(form.scroll_limit.value)});
   toast('Profile queued → '+result.destination);await refresh();renderProfileJobs();
 });});
 
@@ -308,3 +327,16 @@ async function renderSystem(){
   }catch(error){$('#systemError').textContent='Unable to read laptop usage: '+error.message;$('#systemError').hidden=false;$('#systemUpdated').textContent='Readings may be stale';}
   finally{systemBusy=false;}
 }
+
+async function adjacentPreview(path,direction){return api('folders?path='+encodeURIComponent(parent(path))+'&sort='+fileSort.split('-')[0]+'&order='+fileSort.split('-')[1]+'&adjacent='+encodeURIComponent(path.split('/').pop())+'&direction='+direction);}
+async function stepPreview(direction){if(previewBusy)return;previewBusy=true;try{const path=previewPath;const result=await adjacentPreview(path,direction);if(path!==previewPath||!$('#previewDialog').open)return;if(result.entry)await showPreview(join(parent(path),result.entry.name),result.entry.preview);}catch(error){toast(error.message);}finally{previewBusy=false;}}
+$('#previewPrev').onclick=()=>stepPreview(-1);$('#previewNext').onclick=()=>stepPreview(1);
+document.addEventListener('keydown',event=>{if(!$('#previewDialog').open||!['ArrowLeft','ArrowRight'].includes(event.key)||event.target.matches('input,textarea,select'))return;event.preventDefault();stepPreview(event.key==='ArrowLeft'?-1:1);});
+function organizeFields(){const rename=$('#organizeForm').elements.action.value==='rename';$('#renameField').hidden=!rename;$('#moveField').hidden=rename;}
+$('#organizeForm').elements.action.onchange=organizeFields;
+$('#organizeForm').onsubmit=event=>{event.preventDefault();action(async()=>{const form=event.target,submit=$('#organizeSubmit');submit.disabled=true;submit.textContent='Working…';try{const result=await api('file/manage',{...Object.fromEntries(new FormData(form)),path:form.dataset.path,stamp:form.dataset.stamp});closeDialog($('#organizeDialog'));await loadFiles();toast('Saved to Zedair/'+result.path);}finally{submit.disabled=false;submit.textContent='Apply';}});};
+$('#deleteFolder').onclick=()=>action(async()=>{if(!filePath||!confirm('Delete empty folder Zedair/'+filePath+'? Non-empty folders will be refused.'))return;await api('folders/delete',{path:filePath,confirm:true});filePath=parent(filePath);await loadFiles();});
+
+$('#profileForm').addEventListener('change',()=>{$('#profileForm [name=images_only]').disabled=$('#profileForm [name=mode]:checked').value==='reels';});
+
+$('#profileForm [name=folder]').addEventListener('input',renderTools);

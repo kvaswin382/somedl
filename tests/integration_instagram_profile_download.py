@@ -42,6 +42,11 @@ def worker():
                 yield Message.Url,'http://127.0.0.1:'+os.environ['ZEDAIR_FIXTURE_PORT']+'/pixel.png',item
     original=extractor.find
     extractor.find=lambda url:FixtureInstagram.from_url(url) or original(url)
+    if sys.argv[1]=='--profile':
+        from instagram_profile import run
+        spec=json.loads(Path(sys.argv[2]).read_text())
+        spec['config']['extractor']['instagram'].update({'sleep-request':0,'sleep-download':0})
+        raise SystemExit(run(spec))
     sys.argv=['gallery-dl',*sys.argv[2:]]
     raise SystemExit(gallery_dl.main())
 
@@ -70,9 +75,11 @@ def main():
         def child(args):return [sys.executable,str(Path(__file__).resolve()),'--worker',*args[3:]]
         # Reproduce the shipped v1.3 command, including the stale archive it leaves.
         args=build_command(job,stage,None,desk.settings(),desk.state)
-        args[args.index('--Print')]='--print'
-        confpath=desk.state/('gallery-'+jid+'.json');conf=json.loads(confpath.read_text())
-        conf['extractor']['archive']=str(stage/'.profile-archive.sqlite3');confpath.write_text(json.dumps(conf))
+        spec=json.loads(Path(args[2]).read_text());conf=spec['config']
+        conf['extractor']['archive']=str(stage/'.profile-archive.sqlite3')
+        conf['extractor']['instagram'].update({'sleep-request':0,'sleep-download':0})
+        confpath=desk.state/'old-config.json';confpath.write_text(json.dumps(conf))
+        args=[sys.executable,'-m','gallery_dl','--config-ignore','--config',str(confpath),'--print','after:ZEDITEM {post_shortcode}','--',job['url']]
         old=subprocess.run(child(args),text=True,capture_output=True,timeout=30)
         assert old.returncode==0,old.stdout+old.stderr
         assert old.stdout.count('ZEDITEM ')==4,(old.stdout,old.stderr,args)
@@ -84,7 +91,9 @@ def main():
         desk.close();desk=Desk(config)
         assert desk.job(jid)['items']==0 and desk.job(jid)['phase']=='download'
         desk.job_action(jid,'retry')
-        def actual_command(*args):return child(build_command(*args))
+        def actual_command(*args):
+            command=build_command(*args)
+            return [sys.executable,str(Path(__file__).resolve()),'--profile',command[2]]
         with patch('server.validate_url'),patch('server.build_command',side_effect=actual_command):desk.run_job(desk.job(jid))
         final=desk.job(jid);assert final['status']=='done',final
         output=desk.root/'Instagram/fixture';files=list(output.glob('*.png'))
@@ -101,5 +110,5 @@ def main():
     print('PASS: reproduced 4 false downloads, zero media requests and poisoned archive with old CLI; upgraded same job fetched/published 4 exact-byte media files across 2 pages; retry fetched no duplicates and kept an accurate count.')
 
 if __name__=='__main__':
-    if len(sys.argv)>1 and sys.argv[1]=='--worker':worker()
+    if len(sys.argv)>1 and sys.argv[1] in ('--worker','--profile'):worker()
     else:main()

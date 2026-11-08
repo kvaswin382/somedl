@@ -23,8 +23,8 @@ class ProfileRecoveryTests(Fixture):
         self.assertEqual((job['items'],job['phase'],job['status']),(0,'download','error'))
         self.assertEqual(self.desk.job(direct)['items'],7);self.assertEqual(self.desk.job(direct)['phase'],'publish')
         args=build_command(job,stage,None,self.desk.settings(),self.desk.state)
-        self.assertIn('--Print',args);self.assertNotIn('--print',args)
-        conf=json.loads((self.desk.state/('gallery-'+jid+'.json')).read_text())
+        self.assertTrue(args[1].endswith('instagram_profile.py'));self.assertNotIn('--print',args)
+        conf=json.loads((self.desk.state/('profile-'+jid+'.json')).read_text())['config']
         self.assertTrue(conf['extractor']['archive'].endswith('.profile-downloads-v2.sqlite3'))
         self.assertEqual((stage/'.profile-archive.sqlite3').read_bytes(),b'old archive retained')
         self.desk.update_job(jid,items=4)
