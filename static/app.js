@@ -8,6 +8,9 @@ let fileSort=localStorage.getItem('zedair-file-sort')||'date-desc';
 if(!['date-desc','date-asc','name-asc','name-desc','size-desc','size-asc'].includes(fileSort))fileSort='date-desc';
 let filePageSize=Number(localStorage.getItem('zedair-page-size'))||24;
 if(![24,50,100].includes(filePageSize))filePageSize=24;
+let queuePageSize=Number(localStorage.getItem('zedair-queue-page-size'))||10;
+if(![10,20,50,100].includes(queuePageSize))queuePageSize=10;
+let queueOffset=0;
 let lastFullRefresh=0;
 const selectedFiles=new Map();let organizeItems=[];
 let previewPath='',previewKind='',previewRequest=0,previewBusy=false;
@@ -25,7 +28,27 @@ async function api(path, data){
   return result;
 }
 async function action(fn){ try{await fn();}catch(error){toast(error.message);} }
-function openDialog(id){const dialog=$('#'+id);for(const form of $$('form',dialog))form.noValidate=true; if(!dialog.open)dialog.showModal();}
+function updateUrlsCount(){
+  const ta=$('#downloadForm [name="urls"]'), badge=$('#urlsCountBadge');
+  if(!ta||!badge)return;
+  const count=ta.value.split(/\r?\n/).map(s=>s.trim()).filter(Boolean).length;
+  badge.classList.remove('has-links','limit-reached','limit-exceeded');
+  if(count===0){badge.textContent='One per line · up to 100';}
+  else if(count===1){badge.classList.add('has-links');badge.textContent='1 link detected';}
+  else if(count<100){badge.classList.add('has-links');badge.textContent=`${count} links detected`;}
+  else if(count===100){badge.classList.add('limit-reached');badge.textContent='100 links (maximum batch size)';}
+  else{badge.classList.add('limit-exceeded');badge.textContent=`${count} links (first 100 will be queued)`;}
+}
+function formatRangeVal(name, value){
+  value = Number(value);
+  if(name === 'simultaneous_downloads') return value === 1 ? '1 active' : `${value} simultaneous`;
+  if(name === 'retry_count') return value === 0 ? 'No retries' : value === 1 ? '1 retry' : `${value} retries`;
+  if(name === 'seed_ratio') return value === 0 ? '0.0 (stop)' : `${value.toFixed(1)}× ratio`;
+  if(name === 'reserve_gib') return `${value} GiB free`;
+  if(name === 'playlist_limit') return `${value} items`;
+  return String(value);
+}
+function openDialog(id){const dialog=$('#'+id);for(const form of $$('form',dialog))form.noValidate=true; if(!dialog.open)dialog.showModal(); if(id==='downloadDialog')updateUrlsCount();}
 function closeDialog(dialog){if(dialog.id==='previewDialog')clearPreview();dialog.close();}
 function uiMessage(text,{title='Confirm',accept='Confirm',input=false,danger=false}={}){
   if($('#messageDialog').open)return Promise.resolve(input?null:false);
@@ -91,13 +114,27 @@ function renderJobs(fast=false){
   const query=$('#searchJobs').value.trim().toLowerCase();
   for(const b of $$('[data-filter]')){const count=state.jobs.filter(j=>jobMatches(j,b.dataset.filter)).length;const label={all:'All',active:'Active',waiting:'Waiting',error:'Attention',done:'Finished'}[b.dataset.filter];b.innerHTML=label+(count?`<span class="tab-count">${count}</span>`:'');}
   const jobs=state.jobs.filter(j=>(!query||`${j.name} ${j.url} ${j.folder}`.toLowerCase().includes(query))&&(filter==='all'||(filter==='active'&&j.status==='running')||(filter==='waiting'&&['queued','retry','blocked','paused'].includes(j.status))||(filter==='error'&&j.status==='error')||(filter==='done'&&['done','cancelled'].includes(j.status))));
-  if(!jobs.length){$('#jobs').innerHTML=empty('↙',state.jobs.length?'No matches here.':'No downloads yet.',state.jobs.length?'Try another filter or search.':'Add a link to start downloading.',state.jobs.length?'':'<button class="secondary" data-open="downloadDialog">＋ Add download</button>');return;}
-  $('#jobs').innerHTML=jobs.map(j=>{
+  if(!jobs.length){
+    $('#jobs').innerHTML=empty('↙',state.jobs.length?'No matches here.':'No downloads yet.',state.jobs.length?'Try another filter or search.':'Add a link to start downloading.',state.jobs.length?'':'<button class="secondary" data-open="downloadDialog">＋ Add download</button>');
+    updateQueuePagination(0);
+    return;
+  }
+  if(queueOffset>=jobs.length){queueOffset=Math.max(0,Math.floor((jobs.length-1)/queuePageSize)*queuePageSize);}
+  const paged=jobs.slice(queueOffset,queueOffset+queuePageSize);
+  $('#jobs').innerHTML=paged.map(j=>{
     const active=['queued','running','retry','blocked'].includes(j.status);
     const info=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · ${j.status==='running'?'total unknown':labels[j.status]||j.status}`:j.status==='running'?`${bytes(j.speed)}/s · ETA ${eta(j.eta)}`:j.status==='retry'?`Retry in ${eta(Math.max(1,j.next_try-Date.now()/1000))}`:j.status==='done'?'On the SSD':`Attempt ${j.attempts} · ${engineName(j)}`;
     const percent=Math.max(0,Math.min(100,Number(j.progress)||0));
     return `<article class="job" data-progress-job="${j.id}"><div class="source-icon ${E(j.kind)}">${symbols[j.kind]||'↙'}</div><div class="job-info"><span class="job-title" title="${E(j.name)}">${E(j.name)}</span><div class="job-meta" title="${E(shortFolder(j))}">${E(shortFolder(j))}</div><span class="engine-badge">${E(engineName(j))}</span>${j.status==='error'?`<span class="attention-note">${E(j.detail)}</span>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><span>${j.status==='running'?(j.profile_mode?'Working…':percent.toFixed(1)+'%'):''}</span></div><div class="progress"><i style="width:${percent}%"></i></div><div class="job-speed">${E(info)}</div></div><div class="job-controls">${active?button('Ⅱ','Pause',`data-job="${j.id}" data-action="pause"`):j.status!=='done'?button('▶','Resume / retry',`data-job="${j.id}" data-action="retry"`):button('▤','Open destination',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Details and log',`data-detail="${j.id}"`)}${button('×','Remove from queue',`data-job="${j.id}" data-action="remove"`)}</div></article>`;
   }).join('');
+  updateQueuePagination(jobs.length);
+}
+function updateQueuePagination(total){
+  const prev=$('#queuePrev'),next=$('#queueNext'),lbl=$('#queuePageLabel'),sel=$('#queuePageSize');
+  if(sel&&Number(sel.value)!==queuePageSize)sel.value=queuePageSize;
+  if(prev)prev.disabled=queueOffset<=0;
+  if(next)next.disabled=queueOffset+queuePageSize>=total;
+  if(lbl)lbl.textContent=total?`${queueOffset+1}–${Math.min(queueOffset+queuePageSize,total)} of ${total}`:'0 of 0';
 }
 function renderTorrents(){
   $('#torrentAlert').hidden=!state.torrent_error;$('#torrentAlert').textContent=state.torrent_error;
@@ -164,7 +201,14 @@ function selectSettingsTab(tab){
 }
 function renderSettings(){
   $('#engineVersions').innerHTML=Object.entries(state.engine_versions||{}).map(([key,value])=>`<p><strong>${E(key)}</strong> · ${E(value)}</p>`).join('');
-  Object.entries(state.settings).forEach(([k,v])=>{const field=$(`[name="${k}"]`,$('#settingsForm'));if(field)field.value=v;});
+  Object.entries(state.settings).forEach(([k,v])=>{
+    const field=$(`[name="${k}"]`,$('#settingsForm'));
+    if(field){
+      field.value=v;
+      const valEl=$('#val_'+k);
+      if(valEl)valEl.textContent=formatRangeVal(k,v);
+    }
+  });
   selectSettingsTab(settingsTab);renderPlatform();
 }
 function renderPlatform(){
@@ -173,7 +217,7 @@ function renderPlatform(){
   const check=(name,label)=>`<label class="check"><input type="checkbox" name="${name}" ${p[name]?'checked':''}>${label}</label>`;
   const select=(name,label,choices)=>`<label>${label}<select name="${name}">${choices.map(([v,t])=>`<option value="${v}" ${p[name]===v?'selected':''}>${t}</option>`).join('')}</select></label>`;
   let fields=check('enabled','Enable this platform')+`<label>Platform folder<input name="folder" value="${E(p.folder)}" placeholder="${key==='other'?'Automatic website domain':'Folder name'}" maxlength="150" ${key==='other'?'':'required'}><small>Used only when no explicit destination is selected.</small></label>`;
-  if('quality' in p)fields+=select('quality','Default video quality',[['best','Best available'],['2160','Up to 4K'],['1080','Up to 1080p'],['720','Up to 720p'],['480','Up to 480p'],['audio','Audio only']]);
+  if('quality' in p)fields+=select('quality','Default video quality',[['best','Best available'],['4320','Up to 8K'],['2160','Up to 4K'],['1080','Up to 1080p'],['720','Up to 720p'],['480','Up to 480p'],['audio','Audio only']]);
   if('container' in p)fields+=select('container','Default video file format',[['auto','Automatic · any format'],['mp4','MP4 only']]);
   if('subtitles' in p)fields+=check('subtitles','English / Malayalam subtitles');
   if(key==='youtube')fields+=check('playlist','Include playlists by default')+`<label>Playlist item limit<input type="number" name="playlist_limit" min="1" max="500" value="${p.playlist_limit}" required></label>`;
@@ -199,7 +243,7 @@ async function showTorrentFiles(id){
   openDialog('detailDialog');
 }
 $('#authForm').addEventListener('submit',async event=>{event.preventDefault();const form=event.target;const button=$('button[type=submit]',form);button.disabled=true;$('#authError').textContent='';try{const data=Object.fromEntries(new FormData(form));await api(form.dataset.setup==='true'?'setup':'login',data);form.reset();await showAuth();}catch(error){$('#authError').textContent=error.message;}finally{button.disabled=false;}});
-$('#downloadForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target,data=Object.fromEntries(new FormData(form));data.urls=data.urls.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);data.filename=form.filename.value.trim();data.folder_selected=form.folder_selected.checked;data.browser_fallback=form.browser_fallback.checked;data.playlist=form.playlist.checked;data.subtitles=form.subtitles.checked;const result=await api('jobs',data);closeDialog($('#downloadDialog'));form.urls.value='';toast(`${result.ids.length} download(s) queued${result.skipped?`; ${result.skipped} duplicate(s) skipped`:''}.`);await refresh();});});
+$('#downloadForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target,data=Object.fromEntries(new FormData(form));data.urls=data.urls.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);data.filename=form.filename.value.trim();data.folder_selected=form.folder_selected.checked;data.browser_fallback=form.browser_fallback.checked;data.playlist=form.playlist.checked;data.subtitles=form.subtitles.checked;const result=await api('jobs',data);closeDialog($('#downloadDialog'));form.urls.value='';updateUrlsCount();toast(`${result.ids.length} download(s) queued${result.skipped?`; ${result.skipped} duplicate(s) skipped`:''}.`);await refresh();});});
 $('#torrentForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target;const data={folder:form.folder.value,magnet:form.magnet.value.trim(),paused:form.paused.checked};if(!data.magnet){const file=form.torrent.files[0];if(!file)throw Error('Paste a magnet link or choose a .torrent file.');if(file.size>8*1024*1024)throw Error('Torrent file must be smaller than 8 MiB.');const array=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<array.length;i+=8192)binary+=String.fromCharCode(...array.subarray(i,i+8192));data.metainfo=btoa(binary);}await api('torrents',data);closeDialog($('#torrentDialog'));form.reset();toast('Torrent added.');await setPage('torrents');await refresh();});});
 $('#settingsForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{await api('settings',Object.fromEntries(new FormData(event.target)));toast('Settings saved. Media limits apply to the next job.');await refresh();});});
 $('#passwordForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{await api('password',Object.fromEntries(new FormData(event.target)));event.target.reset();toast('Password changed. Sign in again on each device.');await showAuth();});});
@@ -214,9 +258,42 @@ $('#unplugBtn').onclick=()=>action(async()=>{await api('hold',{hold:true});await
 $('#logoutBtn').onclick=()=>action(async()=>{await api('logout',{});await showAuth();});
 $('#themeBtn').onclick=()=>{document.body.classList.toggle('dark');localStorage.setItem('zedair-theme',document.body.classList.contains('dark')?'dark':'light');};
 if(localStorage.getItem('zedair-theme')==='dark')document.body.classList.add('dark');
-$('#searchJobs').addEventListener('input',renderJobs);
+$('#searchJobs').addEventListener('input',()=>{queueOffset=0;renderJobs();});
+$('#queuePrev').onclick=()=>{queueOffset=Math.max(0,queueOffset-queuePageSize);renderJobs();};
+$('#queueNext').onclick=()=>{queueOffset+=queuePageSize;renderJobs();};
+$('#queuePageSize').onchange=e=>{queuePageSize=Number(e.target.value)||10;localStorage.setItem('zedair-queue-page-size',queuePageSize);queueOffset=0;renderJobs();};
 $('#clearHistory').onclick=()=>action(async()=>{if(!await uiMessage('Clear completed and cancelled jobs from history? Downloaded files will stay on the SSD.'))return;await api('history/clear',{});await refresh();});
 $('#cookieFile').addEventListener('change',event=>action(async()=>{const file=event.target.files[0];if(!file)return;if(file.size>1024*1024)throw Error('Cookie file must be smaller than 1 MiB.');await api('cookies',{slot:cookieSlot,content:await file.text()});event.target.value='';await refresh();renderSettings();toast('Cookie file imported. It will be used by new download attempts.');}));
+
+let rangeSaveTimers={};
+function handleRangeAutoSave(input){
+  const name=input.name,raw=input.value,val=name==='seed_ratio'?parseFloat(raw):parseInt(raw,10);
+  const valEl=$('#val_'+name);
+  if(valEl)valEl.textContent=formatRangeVal(name,val);
+  clearTimeout(rangeSaveTimers[name]);
+  rangeSaveTimers[name]=setTimeout(async()=>{
+    try{
+      await api('settings',{[name]:val});
+      if(state&&state.settings)state.settings[name]=val;
+      if(valEl){valEl.classList.add('saved');setTimeout(()=>valEl.classList.remove('saved'),1200);}
+      toast('Setting auto-saved.');
+    }catch(err){toast(err.message||'Auto-save failed');}
+  },250);
+}
+document.addEventListener('input',event=>{
+  if(event.target&&event.target.matches&&event.target.matches('input[type=range].styled-range[data-auto-save="true"]')){
+    const valEl=$('#val_'+event.target.name);
+    if(valEl)valEl.textContent=formatRangeVal(event.target.name,event.target.value);
+  }
+  if(event.target&&event.target.name==='urls'&&event.target.closest&&event.target.closest('#downloadForm')){
+    updateUrlsCount();
+  }
+});
+document.addEventListener('change',event=>{
+  if(event.target&&event.target.matches&&event.target.matches('input[type=range].styled-range[data-auto-save="true"]')){
+    handleRangeAutoSave(event.target);
+  }
+});
 document.addEventListener('click',event=>{
   const el=event.target.closest('button');if(!el)return;
   action(async()=>{
@@ -236,7 +313,7 @@ document.addEventListener('click',event=>{
     if(el.dataset.close!==undefined)closeDialog(el.closest('dialog'));
     if(el.dataset.open)openDialog(el.dataset.open);
     if(el.dataset.page)await setPage(el.dataset.page);
-    if(el.dataset.filter){filter=el.dataset.filter;$$('[data-filter]').forEach(b=>b.classList.toggle('selected',b===el));renderJobs();}
+    if(el.dataset.filter){filter=el.dataset.filter;$$('[data-filter]').forEach(b=>b.classList.toggle('selected',b===el));queueOffset=0;renderJobs();}
     if(el.dataset.browse){folderTarget=el.dataset.browse;folderPath=$('#'+folderTarget+' [name=folder]').value.trim();try{await loadFolders();}catch(_){folderPath='';await loadFolders();}openDialog('folderDialog');}
     if(el.dataset.folder!==undefined){folderPath=el.dataset.folder;await loadFolders();}
     if(el.dataset.fileFolder!==undefined){filePath=el.dataset.fileFolder;await loadFiles();}
@@ -389,9 +466,18 @@ $('#deleteFolder').onclick=()=>action(async()=>{
 $('#profileForm [name=folder]').addEventListener('input',renderTools);
 function fitPreview(){
   const media=$('img,video,audio',$('#previewBody'));if(!media)return;
-  const width=media.naturalWidth||media.videoWidth,height=media.naturalHeight||media.videoHeight;
-  const available=Math.max(160,innerHeight-240),ratio=width&&height?width/height:16/9;
-  $('#previewDialog').style.width=Math.max(280,Math.min(innerWidth-32,1200,available*ratio+40))+'px';
+  if(media.tagName==='AUDIO'){$('#previewDialog').style.width='min(560px, calc(100vw - 32px))';return;}
+  const naturalW=media.naturalWidth||media.videoWidth||0,naturalH=media.naturalHeight||media.videoHeight||0;
+  const maxAvailableH=Math.max(200,window.innerHeight-220),maxAvailableW=Math.min(window.innerWidth-32,1100);
+  if(naturalW&&naturalH){
+    const ratio=naturalW/naturalH;
+    let targetH=Math.min(naturalH,maxAvailableH),targetW=targetH*ratio;
+    if(targetW>maxAvailableW){targetW=maxAvailableW;targetH=targetW/ratio;}
+    const dialogW=Math.round(Math.max(300,Math.min(maxAvailableW,targetW+44)));
+    $('#previewDialog').style.width=dialogW+'px';
+  }else{
+    $('#previewDialog').style.width=Math.min(maxAvailableW,680)+'px';
+  }
 }
 window.addEventListener('resize',fitPreview);
 // Use the application's status UI instead of native validation popups.

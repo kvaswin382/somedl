@@ -124,6 +124,15 @@ def main():
             for item in (APP/'static').rglob('*'):
                 item.chmod(0o755 if item.is_dir() else 0o644)
             (APP/'static').chmod(0o755)
+            tr_settings = STATE / 'transmission' / 'settings.json'
+            if tr_settings.is_file():
+                try:
+                    s_data = json.loads(tr_settings.read_text())
+                    if s_data.get('preallocation') != 0:
+                        s_data['preallocation'] = 0
+                        tr_settings.write_text(json.dumps(s_data, indent=2) + '\n')
+                except Exception:
+                    pass
         start()
         healthy()
     except Exception:

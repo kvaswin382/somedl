@@ -38,8 +38,8 @@ HERE = Path(__file__).resolve().parent
 DAYS = 35
 DEFAULTS = {'media_kib': 0, 'torrent_down_kib': 0, 'torrent_up_kib': 256,
             'seed_ratio': 0.0, 'reserve_gib': 5, 'playlist_limit': 100, 'retry_count': 3,
-            'hold': False}
-QUALITY = ('best', '2160', '1080', '720', '480', 'audio')
+            'hold': False, 'simultaneous_downloads': 1}
+QUALITY = ('best', '4320', '2160', '1080', '720', '480', 'audio')
 COOKIE_SLOTS = tuple(platforms.DEFAULTS)
 ACTIVE = ('queued', 'running', 'retry', 'blocked', 'paused')
 
@@ -117,12 +117,12 @@ class Transmission:
 
     def call(self, method, arguments=None):
         with self.lock:
-            for _ in range(2):
+            for attempt in range(3):
                 req = urllib.request.Request(self.url, json.dumps({'method': method, 'arguments': arguments or {}}).encode(),
                       {'Content-Type': 'application/json', 'Authorization': 'Basic ' + self.auth,
                        'X-Transmission-Session-Id': self.sid})
                 try:
-                    with urllib.request.urlopen(req, timeout=5) as response:
+                    with urllib.request.urlopen(req, timeout=15) as response:
                         data = json.load(response)
                     if data.get('result') != 'success':
                         raise APIError('Torrent engine: ' + str(data.get('result', 'unknown response')), 502)
@@ -133,6 +133,9 @@ class Transmission:
                         continue
                     raise APIError('Torrent engine rejected the request. Check its service and credentials.', 503)
                 except (OSError, ValueError):
+                    if attempt < 2:
+                        time.sleep(0.5)
+                        continue
                     raise APIError('Torrent engine is offline. Check zedair-transmission on the laptop.', 503)
             raise APIError('Torrent engine session handshake failed', 503)
 
@@ -185,6 +188,7 @@ class Desk:
         self.stop = threading.Event()
         self.current = None
         self.process = None
+        self.processes = {}
         self.live = {}
         self.torrents = []
         self.torrent_error = 'Connecting to torrent engine…'
@@ -194,6 +198,15 @@ class Desk:
         self.threads = []
         self.speedtest = SpeedTest(self)
         self.systemstats = SystemStats()
+        tr_settings = self.state / 'transmission' / 'settings.json'
+        if tr_settings.exists():
+            try:
+                s_data = json.loads(tr_settings.read_text())
+                if s_data.get('preallocation') != 0:
+                    s_data['preallocation'] = 0
+                    tr_settings.write_text(json.dumps(s_data, indent=2) + '\n')
+            except Exception:
+                pass
 
     def rows(self, sql, args=()):
         with self.lock:
@@ -417,23 +430,40 @@ class Desk:
         except OSError:
             pass  # Publication has completed; optional metadata cleanup must not change its status.
 
-    def stop_process(self):
-        process = self.process
-        if process and process.poll() is None:
-            try:
-                os.killpg(process.pid, signal.SIGTERM)
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+    def stop_process(self, jid=None):
+        with self.lock:
+            if jid:
+                targets = [self.processes.get(jid)] if self.processes.get(jid) else []
+            else:
+                targets = list(self.processes.values())
+                if self.process and self.process not in targets:
+                    targets.append(self.process)
+        for process in targets:
+            if process and process.poll() is None:
+                try:
+                    if hasattr(os, 'killpg'):
+                        os.killpg(process.pid, signal.SIGTERM)
+                    else:
+                        process.terminate()
+                    process.wait(timeout=5)
+                except (subprocess.TimeoutExpired, AttributeError, ProcessLookupError, OSError):
+                    try:
+                        if process.poll() is None:
+                            if hasattr(os, 'killpg'):
+                                os.killpg(process.pid, signal.SIGKILL)
+                            else:
+                                process.kill()
+                    except Exception:
+                        pass
 
     def job_action(self, jid, action):
         with self.lock:
             job = self.job(jid)
             if action=='remove':
                 self.update_job(jid,status='cancelled',remove_requested=1,detail='Removed from queue')
-                if self.current!=jid:
+                if jid in self.processes or self.current == jid:
+                    self.stop_process(jid)
+                else:
                     self.db.execute('DELETE FROM published WHERE job=?',(jid,))
                     self.db.execute('DELETE FROM jobs WHERE id=?',(jid,));self.db.commit()
                 return
@@ -444,7 +474,7 @@ class Desk:
                 action='retry'
             if action in ('pause', 'cancel'):
                 self.update_job(jid, status='paused' if action == 'pause' else 'cancelled', detail='Paused' if action == 'pause' else 'Cancelled; partial files kept')
-                # The worker notices the new state and stops its complete process group.
+                self.stop_process(jid)
             elif action in ('resume', 'retry'):
                 if job['status']=='done':raise APIError('This download is complete. Remove its queue entry before adding the URL again.')
                 if job['status'] == 'running':
@@ -494,6 +524,7 @@ class Desk:
 
     def run_job(self, job):
         jid = job['id']
+        proc = None
         instagram_session = None
         try:
             with self.lock:
@@ -536,38 +567,41 @@ class Desk:
                 # Recheck after preparation so a concurrent pause is respected.
                 if self.job(jid)['status'] != 'running':
                     return
-                self.process = subprocess.Popen(args, cwd=dest, env=env, stdout=subprocess.PIPE,
+                proc = subprocess.Popen(args, cwd=dest, env=env, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, start_new_session=True)
-            reader = threading.Thread(target=self.consume, args=(self.process.stdout, jid), daemon=True)
+                self.processes[jid] = proc
+                self.process = proc
+                self.current = jid
+            reader = threading.Thread(target=self.consume, args=(proc.stdout, jid), daemon=True)
             reader.start()
-            while self.process.poll() is None:
+            while proc.poll() is None:
                 if self.stop.wait(1):
-                    self.stop_process()
+                    self.stop_process(jid)
                     self.update_job(jid, status='queued', detail='Waiting for service restart')
                     return
                 fresh = self.job(jid)
                 if fresh['status'] != 'running':
-                    self.stop_process()
+                    self.stop_process(jid)
                     return
                 disk = self.storage()
                 if self.get_setting('hold', False) or not disk['ready']:
-                    self.stop_process()
+                    self.stop_process(jid)
                     self.update_job(jid, status='blocked', detail='Queue held' if self.get_setting('hold', False) else disk['reason'])
                     return
             reader.join(timeout=3)
             if self.job(jid)['status'] != 'running':
                 return
             live = self.live.get(jid, {})
-            if self.process.returncode == 79 and job.get('images_only') and key=='instagram':
+            if proc.returncode == 79 and job.get('images_only') and key=='instagram':
                 self.update_job(jid,status='done',progress=100,detail='Available feed examined; no matching images were exposed by Instagram.')
                 return
-            if self.process.returncode == 75 and job.get('profile_mode') and key=='instagram':
+            if proc.returncode == 75 and job.get('profile_mode') and key=='instagram':
                 if instagram_session:instagram_session.commit()
                 if any(p.is_file() and p.suffix.lower() in MEDIA for p in dest.iterdir()):publish(self,job,dest,output)
                 self.update_job(jid,status='retry',next_try=now()+random.randint(120,300),position=now(),
                     detail='Page checkpoint saved. Short rest before continuing; other downloads can run.',last_error=live.get('log',''))
                 return
-            if self.process.returncode == 0:
+            if proc.returncode == 0:
                 if instagram_session:
                     try:
                         instagram_session.commit()
@@ -585,7 +619,7 @@ class Desk:
                     # Keep the original authentication/rate-limit error if nothing was downloaded.
                     if any(p.is_file() and p.suffix.lower() in MEDIA for p in dest.iterdir()) or self.rows('SELECT source FROM published WHERE job=?',(jid,)):
                         publish(self,job,dest,output)
-                raise APIError(live.get('log', '')[-8000:] or f'Downloader exited with code {self.process.returncode}')
+                raise APIError(live.get('log', '')[-8000:] or f'Downloader exited with code {proc.returncode}')
         except Exception as exc:
             fresh = self.job(jid)
             if fresh['status'] not in ('paused', 'cancelled'):
@@ -603,12 +637,15 @@ class Desk:
             if instagram_session:
                 instagram_session.close()
             with self.lock:
+                self.processes.pop(jid, None)
                 removed=self.rows('SELECT remove_requested FROM jobs WHERE id=?',(jid,))
                 if removed and removed[0]['remove_requested']:
                     self.db.execute('DELETE FROM published WHERE job=?',(jid,))
                     self.db.execute('DELETE FROM jobs WHERE id=?',(jid,));self.db.commit()
-                self.current = None
-            self.process = None
+                if self.current == jid:
+                    self.current = next(iter(self.processes.keys()), None)
+                if self.process == proc:
+                    self.process = next(iter(self.processes.values()), None)
             self.live.pop(jid, None)
             (self.state / ('video-' + jid + '.json')).unlink(missing_ok=True)
             (self.state / ('gallery-' + jid + '.json')).unlink(missing_ok=True)
@@ -619,22 +656,36 @@ class Desk:
             try:
                 if self.get_setting('hold', False) or not self.storage()['ready']:
                     continue
-                items = self.rows("SELECT * FROM jobs WHERE status IN ('queued','retry','blocked') AND next_try<=? ORDER BY position LIMIT 1", (now(),))
-                if items:
-                    self.run_job(items[0])
+                max_simul = max(1, min(10, int(self.get_setting('simultaneous_downloads', 1))))
+                with self.lock:
+                    running_jids = set(self.processes.keys())
+                    available = max_simul - len(running_jids)
+                if available <= 0:
+                    continue
+                running_tuple = tuple(running_jids) if running_jids else ('',)
+                placeholders = ','.join('?' * len(running_tuple))
+                items = self.rows(
+                    f"SELECT * FROM jobs WHERE status IN ('queued','retry','blocked') AND next_try<=? AND id NOT IN ({placeholders}) ORDER BY position LIMIT ?",
+                    (now(), *running_tuple, available)
+                )
+                for item in items:
+                    t = threading.Thread(target=self.run_job, args=(item,), daemon=True)
+                    t.start()
             except Exception as exc:
                 print('Queue monitor:', type(exc).__name__, flush=True)
 
     def apply_torrent_settings(self):
         s = self.settings()
+        simul = max(1, min(10, int(s.get('simultaneous_downloads', 1))))
         return self.rpc.call('session-set', {
-            'download-queue-enabled': True, 'download-queue-size': 1,
-            'seed-queue-enabled': True, 'seed-queue-size': 1, 'queue-stalled-enabled': False,
+            'download-queue-enabled': True, 'download-queue-size': simul,
+            'seed-queue-enabled': True, 'seed-queue-size': simul, 'queue-stalled-enabled': False,
             'speed-limit-down-enabled': bool(s['torrent_down_kib']), 'speed-limit-down': s['torrent_down_kib'],
             'speed-limit-up-enabled': True, 'speed-limit-up': max(1, s['torrent_up_kib']),
             'seedRatioLimited': True, 'seedRatioLimit': s['seed_ratio'],
             'peer-limit-global': 40, 'peer-limit-per-torrent': 20,
             'cache-size-mb': 16, 'port-forwarding-enabled': False,
+            'preallocation': 0,
         })
 
     def owned_torrent(self, torrent):
@@ -645,6 +696,7 @@ class Desk:
 
     def torrent_loop(self):
         configured = False
+        consecutive_errors = 0
         while not self.stop.is_set():
             try:
                 if not configured:
@@ -656,6 +708,7 @@ class Desk:
                 with self.lock:
                     self.torrents = items
                     self.torrent_error = ''
+                consecutive_errors = 0
                 active = [t['hashString'] for t in items if t['status'] != 0]
                 blocked = self.get_setting('blocked_torrents', [])
                 if self.get_setting('hold', False) or not self.storage()['ready']:
@@ -668,8 +721,10 @@ class Desk:
                         self.rpc.call('torrent-start', {'ids': ids})
                     self.set_setting('blocked_torrents', [])
             except Exception as exc:
-                self.torrent_error = str(exc)
-                configured = False
+                consecutive_errors += 1
+                if consecutive_errors >= 2:
+                    self.torrent_error = str(exc)
+                    configured = False
             self.stop.wait(4)
 
     def start(self):
@@ -1018,11 +1073,18 @@ class Handler(BaseHTTPRequestHandler):
             values = {}
             for key, lo, hi in [('media_kib',0,100000), ('torrent_down_kib',0,100000),
                                 ('torrent_up_kib',1,100000), ('reserve_gib',1,100),
-                                ('playlist_limit',1,500), ('retry_count',0,8), ('seed_ratio',0,10)]:
-                value = float(data[key]) if key == 'seed_ratio' else int(data[key])
-                if not lo <= value <= hi:
-                    raise APIError(f'{key} must be between {lo} and {hi}')
-                values[key] = value
+                                ('playlist_limit',1,500), ('retry_count',0,8), ('seed_ratio',0,10),
+                                ('simultaneous_downloads',1,10)]:
+                if key in data:
+                    try:
+                        value = float(data[key]) if key == 'seed_ratio' else int(data[key])
+                    except (ValueError, TypeError):
+                        raise APIError(f'Invalid value for {key}')
+                    if not lo <= value <= hi:
+                        raise APIError(f'{key} must be between {lo} and {hi}')
+                    values[key] = value
+            if not values:
+                raise APIError('No valid settings provided')
             for key, value in values.items():
                 d.set_setting(key, value)
             try:

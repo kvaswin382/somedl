@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 COOKIE_LOCK = threading.RLock()
 
-QUALITY = ('best', '2160', '1080', '720', '480', 'audio')
+QUALITY = ('best', '4320', '2160', '1080', '720', '480', 'audio')
 DEFAULTS = {
     'youtube': {'enabled': True, 'folder': 'YouTube', 'quality': 'best', 'container': 'auto', 'subtitles': False, 'playlist': False, 'playlist_limit': 100},
     'instagram': {'enabled': True, 'folder': 'Instagram', 'require_cookies': True, 'warn_images': True, 'videos': 'dash', 'sleep_request': 8},

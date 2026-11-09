@@ -42,7 +42,7 @@ class ProfileTests(Fixture):
         jid=self.create_job();job=self.desk.job(jid)
         self.assertEqual(job['container'],'mp4')
         args=build_command(job,self.desk.root,None,self.desk.settings(),self.desk.state)
-        self.assertEqual(args[args.index('-f')+1],'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]')
+        self.assertEqual(args[args.index('-f')+1],video_format('best',True))
         self.assertIn('--merge-output-format',args);self.assertIn('--remux-video',args)
         self.assertNotIn('--recode-video',args)
         self.assertEqual(video_format('1080',True),'bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]')

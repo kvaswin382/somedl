@@ -185,7 +185,7 @@ def main():
                   'peer-limit-global': 40, 'peer-limit-per-torrent': 20, 'cache-size-mb': 16,
                   'speed-limit-up-enabled': True, 'speed-limit-up': 256,
                   'ratio-limit-enabled': True, 'ratio-limit': 0, 'port-forwarding-enabled': False,
-                  'preallocation': 1, 'umask': 63}
+                  'preallocation': 0, 'umask': 63}
         save(settings, json.dumps(params, indent=2)+'\n', 0o600)
         os.chown(settings, user.pw_uid, user.pw_gid)
     mount_unit = run('systemd-escape', '--path', '--suffix=mount', MOUNT, capture=True).strip()
@@ -203,6 +203,8 @@ Group=zedair
 ExecStart=/usr/bin/transmission-daemon --foreground --config-dir {transmission}
 Restart=on-failure
 RestartSec=10
+TimeoutStopSec=15
+KillMode=mixed
 UMask=0077
 Nice=10
 MemoryMax=300M

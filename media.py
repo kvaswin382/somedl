@@ -76,8 +76,11 @@ def engine_for(url):
 
 def video_format(quality='best',mp4=False):
     if quality=='audio':return 'ba/b'
-    ceiling=f'[height<={quality}]' if quality in ('2160','1080','720','480') else ''
-    if mp4:return f'bv*[ext=mp4]{ceiling}+ba[ext=m4a]/b[ext=mp4]{ceiling}'
+    ceiling=f'[height<={quality}]' if quality in ('4320','2160','1080','720','480') else ''
+    if mp4:
+        if quality in ('best','4320'):
+            return f'bv*[height>2160][ext=mp4]{ceiling}+ba[ext=m4a]/bv*[height>2160]{ceiling}+ba/bv*[ext=mp4]{ceiling}+ba[ext=m4a]/b[ext=mp4]{ceiling}/bv*{ceiling}+ba/b{ceiling}'
+        return f'bv*[ext=mp4]{ceiling}+ba[ext=m4a]/b[ext=mp4]{ceiling}'
     return f'bv*{ceiling}+ba/b{ceiling}'
 
 
