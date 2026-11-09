@@ -11,7 +11,14 @@ BROWSERS = Path('/opt/zedair/browsers')
 
 
 def browser_ready():
-    return importlib.util.find_spec('playwright') is not None and BROWSERS.is_dir() and any(BROWSERS.glob('chromium*'))
+    spec=importlib.util.find_spec('playwright')
+    if spec is None or not spec.origin or not BROWSERS.is_dir():return False
+    try:
+        manifest=json.loads((Path(spec.origin).parent/'driver/package/browsers.json').read_text())
+        entry=next(b for b in manifest['browsers'] if b['name']=='chromium-headless-shell')
+        root=BROWSERS/('chromium_headless_shell-'+entry['revision'])
+        return any(p.is_file() for p in root.glob('**/chrome-headless-shell')) or any(p.is_file() for p in root.glob('**/headless_shell'))
+    except (OSError,KeyError,ValueError,StopIteration):return False
 
 
 def profile_target(platform, value):

@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory() as folder:
             return (1,'ERROR Unsupported URL') if len(calls)==1 else original(command)
         found={'url':f'http://127.0.0.1:{server.server_port}/fixture.mp4','kind':'video','headers':{'referer':job['url'],'user-agent':'fixture'}}
         capture=io.StringIO()
-        with patch('browser_video.execute',side_effect=execute),patch('browser_video.detect',return_value=(found,'Website title',http.cookiejar.MozillaCookieJar())),patch('browser_video.profiles.browser_ready',return_value=True),patch('browser_video.validate_url'),contextlib.redirect_stdout(capture):
+        with patch('browser_video.discover',side_effect=ValueError('Fixture needs browser')),patch('browser_video.execute',side_effect=execute),patch('browser_video.detect',return_value=(found,'Website title',http.cookiejar.MozillaCookieJar())),patch('browser_video.profiles.browser_ready',return_value=True),patch('browser_video.validate_url'),contextlib.redirect_stdout(capture):
             status=browser_video.run({'args':args,'url':job['url'],'dest':str(dest),'cookie':'','enabled':True})
         assert status==0,capture.getvalue()
         files=list(dest.glob('*.mp4'));assert len(files)==1 and files[0].read_bytes()==(source/'fixture.mp4').read_bytes()

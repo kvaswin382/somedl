@@ -1,80 +1,64 @@
 # Verification report — Zedair 1.4.0
 
-Date: 8 November 2026. Target: Ubuntu 24.04 x86_64, Python 3.12, exFAT USB SSD.
+Revision date: 9 November 2026. The application version remains 1.4.0.
+Target: Ubuntu 24.04 x86_64, Python 3.12, 2 GB RAM, exFAT USB SSD.
 
-## Passed
+## Current verification
 
-- **85 automated tests** with `python3 -m unittest discover -s tests -v`.
-- Real gallery-dl cookie serialization regression: its writer exports session expiry as `0`; the old MozillaCookieJar reader interprets that as epoch zero. The new reader correctly recognizes it as a session cookie. Three simulated server rotations survive real gallery-dl write/reload cycles. This test makes no Instagram requests and uses no real account.
-- Two consecutive queue jobs with a controlled downloader process exercise private working cookies, successful-session publication and next-job reuse.
-- Real yt-dlp loopback integration downloads a generated MP4 with FFmpeg available. Verified exact media bytes, title/progress output, metadata naming, numbered publication and preservation of an existing file.
-- Official Ookla package downloaded from the publisher's Packagecloud repository, verified against the pinned SHA-256, extracted and checked using `--version` and `--help`. Version: 1.2.0.84 x86_64-linux-musl. The official bundled manual documents machine-readable bandwidth as bytes/second. No live test was run and no agreement was accepted.
-- Python compilation, JavaScript syntax and individual shell syntax checks for install/update/upgrade/speed-test installer entrypoints.
-- Desktop browser checks: image preview loaded its actual pixels; MP4 metadata loaded and native video playback advanced; closing the dialog removed the media element. The separate Download action remains available.
-- Dark theme and mobile speed-test layout checked at a 375 CSS-pixel content viewport: body width equals viewport width. Main background is RGB(21,21,23); speed card is RGB(32,32,35). Historical report details opened successfully.
-- Browser speed values were explicitly labelled test fixtures, not network measurements. No production account or authentication bypass is included.
+**101 automated tests passed** with `python3 -m unittest discover -s tests`.
+They include the earlier authentication, cookies, queue, storage, preview, speed-test, upgrade/rollback and profile regressions, plus:
 
-## v1.4 verification
+- Highest-quality MP4 defaults, duplicate detection across batch/history and common share-link variants, and explicit removal before a deliberate finished-job re-download.
+- HQPorner mobile URL normalization and bounded temporary DNS retries with domain-specific diagnostics.
+- Static player/iframe parsing, ranked MP4 selection, ambiguity rejection and forced browser retry behavior.
+- Persistent engine markers, missing-browser diagnostics and refusal to change the engine of an already running job.
+- Running-job removal stops its process, removes its queue record and retains completed files.
+- Persistent completed-page fingerprints and previous-cursor history, including detection after reopening the SQLite history.
+- Images-only radio API mapping and independent media-selection duplicate checks.
+- Batch copy/move, preflight validation, collision numbering, stale-file rejection and date preservation.
+- Recursive folder deletion requires a current inventory confirmation, protects the root, symlinks, active download destinations and torrent files, and rejects changes made during confirmation.
+- Authentication on the new file endpoints and HTTP dispatch of inspect/confirmed recursive deletion.
 
-- The automated suite covers optional names/extensions, 100-link batches, explicit/root/default destinations, file copy/move/rename and collision handling, date preservation, stale-file and path guards, torrent ownership, empty-folder rules, profile-picture selection, image-only configuration, long rate-limit cooldowns, invalid feed responses, media selection, authenticated preview neighbors across pagination, and existing regression coverage.
-- Real gallery-dl processed a controlled 300-post feed across 30 pages and downloaded **330 exact-byte images**, including all images in mixed carousels. No video or lower-resolution thumbnail request was made. A forced mid-page HTTP failure kept that page's checkpoint; the next attempt replayed it without duplicate media. Short work slices resumed through the final page, and a completed retry made no further requests.
-- The earlier false-counter/archive regression passes through the new profile worker: old print-only behavior is reproduced, the same failed job is recovered, and actual files are published without duplicates.
-- Real yt-dlp downloaded local MP4 bytes through the new fallback handoff, preserving the detected webpage title and Referer and removing temporary cookies. **Browser detection itself was substituted in this test.** Media-candidate rules and refusal of DRM/challenge fallback are checked separately.
-- Desktop UI checks confirmed optional images-only job submission, 100-entry preference, renaming a fixture without an extension (the `.png` extension remained), and image → video → image preview with arrow keys/Next and correct boundary buttons.
-- The browser session reset during final QA. Remaining v1.4 mobile-form and real Chromium detector checks were not completed; prior 320-pixel layout checks belong to v1.3/v1.3.1. Do not interpret those earlier checks as fresh v1.4 validation.
-- No live Instagram profile, adult video page or physical Zedair laptop was used. The compatibility feed, actual player detection, Ubuntu AppArmor setup and memory behavior still require target-machine validation. Neither universal website support nor complete access to every Instagram post is claimed.
+## Real-engine integrations
 
-## v1.3.1 regression and sorting verification
+All eight scripts passed. Network media was served by local fixture servers; no real account cookies or live social-site media were used.
 
-- The real gallery-dl 1.32.19 CLI reproduced v1.3's bug: `--print` emitted four completed-item messages, made zero media HTTP requests, created zero media files, and wrote four false archive entries.
-- The same failed job was placed in its old `publish` phase with a false count, then reopened through the v1.3.1 startup migration. Its phase/count were repaired, the corrected `--Print` command fetched four exact-byte fixture images across two pages, the normal server worker published them, and the job finished successfully with a count of four.
-- Repeating that job's download phase used the real replacement archive and made zero additional media requests, created no duplicate outputs and retained the count of four. All media came from a loopback HTTP server; only Instagram extraction responses were substituted. No live Instagram requests were made.
-- Startup migration is one-time, retains old archive bytes and does not reset direct post jobs. Real published files are excluded from the empty-job repair.
-- File HTTP tests cover all six sort orders, newest-first default, folder priority, hidden/symlink exclusion, validation/authentication, ordering before pagination, stable ties, stored download dates and modification-time fallback for an externally replaced file.
-- Browser checks confirmed newest-first default, alphabetical ordering, largest-first ordering in list and grid, and oldest-first ordering on mobile. The sort selection persisted across page navigation; at 320 CSS pixels the file page had equal body/client scroll widths and the sort control wrapped below the view buttons.
-- Publication records completion time without changing original file modification time. Clearing job history retains recorded dates; deleting a file removes its date record.
-- The three earlier real-engine integration scripts also passed, alongside Python/JavaScript syntax checks. The previous profile test checked pagination/archive primitives but missed the CLI print flag; the new test exercises the CLI parser and actual media writes through the worker.
+1. `integration_page_discovery.py`: follows a nested iframe through real HTTP, selects the highest labelled MP4, retains the top-level page title and embedded-page Referer, and uses real yt-dlp to download identical media bytes. Chromium is explicitly unavailable in this fixture, proving the static fallback can work without it.
+2. `integration_browser_handoff.py`: real yt-dlp receives a detected URL, page title and Referer, saves exact MP4 bytes and removes its temporary cookie jar. **Browser discovery itself is substituted**; this is a handoff test, not a live Chromium/player test.
+3. `integration_profile_large.py`: real gallery-dl processes 300 posts over 30 pages, saving 330 exact-byte images including every image in mixed carousels. No video or low-resolution thumbnail request occurs. A forced mid-page failure is resumed without repeated media downloads; a completed retry makes no further media requests.
+4. `integration_profile_loop.py`: exercises gallery-dl's actual GraphQL pagination with controlled response data. After two worker restarts, the server repeats the first completed page under a new cursor. The worker returns its loop-stop status before requesting that page's media again. Two images are fetched once each; the collection stays incomplete.
+5. `integration_instagram_profile_download.py`: reproduces the old lowercase `--print` false-count/poisoned-archive bug, recovers the same job through the current worker, publishes four exact-byte files over two pages, and verifies archive reuse on a simulated interrupted-job retry.
+6. `integration_instagram_cookies.py`: real gallery-dl cookie serialization, session-expiry-zero handling and simulated cookie rotations survive write/reload cycles.
+7. `integration_profiles_formats.py`: real gallery-dl pagination/archive behavior and real yt-dlp highest-compatible-MP4/quality-ceiling selection.
+8. `integration_media.py`: real yt-dlp transfer, title/progress/metadata output, publication and numbered collision handling with FFmpeg available.
 
-## v1.3 additions verified
+## Interface checks
 
-- Direct Facebook/fb.watch and Reddit/redd.it routing, private Facebook cookie fields and default destination folders.
-- Profile API authorization, username/URL validation, duplicate unfinished jobs, fixed platform/username paths, Instagram Posts/Reels/Everything configuration, unlimited profile post count and required optional Facebook dependency.
-- Partial profile publication preserves completed files. Empty failed collections retain their original authentication error. Reaching Facebook's scroll limit requires attention; a video rate-limit response stops before the next video is requested.
-- Facebook canonical link scoping and exact-photo-ID/highest-image selection with allowed CDN hosts. These are fixtures, not live Facebook downloads.
-- Real gallery-dl 1.32.19 traverses three controlled pagination responses, filters reels from the posts feed and preserves its actual SQLite media-ID archive across reopening. No Instagram requests are made.
-- Real yt-dlp 2026.10.26 format selection chooses the 2160p MP4 over a lower MP4 and higher WebM when MP4-only is selected; an explicit 1080p ceiling picks the lower matching MP4, and a WebM-only set has no match. The real loopback media download and existing cookie-serialization integration checks also pass.
-- MP4 preference validation, per-job persistence and platform defaults. Merge/remux options are present; re-encoding is absent. Audio-only remains independent.
-- CPU tick-delta calculation (including guest-counter handling), RAM availability, swap, missing sensors, zero swap and shared sample caching. `/api/system` requires login.
-- Avahi configuration updates preserve unrelated settings and are idempotent; systemd proxy unit generation is checked. Root installation and LAN name resolution were not executed here.
-- Desktop browser QA: Tools form, queued Instagram fixture and Facebook controls; real 600×400 image loaded in Grid while the file list contained zero video elements; MP4-only submission was persisted and displayed as “Highest available · MP4 only” in job details.
-- Browser QA at 320 CSS-pixel content width: Tools, Settings/System usage, Files and queued downloads had body scroll width equal to viewport width. Gauges wrap into two columns and mobile navigation into two rows. Charcoal dark mode and light mode were inspected.
-- Live system gauges displayed this development server's `/proc` readings, not measurements of the user's laptop. Speed history and sample downloads remained explicitly isolated test fixtures. No QA wrapper or authentication bypass is shipped.
+An isolated preview with generated sample media and disabled download workers was used. It is not part of the release.
 
-## Automated coverage
+- The main form visibly defaults to Highest quality and MP4.
+- Queue filters show non-zero counts; a fixture whose persisted stage is browser shows **Browser engine**.
+- Selecting three files and copying them through the bulk dialog completes and reports three files copied.
+- Instagram's five radio options render correctly; Images only queues a job with the correct flag.
+- Desktop video preview loads the generated MP4. After a sizing correction, its rendered dimensions were 1158 × 651.375, matching the source's 16:9 ratio rather than leaving side gutters around an intrinsic-size player.
+- File list/grid and the selection toolbar were inspected in a narrow frame with a 320 CSS-pixel content viewport. Controls wrap into separate rows. The bulk dialog measured 303 pixels wide, with equal scroll/client widths of 301 pixels, so its content did not overflow horizontally.
+- Folder deletion, queue removal and stale-inventory protections are covered by API/process tests. No user data was deleted through the browser during QA.
+- JavaScript syntax, Python compilation, shell syntax, package file lists, manifest checksums and ZIP integrity were checked before delivery.
 
-Baseline tests cover storage UUID/mount/free-space guards, confined paths and symlinks, URL batches, duplicate unfinished jobs, restart recovery, password verification, first-run setup, 35-day sessions, CSRF/origin protection, queue control/retry/unplug handling, Threads exact-post fixtures, Transmission RPC protections, platform routing/settings, private cookie fields, title collisions, publication recovery and safe individual-file deletion.
+## Limits and unverified behavior
 
-New v1.2 coverage includes:
+The supplied Eporner and HQPorner hosts did not resolve from the execution workspace. This does **not** establish why the user's laptop cannot resolve Eporner, nor does it prove those sites are down. Their exact live pages were not verified. The README includes laptop-side DNS diagnostics and distinguishes DNS failure from extraction failure.
 
-- Session cookies with zero/blank expiry remain usable on every read, including existing gallery-dl exports; positive past expiries are not extended.
-- Session/CSRF rotation persists between jobs; invalid or empty exported jars cannot overwrite the saved session. GUI replacement/deletion wins over an older active download.
-- Cookie working files have private permissions, filter non-Instagram domains at publication and participate in secret redaction. Completed/failed working files are cleaned up.
-- Authentication, challenge and rate-limit messages remain distinct.
-- Official speed conversion: 25,000,000 bytes/second becomes 200 Mbps. Invalid, nonfinite, negative, boolean or incomplete metrics are rejected.
-- Deterministic subprocess fixtures verify live progress does not become a completed report, failure never reports success, cancellation/concurrency guards, required first-use acceptance and missing-engine handling.
-- Legacy reports are labelled separately; CSV export guards spreadsheet formula prefixes.
-- Authenticated HTTP preview responses: MIME allowlist, inline versus attachment, full/open/suffix byte ranges, HEAD, invalid ranges (416), unsupported inline formats (415), traversal and symlink rejection.
-- Authenticated history export and folder preview metadata.
-- App upgrade success and failed-health-check rollback in temporary directories with mocked service commands; private state and the existing Python environment survive both paths.
+The execution environment prevented local Chromium startup with an IPC `socket() ... Operation not permitted` error. Its sandbox was not disabled. Actual on-demand Chromium media discovery, current live player layouts, Ubuntu AppArmor installation and memory usage on the 2 GB laptop remain unverified. The UI preview ran in a separate browser; that does not validate the server-side browser worker.
 
-## Limits
+No live Instagram/Facebook account, real torrent swarm, physical SSD, Zedair server or GitHub repository was accessed. The package was not installed on the laptop or pushed to GitHub. Hardware behavior, exFAT power loss, systemd/mount/Avahi configuration, LAN-wide `zed.local`, account restrictions and actual speed measurements still need target-machine checks.
 
-No connection to the physical laptop, live Facebook/Instagram account or GitHub repository was available. This package was not installed there and nothing was pushed to GitHub. Actual exFAT power-loss behavior, mount/fstab/systemd/Avahi installation, cross-device zed.local resolution, Chromium sandbox launch, Atom CPU/RAM usage, torrent swarms, YouTube challenges and account-specific Instagram/Facebook/Reddit/X access require validation there. Upgrade tests simulate service control.
+Page/cursor detection prevents the tested replay loops; it cannot force Instagram to expose inaccessible, deleted or hidden posts. A failed page is intentionally replayed for recovery, while the media archive prevents downloading already completed items again. Completion means the exposed feed ended, not proof of a full account archive. Cookie refresh preserves response cookies; it cannot force a service to renew a login.
 
-The Instagram expiry-zero bug is reproduced and fixed. That does not prove it was the only cause of the user's failures. Session refresh preserves cookies supplied during successful normal requests; it does not force Instagram to renew a login, bypass a challenge or guarantee a session lifetime. Threads and Facebook profile collection remain experimental. Facebook scroll exhaustion is not proof of a complete archive. Its live page structure, session acceptance and memory consumption require validation on the target laptop. MP4-only is best quality among matching MP4/M4A sources and cannot manufacture an unavailable format.
+MP4 means the best matching source, not transcoding unavailable formats. Multiple unranked players can still require manual attention. Browser-native codec support varies, and encoded black bars inside the original media are not removed.
 
-Speed testing now uses the official Ookla engine, but actual internet throughput and the precise reason for prior inflated readings were not measured on the laptop. The engine remains subject to the app service's resource limits. Browser-native codec support varies; there is no server transcoding.
+Bulk file operations are serialized and use bounded copy buffers. They are not resumable background copy jobs; runtime errors can leave a partially completed batch, which the UI reports. Power loss can leave a hidden temporary copy. Permanent folder deletion has no recycle bin. Changes made directly on the SSD outside the app are not controlled by its locks.
 
 ## Package hygiene
 
-The release contains source, documentation, tests and checksums. It excludes the browser-QA wrapper, authentication bypass, fixture media, populated databases, real cookies, downloaded Ookla binary, virtual environments, screenshots and logs. Check extracted contents with `sha256sum -c MANIFEST.sha256`.
+The ZIP contains source, documentation, tests and checksums. It excludes the QA wrapper, authentication bypass, fixture media, populated databases, cookies, virtual environments, screenshots, compiled caches and logs. Verify extracted files with `sha256sum -c MANIFEST.sha256`.

@@ -101,7 +101,7 @@ def main():
         assert final['items']==4 and Handler.requests==4,final
         with sqlite3.connect(stage/'.profile-downloads-v2.sqlite3') as db:assert db.execute('SELECT count(*) FROM archive').fetchone()[0]==4
         # Restart the same job's download phase: real archive skips completed IDs.
-        desk.update_job(jid,phase='download');desk.job_action(jid,'retry')
+        desk.update_job(jid,phase='download',status='error');desk.job_action(jid,'retry')
         with patch('server.validate_url'),patch('server.build_command',side_effect=actual_command):desk.run_job(desk.job(jid))
         assert desk.job(jid)['status']=='done' and desk.job(jid)['items']==4
         assert len(list(output.glob('*.png')))==4 and Handler.requests==4

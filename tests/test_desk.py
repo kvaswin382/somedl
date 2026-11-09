@@ -138,7 +138,7 @@ class CoreTests(Fixture):
 
     def test_command_arguments_and_destination(self):
         job = self.desk.job(self.create_job())
-        job.update(quality='1080', playlist=0, subtitles=1)
+        job.update(quality='1080', container='auto', playlist=0, subtitles=1)
         dest = self.desk.root/'test'
         args = build_command(job, dest, None, self.desk.settings(), self.desk.state)
         self.assertIn('bv*[height<=1080]+ba/b[height<=1080]', args)

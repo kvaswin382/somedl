@@ -266,6 +266,14 @@ def redact(text, state):
 
 def failure_kind(message):
     low = message.lower()
+    if 'browser engine is not installed' in low:
+        return 'engine', 'Browser engine unavailable. Install or repair it in Settings → Download engines, then retry.'
+    if 'browsertype.launch' in low or 'executable doesn\'t exist' in low:
+        return 'engine', 'Browser could not start. See Details and rerun the browser installer sandbox check.'
+    if 'dns lookup failed' in low:
+        return 'transient', 'Website DNS lookup failed on the laptop. See Details for the hostname; automatic retry scheduled.'
+    if 'pagination loop' in low:
+        return 'pagination', 'Instagram repeated a page. Job paused for review; saved files are kept.'
     if any(s in low for s in ('429','too many requests','rate limit','please wait a few minutes')):
         return 'rate_limit', 'Website rate limit. Wait before retrying; automatic retries are paused.'
     if any(s in low for s in ('checkpoint_required','challenge_required','consent_required','/challenge/')):

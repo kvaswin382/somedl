@@ -18,7 +18,7 @@ class RevisionTests(Fixture):
             j=self.desk.job(self.create_job(url));self.assertEqual(j['subdir'],folder);self.assertEqual(j['layout'],2)
         self.assertEqual(platforms.platform_for('https://x.com.evil.test/a'),'other')
         p=self.desk.platform_settings();p['x']['quality']='720';p['x']['folder']='Social/X';self.desk.set_setting('platforms',p)
-        j=self.desk.job(self.create_job('https://x.com/user/status/789'));self.assertEqual(j['quality'],'720');self.assertEqual(j['subdir'],'Social/X')
+        j=self.desk.job(self.desk.add_jobs({'urls':['https://x.com/user/status/789'],'quality':'platform'})['ids'][0]);self.assertEqual(j['quality'],'720');self.assertEqual(j['subdir'],'Social/X')
         args=build_command(j,self.desk.root,None,{'platforms':p,**self.desk.settings()},self.desk.state)
         self.assertIn('twitter:api=graphql',args)
 

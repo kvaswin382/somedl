@@ -77,14 +77,73 @@ def manage(desk,data):
             if reserved and target.is_file() and not target.is_symlink() and target.stat().st_size==len(marker) and target.read_bytes()==marker:target.unlink()
 
 
-def delete_folder(desk,data):
-    if data.get('confirm') is not True:raise ValueError('Confirm deleting this empty folder')
+def manage_batch(desk,data):
+    items=data.get('files');action=data.get('action')
+    if action not in ('copy','move') or not isinstance(items,list) or not 1<=len(items)<=100:
+        raise ValueError('Select 1–100 files to copy or move')
+    if any(not isinstance(i,dict) for i in items):raise ValueError('Invalid file selection')
+    if len({i.get('path') for i in items})!=len(items):raise ValueError('Select each file only once')
+    with desk.file_lock:
+        folder=desk.destination(data.get('folder',''),reserve=False)
+        if not folder.is_dir():raise ValueError('Choose an existing destination')
+        total=0
+        for item in items:
+            source=desk.destination(item.get('path',''),reserve=False)
+            total+=guard(desk,source,item.get('stamp')).st_size
+            if source.parent==folder:raise ValueError('Choose a different destination folder')
+        if action=='copy' and desk.storage()['free']-total<desk.get_setting('reserve_gib',5)*1024**3:
+            raise ValueError('Not enough SSD space for all selected files and the free-space reserve')
+        results=[]
+        for item in items:
+            try:results.append({'source':item['path'],**manage(desk,{**item,'action':action,'folder':data.get('folder','')})})
+            except Exception as exc:
+                return {'results':results,'error':str(exc),'failed':item['path'],'remaining':len(items)-len(results)}
+        return {'results':results,'remaining':0}
+
+
+def folder_inventory(desk,path):
+    import hashlib
+    if path==desk.root or not path.is_dir() or path.is_symlink():raise ValueError('Select a subfolder inside Zedair')
+    fingerprint=hashlib.sha256();files=0;size=0
+    for current,dirs,names in os.walk(path,followlinks=False):
+        for name in sorted(dirs+names):
+            child=Path(current)/name
+            if child.is_symlink() or os.path.ismount(child):raise ValueError('Folder contains a symlink or nested mount; remove it separately')
+            st=child.stat()
+            fingerprint.update((child.relative_to(path).as_posix()+f'\0{st.st_mode}:{st.st_size}:{st.st_mtime_ns}\n').encode())
+            if child.is_file():files+=1;size+=st.st_size
+            elif not child.is_dir():raise ValueError('Folder contains a special file')
+    st=path.stat();fingerprint.update(f'{st.st_dev}:{st.st_ino}:{st.st_mtime_ns}'.encode())
+    return {'files':files,'bytes':size,'stamp':fingerprint.hexdigest()}
+
+
+def inspect_folder(desk,data):
     with desk.file_lock:
         path=desk.destination(data.get('path',''),reserve=False)
-        if path==desk.root or not path.is_dir():raise ValueError('Choose an empty subfolder, not Zedair itself')
+        return folder_inventory(desk,path)
+
+
+def delete_folder(desk,data):
+    if data.get('confirm') is not True:raise ValueError('Confirm permanently deleting the folder and its contents')
+    with desk.file_lock,desk.lock:
+        path=desk.destination(data.get('path',''),reserve=False)
+        inventory=folder_inventory(desk,path)
+        if data.get('stamp')!=inventory['stamp']:raise ValueError('Folder changed. Review its contents and confirm deletion again.')
         for j in desk.rows("SELECT * FROM jobs WHERE status IN ('running','queued','retry','paused','blocked')"):
-            if (desk.root/j['folder']/j['subdir']).is_relative_to(path):raise ValueError('A queued download uses this folder')
-        for t in desk.rpc.call('torrent-get',{'fields':['downloadDir']}).get('torrents',[]):
-            if Path(t['downloadDir']).resolve().is_relative_to(path.resolve()):raise ValueError('A torrent uses this folder')
-        try:path.rmdir()
-        except OSError as exc:raise ValueError('Folder is not empty or could not be removed') from exc
+            if (desk.root/j['folder']/j['subdir']).is_relative_to(path):raise ValueError('A queued download uses this folder. Remove or cancel it first.')
+        if desk.current:
+            active=desk.rows('SELECT folder,subdir FROM jobs WHERE id=?',(desk.current,))
+            if any((desk.root/j['folder']/j['subdir']).is_relative_to(path) for j in active):raise ValueError('Wait for the current download to stop')
+        for r in desk.rows('SELECT p.target,j.folder,j.subdir FROM published p JOIN jobs j ON p.job=j.id WHERE p.complete=0'):
+            if (desk.root/r['folder']/r['subdir']/r['target']).is_relative_to(path):raise ValueError('A file in this folder is still being saved')
+        for t in desk.rpc.call('torrent-get',{'fields':['downloadDir','files']}).get('torrents',[]):
+            base=Path(t['downloadDir']).resolve()
+            if base.is_relative_to(path.resolve()) or any((base/f['name']).resolve().is_relative_to(path.resolve()) for f in t.get('files',[])):
+                raise ValueError('Remove the torrent using this folder before deleting its files')
+        desk.destination(data['path'],reserve=False)
+        shutil.rmtree(path)  # Python's fd-based implementation does not follow substituted symlinks.
+        relative=path.relative_to(desk.root).as_posix()
+        for row in desk.rows('SELECT DISTINCT folder FROM file_dates'):
+            if row['folder']==relative or row['folder'].startswith(relative+'/'):
+                desk.db.execute('DELETE FROM file_dates WHERE folder=?',(row['folder'],))
+        desk.db.commit()

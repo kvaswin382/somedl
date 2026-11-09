@@ -1,4 +1,6 @@
 """Small resumable gallery-dl worker. Checkpoint only after a fully handled page."""
+import hashlib
+import sqlite3
 import json
 import logging
 import os
@@ -8,11 +10,43 @@ from pathlib import Path
 
 class PageYield(BaseException):pass
 class MediaFailure(BaseException):pass
+class PaginationLoop(BaseException):pass
+
+class PageHistory:
+    """Completed-page identities survive process restarts; failed pages remain replayable."""
+    def __init__(self,path,feed):
+        self.path=path;self.feed=feed
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE IF NOT EXISTS pages(feed TEXT,kind TEXT,value TEXT,PRIMARY KEY(feed,kind,value))')
+    def seen(self,kind,value):
+        with sqlite3.connect(self.path) as db:
+            return bool(value and db.execute('SELECT 1 FROM pages WHERE feed=? AND kind=? AND value=?',(self.feed,kind,value)).fetchone())
+    def commit(self,cursor,fingerprint):
+        with sqlite3.connect(self.path) as db:
+            for kind,value in (('cursor',cursor),('page',fingerprint)):
+                if value:db.execute('INSERT OR IGNORE INTO pages VALUES(?,?,?)',(self.feed,kind,str(value)))
+
+def page_identity(posts):
+    ids=[]
+    for item in posts:
+        node=item.get('node',item) if isinstance(item,dict) else {}
+        node=node.get('media',node)
+        value=node.get('pk') or node.get('id') or node.get('code') if isinstance(node,dict) else None
+        if value:ids.append(str(value))
+    return hashlib.sha256('\n'.join(sorted(set(ids))).encode()).hexdigest() if ids else ''
+
+def observe_page(state,posts):
+    fingerprint=page_identity(posts)
+    history=state.get('_history')
+    if history and history.seen('page',fingerprint):
+        raise PaginationLoop('Instagram pagination loop: an already completed page returned again; saved media kept')
+    state['_page_identity']=fingerprint
+
 
 def save(path,data):
     temp=path.with_suffix('.tmp')
     with temp.open('w') as out:
-        json.dump(data,out);out.flush();os.fsync(out.fileno())
+        json.dump({**data,'feeds':{k:{a:b for a,b in v.items() if not a.startswith('_')} for k,v in data['feeds'].items()}},out);out.flush();os.fsync(out.fileno())
     os.replace(temp,path)
 
 def validate_connection(data):
@@ -45,6 +79,9 @@ def install_checked_pagination(ext,state):
                     try:
                         ended=validate_connection(payload.get('data',{}).get(fieldname))
                         state['verified_end']=ended
+                        connection=payload['data'][fieldname]
+                        if 'edges' not in connection:connection=next(v for v in connection.values() if isinstance(v,dict) and 'edges' in v)
+                        observe_page(state,connection['edges'])
                     except ValueError:
                         # Structural feed errors can use the authenticated compatibility feed.
                         # Authentication, challenge and rate-limit responses never trigger this.
@@ -76,6 +113,7 @@ def compatibility_posts(ext,state,feed):
         data=ext.api._call('/v1/feed/user/'+identifier+'/',params=params)
         if not isinstance(data.get('items'),list) or type(data.get('more_available')) is not bool:
             raise ValueError('Instagram compatibility feed omitted pagination metadata; collection remains incomplete')
+        observe_page(state,data['items'])
         for post in data['items']:
             if feed!='photos' or not ext._is_reel(post):yield post
         if not data['more_available']:
@@ -101,6 +139,8 @@ def run(spec, slice_seconds=900):
     for feed in feeds:
         state=progress['feeds'].setdefault(feed,{'cursor':None,'done':False,'posts':0})
         if state['done']:continue
+        history=PageHistory(dest/'.profile-pages-v1.sqlite3',feed+':'+state.get('backend','web'));state['_history']=history
+        state.pop('_page_identity',None)
         config.clear();config._config.update(conf)
         ig=config._config['extractor']['instagram']
         ig['cursor']=state['cursor'] or True
@@ -136,15 +176,19 @@ def run(spec, slice_seconds=900):
         def checkpoint_page(cursor):
             nonlocal last_cursor
             if download.status:raise MediaFailure()
-            if cursor and cursor==last_cursor:raise RuntimeError('Instagram repeated its page cursor; collection is incomplete')
+            if cursor and (cursor==last_cursor or history.seen('cursor',cursor)):
+                raise PaginationLoop('Instagram pagination loop: a previous cursor returned again; saved media kept')
             result=original(cursor)
             state['cursor']=cursor;progress['pages']+=1;last_cursor=cursor
             save(checkpoint,progress)
+            history.commit(cursor,state.get('_page_identity'))
             print('ZEDPROFILE Page checkpoint saved; '+str(progress['pages'])+' pages processed',flush=True)
             if cursor and time.monotonic()>=deadline:raise PageYield()
             return result
         ext._update_cursor=checkpoint_page
         try:status=download.run()
+        except PaginationLoop as exc:
+            print('ERROR '+str(exc),flush=True);return 78
         except PageYield:return 75
         except MediaFailure:return 1
         if (state.get('feed_error') or (not status and state['posts']==0)) and feed in ('posts','photos') and state.get('backend')!='compatibility':
@@ -157,9 +201,9 @@ def run(spec, slice_seconds=900):
             print('ERROR No posts were returned by Instagram. Collection is incomplete; not marked finished.',flush=True)
             return 76
         state['done']=True;save(checkpoint,progress)
+        history.commit(None,state.get('_page_identity'))
         if time.monotonic()>=deadline and feed!=feeds[-1]:return 75
     if spec['images_only'] and not any(dest.glob('*.jpg')) and not any(dest.glob('*.png')) and not any(dest.glob('*.webp')):
-        import sqlite3
         archive=dest/'.profile-downloads-v2.sqlite3'
         if not archive.exists():return 79
         with sqlite3.connect(archive) as db:

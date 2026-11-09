@@ -7,7 +7,7 @@ from test_desk import Fixture
 import test_v13 as previous
 from media import build_command
 from publishing import publish
-from fileops import manage,delete_folder
+from fileops import manage,delete_folder,inspect_folder
 from browser_video import media_kind,pick,run as video_run
 from instagram_profile import validate_connection,feeds_for,compatibility_posts
 import platforms
@@ -44,13 +44,13 @@ class FeatureTests(Fixture):
         self.assertFalse(source.exists());self.assertEqual((root/result['path']).read_bytes(),b'bytes'*1000)
         dates=self.desk.rows('SELECT downloaded FROM file_dates');self.assertEqual([r['downloaded'] for r in dates],[123,123])
         self.assertEqual((root/'new.jpg').read_bytes(),b'keep')
-    def test_file_guards_and_empty_folder_only(self):
+    def test_file_guards_and_folder_confirmation(self):
         p=self.desk.root/'one.mp4';p.write_bytes(b'media');self.desk.destination('Empty',create=True)
         for data in ({'action':'move','folder':'../escape','stamp':self.stamp(p)}, {'action':'rename','name':'oops','stamp':'stale'}):
             with self.assertRaises((ValueError,APIError)):manage(self.desk,{'path':'one.mp4',**data})
         with self.assertRaises((ValueError,APIError)):delete_folder(self.desk,{'path':'','confirm':True})
         with self.assertRaises((ValueError,APIError)):delete_folder(self.desk,{'path':'Empty'})
-        delete_folder(self.desk,{'path':'Empty','confirm':True});self.assertFalse((self.desk.root/'Empty').exists())
+        delete_folder(self.desk,{'path':'Empty','confirm':True,**inspect_folder(self.desk,{'path':'Empty'})});self.assertFalse((self.desk.root/'Empty').exists())
         self.desk.destination('Nonempty',create=True);(self.desk.root/'Nonempty/keep').touch()
         with self.assertRaises((ValueError,APIError)):delete_folder(self.desk,{'path':'Nonempty','confirm':True})
         self.desk.rpc.call=lambda *a,**k:{'torrents':[{'downloadDir':str(self.desk.root),'files':[{'name':'one.mp4'}]}]}
@@ -114,3 +114,13 @@ class NewHTTPTests(Fixture):
         code,result,_=self.request('/api/folders?sort=name&order=asc&adjacent=000.jpg&direction=-1');self.assertIsNone(result['entry'])
         self.assertEqual(self.request('/api/folders?adjacent=missing.jpg')[0],404)
         code,result,_=self.request('/api/folders?limit=100&offset=100');self.assertEqual(len(result['entries']),11)
+
+    def test_new_file_endpoints_require_auth_and_confirm_snapshot(self):
+        for route in ('/api/files/manage','/api/folders/inspect'):
+            self.assertEqual(self.request(route,{},cookie=False)[0],401)
+        self.login();self.desk.rpc.call=lambda *a,**k:{'torrents':[]}
+        folder=self.desk.destination('Remove/Sub',create=True);(folder/'a.jpg').write_bytes(b'image')
+        code,info,_=self.request('/api/folders/inspect',{'path':'Remove'});self.assertEqual(code,200);self.assertEqual(info['files'],1)
+        self.assertEqual(self.request('/api/folders/delete',{'path':'Remove','confirm':True})[0],400)
+        self.assertEqual(self.request('/api/folders/delete',{'path':'Remove','confirm':True,'stamp':info['stamp']})[0],200)
+        self.assertFalse(folder.exists())

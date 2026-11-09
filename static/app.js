@@ -9,6 +9,7 @@ if(!['date-desc','date-asc','name-asc','name-desc','size-desc','size-asc'].inclu
 let filePageSize=Number(localStorage.getItem('zedair-page-size'))||24;
 if(![24,50,100].includes(filePageSize))filePageSize=24;
 let lastFullRefresh=0;
+const selectedFiles=new Map();let organizeItems=[];
 let previewPath='',previewKind='',previewRequest=0,previewBusy=false;
 let fileView=localStorage.getItem('zedair-file-view')==='grid'?'grid':'list',fileOffset=0,fileEntries=[],fileTotal=0,fileRequest=0,loadedFilePath=null;
 let csrf = '', state = null, page = 'queue', filter = 'all', filePath = '', folderPath = '', folderTarget = '', cookieSlot = '', timer, toastTimer, busy = false;
@@ -24,8 +25,20 @@ async function api(path, data){
   return result;
 }
 async function action(fn){ try{await fn();}catch(error){toast(error.message);} }
-function openDialog(id){const dialog=$('#'+id); if(!dialog.open)dialog.showModal();}
+function openDialog(id){const dialog=$('#'+id);for(const form of $$('form',dialog))form.noValidate=true; if(!dialog.open)dialog.showModal();}
 function closeDialog(dialog){if(dialog.id==='previewDialog')clearPreview();dialog.close();}
+function uiMessage(text,{title='Confirm',accept='Confirm',input=false,danger=false}={}){
+  if($('#messageDialog').open)return Promise.resolve(input?null:false);
+  $('#messageTitle').textContent=title;$('#messageText').textContent=text;$('#messageAccept').textContent=accept;
+  $('#messageAccept').classList.toggle('danger',danger);$('#messageInputLabel').hidden=!input;$('#messageInput').value='';
+  return new Promise(resolve=>{const dialog=$('#messageDialog');let result=input?null:false;
+    $('#messageForm').onsubmit=event=>{event.preventDefault();if(input&&!$('#messageInput').value.trim()){toast('Enter a folder name.');$('#messageInput').focus();return;}result=input?$('#messageInput').value.trim():true;dialog.close();};
+    $('#messageCancel').onclick=()=>dialog.close();dialog.addEventListener('close',()=>resolve(result),{once:true});
+    openDialog('messageDialog');(input?$('#messageInput'):$('#messageCancel')).focus();
+  });
+}
+function engineName(j){return j.kind==='instagram'?'Instagram engine':j.kind==='threads'?'Threads engine':j.engine==='browser'?'Browser engine':j.engine==='page'?'Page engine':'Video engine';}
+function jobMatches(j,type){return type==='all'||type==='active'&&j.status==='running'||type==='waiting'&&['queued','retry','blocked','paused'].includes(j.status)||type==='error'&&j.status==='error'||type==='done'&&['done','cancelled'].includes(j.status);}
 function empty(icon,title,message,button=''){return `<div class="empty"><div class="empty-icon">${icon}</div><h3>${E(title)}</h3><p>${E(message)}</p>${button}</div>`;}
 function button(symbol,title,attrs){return `<button class="icon-button" title="${E(title)}" aria-label="${E(title)}" ${attrs}>${symbol}</button>`;}
 function shortFolder(job){return ['Zedair',job.folder,job.subdir].filter(Boolean).join('/');}
@@ -73,16 +86,17 @@ function renderOverview(){
   $('#holdBtn').textContent=s.settings.hold?'▶ Resume queue':'Ⅱ Hold queue';
 }
 function renderJobs(fast=false){
-  if(fast){for(const j of state.jobs.filter(j=>j.status==='running')){const node=$('[data-progress-job="'+j.id+'"]');if(!node)continue;const percent=Math.max(0,Math.min(100,Number(j.progress)||0));$('.job-title',node).textContent=j.name;$('.job-state span:last-child',node).textContent=j.profile_mode?'Working…':percent.toFixed(1)+'%';$('.progress i',node).style.width=percent+'%';$('.job-speed',node).textContent=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · total unknown`:`${bytes(j.speed)}/s · ETA ${eta(j.eta)}`;}return;}
+  if(fast){for(const j of state.jobs.filter(j=>j.status==='running')){const node=$('[data-progress-job="'+j.id+'"]');if(!node)continue;const percent=Math.max(0,Math.min(100,Number(j.progress)||0));$('.job-title',node).textContent=j.name;$('.engine-badge',node).textContent=engineName(j);$('.job-state span:last-child',node).textContent=j.profile_mode?'Working…':percent.toFixed(1)+'%';$('.progress i',node).style.width=percent+'%';$('.job-speed',node).textContent=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · total unknown`:`${bytes(j.speed)}/s · ETA ${eta(j.eta)}`;}return;}
 
   const query=$('#searchJobs').value.trim().toLowerCase();
+  for(const b of $$('[data-filter]')){const count=state.jobs.filter(j=>jobMatches(j,b.dataset.filter)).length;const label={all:'All',active:'Active',waiting:'Waiting',error:'Attention',done:'Finished'}[b.dataset.filter];b.innerHTML=label+(count?`<span class="tab-count">${count}</span>`:'');}
   const jobs=state.jobs.filter(j=>(!query||`${j.name} ${j.url} ${j.folder}`.toLowerCase().includes(query))&&(filter==='all'||(filter==='active'&&j.status==='running')||(filter==='waiting'&&['queued','retry','blocked','paused'].includes(j.status))||(filter==='error'&&j.status==='error')||(filter==='done'&&['done','cancelled'].includes(j.status))));
-  if(!jobs.length){$('#jobs').innerHTML=empty('↙',state.jobs.length?'No matches here.':'Your next download starts here.',state.jobs.length?'Try another filter or search.':'Add a YouTube or X video, an Instagram carousel, or a Threads post. Your laptop takes it from there.',state.jobs.length?'':'<button class="secondary" data-open="downloadDialog">＋ Paste your first link</button>');return;}
+  if(!jobs.length){$('#jobs').innerHTML=empty('↙',state.jobs.length?'No matches here.':'No downloads yet.',state.jobs.length?'Try another filter or search.':'Add a link to start downloading.',state.jobs.length?'':'<button class="secondary" data-open="downloadDialog">＋ Add download</button>');return;}
   $('#jobs').innerHTML=jobs.map(j=>{
     const active=['queued','running','retry','blocked'].includes(j.status);
-    const info=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · ${j.status==='running'?'total unknown':labels[j.status]||j.status}`:j.status==='running'?`${bytes(j.speed)}/s · ETA ${eta(j.eta)}`:j.status==='retry'?`Retry in ${eta(Math.max(1,j.next_try-Date.now()/1000))}`:j.status==='done'?'On the SSD':`Attempt ${j.attempts} · ${j.kind==='instagram'?'Carousel / reel':j.kind==='threads'?'Public post':'Video engine'}`;
+    const info=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · ${j.status==='running'?'total unknown':labels[j.status]||j.status}`:j.status==='running'?`${bytes(j.speed)}/s · ETA ${eta(j.eta)}`:j.status==='retry'?`Retry in ${eta(Math.max(1,j.next_try-Date.now()/1000))}`:j.status==='done'?'On the SSD':`Attempt ${j.attempts} · ${engineName(j)}`;
     const percent=Math.max(0,Math.min(100,Number(j.progress)||0));
-    return `<article class="job" data-progress-job="${j.id}"><div class="source-icon ${E(j.kind)}">${symbols[j.kind]||'↙'}</div><div class="job-info"><span class="job-title" title="${E(j.name)}">${E(j.name)}</span><div class="job-meta" title="${E(shortFolder(j))}">${E(shortFolder(j))}</div>${j.status==='error'?`<span class="attention-note">${E(j.detail)}</span>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><span>${j.status==='running'?(j.profile_mode?'Working…':percent.toFixed(1)+'%'):''}</span></div><div class="progress"><i style="width:${percent}%"></i></div><div class="job-speed">${E(info)}</div></div><div class="job-controls">${active?button('Ⅱ','Pause',`data-job="${j.id}" data-action="pause"`):j.status!=='done'?button('▶','Resume / retry',`data-job="${j.id}" data-action="retry"`):button('▤','Open destination',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Details and log',`data-detail="${j.id}"`)}</div></article>`;
+    return `<article class="job" data-progress-job="${j.id}"><div class="source-icon ${E(j.kind)}">${symbols[j.kind]||'↙'}</div><div class="job-info"><span class="job-title" title="${E(j.name)}">${E(j.name)}</span><div class="job-meta" title="${E(shortFolder(j))}">${E(shortFolder(j))}</div><span class="engine-badge">${E(engineName(j))}</span>${j.status==='error'?`<span class="attention-note">${E(j.detail)}</span>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><span>${j.status==='running'?(j.profile_mode?'Working…':percent.toFixed(1)+'%'):''}</span></div><div class="progress"><i style="width:${percent}%"></i></div><div class="job-speed">${E(info)}</div></div><div class="job-controls">${active?button('Ⅱ','Pause',`data-job="${j.id}" data-action="pause"`):j.status!=='done'?button('▶','Resume / retry',`data-job="${j.id}" data-action="retry"`):button('▤','Open destination',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Details and log',`data-detail="${j.id}"`)}${button('×','Remove from queue',`data-job="${j.id}" data-action="remove"`)}</div></article>`;
   }).join('');
 }
 function renderTorrents(){
@@ -99,12 +113,13 @@ async function setPage(next){
   if(next==='queue')renderJobs();if(next==='torrents')renderTorrents();if(next==='files')await loadFiles();if(next==='settings')renderSettings();if(next==='speed')renderSpeed();if(next==='tools'){renderTools();renderProfileJobs();}
 }
 async function loadFiles(){
-  if(loadedFilePath!==filePath){fileOffset=0;loadedFilePath=filePath;}
+  if(loadedFilePath!==filePath){fileOffset=0;loadedFilePath=filePath;selectedFiles.clear();}
   const request=++fileRequest;
   $('#filePath').textContent='Zedair/'+filePath;$('#filesUp').disabled=!filePath;
   try{const result=await api('folders?path='+encodeURIComponent(filePath)+'&offset='+fileOffset+'&limit='+filePageSize+'&sort='+fileSort.split('-')[0]+'&order='+fileSort.split('-')[1]);if(request!==fileRequest)return;
     fileEntries=result.entries;fileTotal=result.total??result.entries.length;
     if(!fileEntries.length&&fileOffset){fileOffset=Math.max(0,fileOffset-filePageSize);return loadFiles();}
+    for(const entry of fileEntries){const key=join(filePath,entry.name);if(selectedFiles.has(key)&&selectedFiles.get(key)!==entry.stamp)selectedFiles.delete(key);}
     renderFiles();
   }catch(error){if(request===fileRequest)$('#fileList').innerHTML=empty('!','Storage unavailable',error.message);}
 }
@@ -117,15 +132,17 @@ function renderFiles(){
   $('#fileList').innerHTML=fileEntries.length?fileEntries.map(entry=>{
     const path=join(filePath,entry.name),attrs=entry.directory?`data-file-folder="${E(path)}"`:`data-preview-file="${E(path)}" data-preview-kind="${E(entry.preview)}"`;
     const icon=entry.directory?'▰':entry.preview==='video'?'▷':entry.preview==='image'?'▧':entry.preview==='audio'?'♫':'▤';
-    const actions=entry.directory?'':`<div class="file-actions"><button class="secondary compact" data-organize-file="${E(path)}" data-stamp="${E(entry.stamp)}">Organize</button><a class="secondary compact" href="/api/file?path=${encodeURIComponent(path)}" download aria-label="Download ${E(entry.name)}">Download</a><button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div>`;
+    const selection=entry.directory?'':`<label class="file-select"><input type="checkbox" data-select-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Select ${E(entry.name)}" ${selectedFiles.has(path)?'checked':''}></label>`;
+    const actions=entry.directory?'':`<div class="file-actions"><button class="secondary compact" data-rename-file="${E(path)}" data-stamp="${E(entry.stamp)}">Rename</button><a class="secondary compact" href="/api/file?path=${encodeURIComponent(path)}" download aria-label="Download ${E(entry.name)}">Download</a><button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div>`;
     if(fileView==='grid'){
       const media=entry.preview==='image'?`<span class="file-thumb"><span class="thumb-fallback">▧</span><img src="/api/preview?path=${encodeURIComponent(path)}" loading="lazy" decoding="async" alt="${E(entry.name)}"></span>`:`<span class="file-thumb placeholder"><span>${icon}</span><small>${entry.directory?'FOLDER':entry.preview==='video'?'VIDEO · PREVIEW TO PLAY':entry.preview==='audio'?'AUDIO':'FILE'}</small></span>`;
       const tag=entry.directory||entry.preview?'button':'div';
-      return `<article class="file-card"><${tag} class="file-tile" ${tag==='button'?attrs:''}>${media}<strong>${E(entry.name)}</strong><small>${entry.directory?'Open folder':bytes(entry.size)}</small></${tag}>${actions}</article>`;
+      return `<article class="file-card ${selectedFiles.has(path)?'is-selected':''}">${selection}<${tag} class="file-tile" ${tag==='button'?attrs:''}>${media}<strong>${E(entry.name)}</strong><small>${entry.directory?'Open folder':bytes(entry.size)}</small></${tag}>${actions}</article>`;
     }
     if(entry.directory)return `<button class="file-row" ${attrs}><span>${icon}</span><strong>${E(entry.name)}</strong><small>Open folder →</small></button>`;
-    const tag=entry.preview?'button':'div';return `<div class="file-entry"><${tag} class="file-row" ${tag==='button'?attrs:''}><span>${icon}</span><strong>${E(entry.name)}${entry.preview?'<span class="file-preview-label"> · Preview</span>':''}</strong><small>${bytes(entry.size)}</small></${tag}>${actions}</div>`;
-  }).join(''):empty('▤','This folder is empty.','Create a subfolder or point your next download here.');
+    const tag=entry.preview?'button':'div';return `<div class="file-entry ${selectedFiles.has(path)?'is-selected':''}">${selection}<${tag} class="file-row" ${tag==='button'?attrs:''}><span>${icon}</span><strong>${E(entry.name)}${entry.preview?'<span class="file-preview-label"> · Preview</span>':''}</strong><small>${bytes(entry.size)}</small></${tag}>${actions}</div>`;
+  }).join(''):empty('▤','This folder is empty.','');
+  renderSelection();
 }
 $('#fileSort').value=fileSort;
 $('#fileSort').onchange=()=>{fileSort=$('#fileSort').value;localStorage.setItem('zedair-file-sort',fileSort);fileOffset=0;loadFiles();};
@@ -167,18 +184,18 @@ function renderPlatform(){
   if(key==='threads')fields+='<p class="hint">Experimental: exact public posts and carousels from embedded page data. Login walls or page changes can prevent extraction.</p>';
   if(key==='other')fields+='<p class="hint">Supported video sites, including supported adult sites, use yt-dlp. Availability varies; DRM media is not supported. An empty folder uses the source hostname.</p>';
   const raw=key==='instagram'?['sessionid','csrftoken','ds_user_id']:key==='facebook'?['c_user','xs','datr','fr']:key==='x'?['auth_token','ct0']:[];
-  const manual=raw.length?`<form id="sessionForm" autocomplete="off"><h3>Paste session values</h3><p class="hint">From your browser’s cookies for ${key==='x'?'x.com':key==='facebook'?'facebook.com':'instagram.com'}. Paste the value only. Saving replaces this platform’s cookie file.</p>${raw.map(n=>`<label>${n}${(key==='instagram'&&n!=='sessionid')||(key==='facebook'&&['datr','fr'].includes(n))?' (optional)':''}<input type="password" name="${n}" autocomplete="new-password" spellcheck="false" maxlength="8192" ${key==='x'||n==='sessionid'||['c_user','xs'].includes(n)?'required':''}></label>`).join('')}<button class="secondary" type="submit">Save private session</button></form>`:'';
-  $('#platformEditor').innerHTML=`<div class="platform-editor"><form id="platformForm"><h3>${platformNames[key]} defaults</h3>${fields}<button class="primary" type="submit">Save platform settings</button></form><div><h3>Website authentication</h3><div class="cookie-status"><strong>${c.usable?'Session stored':c.present?'Cookies need attention':'No session stored'}</strong><small>${c.present?`${c.count} cookies · ${c.expired} expired`:'Public downloads may work without cookies.'}${c.updated?' · Saved '+E(new Date(c.updated*1000).toLocaleString()):''} This checks file contents, not live login validity.</small></div><div class="cookie-actions"><button class="secondary" data-cookie="${key}">${c.present?'Replace':'Import'} cookies.txt</button>${c.present?`<button class="secondary danger" data-cookie-delete="${key}">Remove session</button>`:''}</div>${manual}${key==='instagram'?'<p class="hint">Automatic session updates: after a successful download, cookies refreshed by Instagram are saved for the next job. Session cookies with no fixed expiry remain valid locally; only Instagram can renew or revoke the login.</p>':''}<p class="hint">Cookie values stay private on the laptop and are never returned to this page. They expire independently of your 35-day desk login. After replacing them, retry the affected job from Attention. See README for Firefox instructions.</p></div></div>`;
+  const manual=raw.length?`<form id="sessionForm" novalidate autocomplete="off"><h3>Paste session values</h3><p class="hint">From your browser’s cookies for ${key==='x'?'x.com':key==='facebook'?'facebook.com':'instagram.com'}. Paste the value only. Saving replaces this platform’s cookie file.</p>${raw.map(n=>`<label>${n}${(key==='instagram'&&n!=='sessionid')||(key==='facebook'&&['datr','fr'].includes(n))?' (optional)':''}<input type="password" name="${n}" autocomplete="new-password" spellcheck="false" maxlength="8192" ${key==='x'||n==='sessionid'||['c_user','xs'].includes(n)?'required':''}></label>`).join('')}<button class="secondary" type="submit">Save private session</button></form>`:'';
+  $('#platformEditor').innerHTML=`<div class="platform-editor"><form id="platformForm" novalidate><h3>${platformNames[key]} defaults</h3>${fields}<button class="primary" type="submit">Save platform settings</button></form><div><h3>Website authentication</h3><div class="cookie-status"><strong>${c.usable?'Session stored':c.present?'Cookies need attention':'No session stored'}</strong><small>${c.present?`${c.count} cookies · ${c.expired} expired`:'Public downloads may work without cookies.'}${c.updated?' · Saved '+E(new Date(c.updated*1000).toLocaleString()):''} This checks file contents, not live login validity.</small></div><div class="cookie-actions"><button class="secondary" data-cookie="${key}">${c.present?'Replace':'Import'} cookies.txt</button>${c.present?`<button class="secondary danger" data-cookie-delete="${key}">Remove session</button>`:''}</div>${manual}${key==='instagram'?'<p class="hint">Automatic session updates: after a successful download, cookies refreshed by Instagram are saved for the next job. Session cookies with no fixed expiry remain valid locally; only Instagram can renew or revoke the login.</p>':''}<p class="hint">Cookie values stay private on the laptop and are never returned to this page. They expire independently of your 35-day desk login. After replacing them, retry the affected job from Attention. See README for Firefox instructions.</p></div></div>`;
 }
 async function showDetail(id){
   const j=await api('job?id='+encodeURIComponent(id));$('#detailTitle').textContent=j.name;
-  $('#detailBody').innerHTML=`<p class="detail-label">SOURCE URL</p><p class="detail-value">${E(j.url)}</p><p class="detail-label">DESTINATION</p><p class="detail-value">${E(shortFolder(j))}</p><p class="detail-label">VIDEO OPTIONS</p><p class="detail-value">${E(j.quality==='best'?'Highest available':j.quality)} · ${j.kind==='video'&&!j.profile_mode&&j.quality!=='audio'?(j.container==='mp4'?'MP4 only':'Automatic format'):'Platform media format'}</p><p class="detail-label">STATUS</p><p class="detail-value">${E(labels[j.status])} · ${j.attempts} attempt(s)</p><p class="detail-value">${E(j.detail)}</p>${j.error_kind==='auth'?'<button class="secondary" data-open-platforms>Open platform settings</button>':''}<p class="detail-label">RECENT ENGINE OUTPUT</p><pre class="log">${E(j.log||j.last_error||j.detail||'No engine output yet.')}</pre><p class="hint">Gallery jobs report completed items rather than a reliable overall percentage. Video progress is for the current stream/item; merging can continue after it reaches 100%.</p><div class="dialog-footer"><button class="secondary" data-job="${j.id}" data-action="first">Move to front</button><button class="secondary" data-job="${j.id}" data-action="cancel">Cancel job · keep files</button><button class="primary" data-job-folder="${E(join(j.folder,j.subdir))}">Open folder</button></div>`;
+  $('#detailBody').innerHTML=`<p class="detail-label">SOURCE URL</p><p class="detail-value">${E(j.url)}</p><p class="detail-label">DESTINATION</p><p class="detail-value">${E(shortFolder(j))}</p><p class="detail-label">ENGINE</p><p class="detail-value">${E(engineName(j))}</p><p class="detail-label">VIDEO OPTIONS</p><p class="detail-value">${E(j.quality==='best'?'Highest available':j.quality)} · ${j.kind==='video'&&!j.profile_mode&&j.quality!=='audio'?(j.container==='mp4'?'MP4 only':'Automatic format'):'Platform media format'}</p><p class="detail-label">STATUS</p><p class="detail-value">${E(labels[j.status])} · ${j.attempts} attempt(s)</p><p class="detail-value">${E(j.detail)}</p>${j.error_kind==='auth'?'<button class="secondary" data-open-platforms>Open platform settings</button>':''}<p class="detail-label">RECENT ENGINE OUTPUT</p><pre class="log">${E(j.log||j.last_error||j.detail||'No engine output yet.')}</pre><p class="hint">Gallery jobs report completed items rather than a reliable overall percentage. Video progress is for the current stream/item; merging can continue after it reaches 100%.</p><div class="dialog-footer"><button class="secondary" data-job="${j.id}" data-action="first">Move to front</button><button class="secondary danger" data-job="${j.id}" data-action="remove">Remove from queue</button>${j.kind==='video'&&!j.profile_mode&&!['running','done'].includes(j.status)?`<button class="secondary" data-job="${j.id}" data-action="browser">Retry with browser</button>`:''}<button class="primary" data-job-folder="${E(join(j.folder,j.subdir))}">Open folder</button></div>`;
   openDialog('detailDialog');
 }
 async function showTorrentFiles(id){
   const torrent=await api('torrent?id='+encodeURIComponent(id));$('#detailTitle').textContent=torrent.name;
   if(!torrent.files.length){$('#detailBody').innerHTML='<p class="hint">Metadata is not available yet. Start the torrent briefly and reopen Files. Magnet links need peers to discover their file list.</p>';}
-  else{$('#detailBody').innerHTML=`<p class="hint">Unchecking a file stops future downloading; it does not delete existing data. Shared torrent pieces may contain small portions of adjacent files.</p><form id="torrentFilesForm" data-id="${E(id)}"><div class="torrent-files">${torrent.files.map((f,i)=>`<label><input type="checkbox" name="file" value="${i}" ${torrent.fileStats[i].wanted?'checked':''}><span>${E(f.name)}<small class="hint"> · ${bytes(f.length)} · ${f.length?(100*f.bytesCompleted/f.length).toFixed(0):100}%</small></span></label>`).join('')}</div><div class="dialog-footer"><button type="button" class="secondary" data-torrent="${E(id)}" data-action="verify">Verify existing data</button><button class="primary" type="submit">Save file selection</button></div></form>`;}
+  else{$('#detailBody').innerHTML=`<p class="hint">Unchecking a file stops future downloading; it does not delete existing data. Shared torrent pieces may contain small portions of adjacent files.</p><form id="torrentFilesForm" novalidate data-id="${E(id)}"><div class="torrent-files">${torrent.files.map((f,i)=>`<label><input type="checkbox" name="file" value="${i}" ${torrent.fileStats[i].wanted?'checked':''}><span>${E(f.name)}<small class="hint"> · ${bytes(f.length)} · ${f.length?(100*f.bytesCompleted/f.length).toFixed(0):100}%</small></span></label>`).join('')}</div><div class="dialog-footer"><button type="button" class="secondary" data-torrent="${E(id)}" data-action="verify">Verify existing data</button><button class="primary" type="submit">Save file selection</button></div></form>`;}
   openDialog('detailDialog');
 }
 $('#authForm').addEventListener('submit',async event=>{event.preventDefault();const form=event.target;const button=$('button[type=submit]',form);button.disabled=true;$('#authError').textContent='';try{const data=Object.fromEntries(new FormData(form));await api(form.dataset.setup==='true'?'setup':'login',data);form.reset();await showAuth();}catch(error){$('#authError').textContent=error.message;}finally{button.disabled=false;}});
@@ -191,14 +208,14 @@ $('#folderUp').onclick=()=>action(async()=>{folderPath=parent(folderPath);await 
 $('#chooseFolder').onclick=()=>{if(folderTarget==='downloadForm')$('#downloadForm [name=folder_selected]').checked=true;$('#'+folderTarget+' [name=folder]').value=folderPath;closeDialog($('#folderDialog'));};
 $('#filesUp').onclick=()=>action(async()=>{filePath=parent(filePath);await loadFiles();});
 $('#refreshFiles').onclick=()=>action(loadFiles);
-$('#newFileFolder').onclick=()=>action(async()=>{const name=prompt('New subfolder name inside Zedair/'+filePath);if(!name)return;await api('folders',{path:join(filePath,name.trim())});await loadFiles();});
+$('#newFileFolder').onclick=()=>action(async()=>{const name=await uiMessage('Create inside Zedair/'+filePath,{title:'New folder',accept:'Create folder',input:true});if(!name)return;await api('folders',{path:join(filePath,name.trim())});await loadFiles();});
 $('#holdBtn').onclick=()=>action(async()=>{await api('hold',{hold:!state.settings.hold});await refresh();});
 $('#unplugBtn').onclick=()=>action(async()=>{await api('hold',{hold:true});await refresh();toast('Queue held. Run the stop and unmount commands before unplugging.');});
 $('#logoutBtn').onclick=()=>action(async()=>{await api('logout',{});await showAuth();});
 $('#themeBtn').onclick=()=>{document.body.classList.toggle('dark');localStorage.setItem('zedair-theme',document.body.classList.contains('dark')?'dark':'light');};
 if(localStorage.getItem('zedair-theme')==='dark')document.body.classList.add('dark');
 $('#searchJobs').addEventListener('input',renderJobs);
-$('#clearHistory').onclick=()=>action(async()=>{if(!confirm('Clear completed and cancelled jobs from history? Downloaded files will stay on the SSD.'))return;await api('history/clear',{});await refresh();});
+$('#clearHistory').onclick=()=>action(async()=>{if(!await uiMessage('Clear completed and cancelled jobs from history? Downloaded files will stay on the SSD.'))return;await api('history/clear',{});await refresh();});
 $('#cookieFile').addEventListener('change',event=>action(async()=>{const file=event.target.files[0];if(!file)return;if(file.size>1024*1024)throw Error('Cookie file must be smaller than 1 MiB.');await api('cookies',{slot:cookieSlot,content:await file.text()});event.target.value='';await refresh();renderSettings();toast('Cookie file imported. It will be used by new download attempts.');}));
 document.addEventListener('click',event=>{
   const el=event.target.closest('button');if(!el)return;
@@ -210,8 +227,8 @@ document.addEventListener('click',event=>{
     if(el.dataset.settingsTab)selectSettingsTab(el.dataset.settingsTab);
     if(el.dataset.platform){selectedPlatform=el.dataset.platform;renderPlatform();}
     if(el.hasAttribute('data-open-platforms')){closeDialog($('#detailDialog'));settingsTab='platforms';await setPage('settings');}
-    if(el.dataset.deleteFile){if(!confirm('Permanently delete Zedair/'+el.dataset.deleteFile+' from the SSD? This cannot be undone.'))return;await api('file/delete',{path:el.dataset.deleteFile,stamp:el.dataset.stamp,confirm:true});await loadFiles();toast('File permanently deleted.');}
-    if(el.dataset.organizeFile){const form=$('#organizeForm');form.dataset.path=el.dataset.organizeFile;form.dataset.stamp=el.dataset.stamp;form.elements.name.value=el.dataset.organizeFile.split('/').pop();form.folder.value=parent(el.dataset.organizeFile);$('#organizeSource').textContent='Zedair/'+el.dataset.organizeFile;organizeFields();openDialog('organizeDialog');}
+    if(el.dataset.deleteFile){if(!await uiMessage('Permanently delete Zedair/'+el.dataset.deleteFile+' from the SSD? This cannot be undone.'))return;await api('file/delete',{path:el.dataset.deleteFile,stamp:el.dataset.stamp,confirm:true});selectedFiles.delete(el.dataset.deleteFile);await loadFiles();toast('File deleted.');}
+    if(el.dataset.renameFile)openOrganize('rename',[{path:el.dataset.renameFile,stamp:el.dataset.stamp}]);
     if(el.dataset.previewFile)showPreview(el.dataset.previewFile,el.dataset.previewKind);
     if(el.dataset.speedReport)showSpeedReport(el.dataset.speedReport);
     if(el.dataset.theme!==undefined)$('#themeBtn').click();
@@ -225,11 +242,11 @@ document.addEventListener('click',event=>{
     if(el.dataset.fileFolder!==undefined){filePath=el.dataset.fileFolder;await loadFiles();}
     if(el.dataset.jobFolder!==undefined){$$('dialog[open]').forEach(closeDialog);filePath=el.dataset.jobFolder;await setPage('files');}
     if(el.dataset.detail)await showDetail(el.dataset.detail);
-    if(el.dataset.job){await api('job/action',{id:el.dataset.job,action:el.dataset.action});if($('#detailDialog').open)closeDialog($('#detailDialog'));await refresh();}
-    if(el.dataset.torrent){if(el.dataset.action==='remove'&&!confirm('Remove this torrent from the queue? Downloaded files will stay on the SSD.'))return;await api('torrent/action',{id:el.dataset.torrent,action:el.dataset.action});toast('Torrent updated.');await refresh();}
+    if(el.dataset.job){if(el.dataset.action==='remove'&&!await uiMessage('Remove this item from the queue? Its transfer will stop. Downloaded files stay on the SSD.',{title:'Remove download',accept:'Remove',danger:true}))return;await api('job/action',{id:el.dataset.job,action:el.dataset.action});if($('#detailDialog').open)closeDialog($('#detailDialog'));await refresh();}
+    if(el.dataset.torrent){if(el.dataset.action==='remove'&&!await uiMessage('Remove this torrent from the queue? Downloaded files will stay on the SSD.'))return;await api('torrent/action',{id:el.dataset.torrent,action:el.dataset.action});toast('Torrent updated.');await refresh();}
     if(el.dataset.torrentFiles)await showTorrentFiles(el.dataset.torrentFiles);
     if(el.dataset.cookie){cookieSlot=el.dataset.cookie;$('#cookieFile').click();}
-    if(el.dataset.cookieDelete){if(!confirm('Remove the saved '+platformNames[el.dataset.cookieDelete]+' session from this laptop?'))return;await api('cookies',{slot:el.dataset.cookieDelete,delete:true});await refresh();renderSettings();toast('Cookie file deleted.');}
+    if(el.dataset.cookieDelete){if(!await uiMessage('Remove the saved '+platformNames[el.dataset.cookieDelete]+' session from this laptop?'))return;await api('cookies',{slot:el.dataset.cookieDelete,delete:true});await refresh();renderSettings();toast('Cookie file deleted.');}
   });
 });
 document.addEventListener('submit',event=>{if(event.target.id==='torrentFilesForm'){event.preventDefault();action(async()=>{const wanted=$$('input:checked',event.target).map(i=>Number(i.value));await api('torrent/action',{id:event.target.dataset.id,action:'files',wanted});closeDialog($('#detailDialog'));toast('File selection saved.');});}});
@@ -278,8 +295,9 @@ async function showPreview(path,kind){
   $('#previewBody').innerHTML='<div class="preview-stage"></div>';
   const element=document.createElement(kind==='image'?'img':kind);element.src=url;
   if(kind==='image')element.alt=path.split('/').pop();else{element.controls=true;element.preload='metadata';element.setAttribute('playsinline','');}
+  element.addEventListener(kind==='image'?'load':'loadedmetadata',fitPreview,{once:true});
   element.addEventListener('error',()=>$('#previewError').hidden=false,{once:true});
-  $('.preview-stage').appendChild(element);openDialog('previewDialog');
+  $('.preview-stage').appendChild(element);openDialog('previewDialog');fitPreview();
   $('#previewPrev').disabled=true;$('#previewNext').disabled=true;
   try{const adjacent=await adjacentPreview(path,0);if(request!==previewRequest)return;$('#previewPrev').disabled=!adjacent.previous;$('#previewNext').disabled=!adjacent.next;}catch(error){toast(error.message);}
 }
@@ -292,10 +310,10 @@ function renderTools(){
   const facebook=toolPlatform==='facebook';
   $$('[data-tool-platform]').forEach(b=>b.classList.toggle('selected',b.dataset.toolPlatform===toolPlatform));
   $('#profileToolTitle').textContent=facebook?'Facebook profile · experimental':'Instagram profile';
-  $('#profileToolHint').textContent=facebook?'Scroll accessible posts, photos and reels. Facebook can hide or stop returning content; completeness cannot be guaranteed.':'Follow every available page. Posts excludes reels; Everything combines both feeds and skips repeated media within this job.';
+  $('#profileToolHint').textContent=facebook?'Downloads accessible media. Facebook may limit results.':'Resumable collection with slow requests and duplicate checks.';
   $('#profileTarget').placeholder=facebook?'Username, numeric ID or Facebook profile URL':'@username or Instagram profile URL';
   const chosen=$('#profileForm [name=folder]').value.trim();$('#profileDestination').textContent='Saves to Zedair/'+(chosen||((facebook?'Facebook':'Instagram')+'/<username>'));
-  $('#imagesOnlyField').hidden=facebook;$('#avatarMode').hidden=facebook;if(facebook&&$('#profileForm [name=mode]:checked').value==='avatar')$('#profileForm [value=everything]').checked=true;
+  $('#imagesOnlyField').hidden=facebook;$('#avatarMode').hidden=facebook;if(facebook&&['avatar','images'].includes($('#profileForm [name=mode]:checked').value))$('#profileForm [value=everything]').checked=true;
   $('#facebookScrollField').hidden=!facebook;$('#facebookInstall').hidden=!facebook||state.tools?.facebook_browser;
   $('#startProfile').disabled=facebook&&!state.tools?.facebook_browser;
   const session=state.cookie_status[toolPlatform];$('#profileSessionNotice').hidden=session?.usable;
@@ -306,11 +324,11 @@ function renderProfileJobs(){
   const jobs=state.jobs.filter(j=>j.profile_mode);
   $('#profileJobs').innerHTML=jobs.length?jobs.map(j=>{
     const active=['queued','running','retry','blocked'].includes(j.status),facebook=j.cookie_profile==='facebook';
-    return `<article class="profile-job"><div><strong>${E(j.name)}</strong><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><p class="hint">${E(j.profile_mode)}${j.images_only?' · images only':''} · ${j.items||0} media files saved during this job</p><p class="job-meta">${E(shortFolder(j))}</p><p class="profile-job-detail">${E(j.detail)}${facebook?' · Facebook completeness is unverified.':''}</p></div><div class="profile-job-actions">${active?button('Ⅱ','Pause profile',`data-job="${j.id}" data-action="pause"`):!['done','cancelled'].includes(j.status)?facebook?`<label>Scroll limit<input id="profile-limit-${j.id}" type="number" min="10" max="10000" value="${j.scroll_limit}"></label><button class="secondary compact" data-profile-retry="${j.id}">Resume / retry</button>`:`<button class="secondary compact" data-job="${j.id}" data-action="retry">Resume / retry</button>`:''}${!['done','cancelled'].includes(j.status)?button('×','Cancel profile',`data-job="${j.id}" data-action="cancel"`):''}${button('▤','Open profile folder',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Profile details and log',`data-detail="${j.id}"`)}</div></article>`;
+    return `<article class="profile-job"><div><strong>${E(j.name)}</strong><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><p class="hint">${E(j.profile_mode)}${j.images_only?' · images only':''} · ${j.items||0} files saved</p><p class="job-meta">${E(shortFolder(j))}</p><p class="profile-job-detail">${E(j.detail)}${facebook?' · Facebook completeness is unverified.':''}</p></div><div class="profile-job-actions">${active?button('Ⅱ','Pause profile',`data-job="${j.id}" data-action="pause"`):!['done','cancelled'].includes(j.status)?facebook?`<label>Scroll limit<input id="profile-limit-${j.id}" type="number" min="10" max="10000" value="${j.scroll_limit}"></label><button class="secondary compact" data-profile-retry="${j.id}">Resume / retry</button>`:`<button class="secondary compact" data-job="${j.id}" data-action="retry">Resume / retry</button>`:''}${button('▤','Open profile folder',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Profile details and log',`data-detail="${j.id}"`)}${button('×','Remove profile job',`data-job="${j.id}" data-action="remove"`)}</div></article>`;
   }).join(''):empty('▦','No profile jobs yet.','Choose a profile and the media you want to collect.');
 }
 $('#profileForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{
-  const form=event.target,result=await api('profiles',{platform:toolPlatform,profile:form.profile.value,mode:form.mode.value,images_only:toolPlatform==='instagram'&&!form.images_only.disabled&&form.images_only.checked,folder:form.folder.value,scroll_limit:Number(form.scroll_limit.value)});
+  const form=event.target,result=await api('profiles',{platform:toolPlatform,profile:form.profile.value,mode:form.mode.value,folder:form.folder.value,scroll_limit:Number(form.scroll_limit.value)});
   toast('Profile queued → '+result.destination);await refresh();renderProfileJobs();
 });});
 
@@ -332,11 +350,50 @@ async function adjacentPreview(path,direction){return api('folders?path='+encode
 async function stepPreview(direction){if(previewBusy)return;previewBusy=true;try{const path=previewPath;const result=await adjacentPreview(path,direction);if(path!==previewPath||!$('#previewDialog').open)return;if(result.entry)await showPreview(join(parent(path),result.entry.name),result.entry.preview);}catch(error){toast(error.message);}finally{previewBusy=false;}}
 $('#previewPrev').onclick=()=>stepPreview(-1);$('#previewNext').onclick=()=>stepPreview(1);
 document.addEventListener('keydown',event=>{if(!$('#previewDialog').open||!['ArrowLeft','ArrowRight'].includes(event.key)||event.target.matches('input,textarea,select'))return;event.preventDefault();stepPreview(event.key==='ArrowLeft'?-1:1);});
-function organizeFields(){const rename=$('#organizeForm').elements.action.value==='rename';$('#renameField').hidden=!rename;$('#moveField').hidden=rename;}
-$('#organizeForm').elements.action.onchange=organizeFields;
-$('#organizeForm').onsubmit=event=>{event.preventDefault();action(async()=>{const form=event.target,submit=$('#organizeSubmit');submit.disabled=true;submit.textContent='Working…';try{const result=await api('file/manage',{...Object.fromEntries(new FormData(form)),path:form.dataset.path,stamp:form.dataset.stamp});closeDialog($('#organizeDialog'));await loadFiles();toast('Saved to Zedair/'+result.path);}finally{submit.disabled=false;submit.textContent='Apply';}});};
-$('#deleteFolder').onclick=()=>action(async()=>{if(!filePath||!confirm('Delete empty folder Zedair/'+filePath+'? Non-empty folders will be refused.'))return;await api('folders/delete',{path:filePath,confirm:true});filePath=parent(filePath);await loadFiles();});
 
-$('#profileForm').addEventListener('change',()=>{$('#profileForm [name=images_only]').disabled=$('#profileForm [name=mode]:checked').value==='reels';});
-
+function renderSelection(){
+  const count=selectedFiles.size;$('#selectionCount').textContent=count+' selected';
+  for(const id of ['moveSelected','copySelected','clearSelection'])$('#'+id).disabled=!count;
+  const visible=fileEntries.filter(e=>!e.directory);const n=visible.filter(e=>selectedFiles.has(join(filePath,e.name))).length;
+  $('#selectPageFiles').checked=!!visible.length&&n===visible.length;$('#selectPageFiles').indeterminate=n>0&&n<visible.length;$('#selectPageFiles').disabled=!visible.length;
+}
+document.addEventListener('change',event=>{const el=event.target;if(!el.matches('[data-select-file]'))return;
+  if(el.checked&&selectedFiles.size>=100){el.checked=false;toast('Select up to 100 files at a time.');return;}
+  if(el.checked)selectedFiles.set(el.dataset.selectFile,el.dataset.stamp);else selectedFiles.delete(el.dataset.selectFile);
+  el.closest('article,.file-entry')?.classList.toggle('is-selected',el.checked);renderSelection();
+});
+$('#selectPageFiles').onchange=event=>{for(const e of fileEntries.filter(e=>!e.directory)){const path=join(filePath,e.name);if(event.target.checked&&selectedFiles.size<100)selectedFiles.set(path,e.stamp);else if(!event.target.checked)selectedFiles.delete(path);}renderFiles();};
+$('#clearSelection').onclick=()=>{selectedFiles.clear();renderFiles();};
+function openOrganize(action,items){
+  organizeItems=items;const form=$('#organizeForm');form.elements.action.value=action;form.elements.name.value=items[0].path.split('/').pop();form.folder.value=parent(items[0].path);
+  $('#organizeTitle').textContent=action==='rename'?'Rename file':action==='move'?'Move files':'Copy files';$('#organizeSource').textContent=items.length===1?items[0].path:items.length+' selected files';
+  $('#renameField').hidden=action!=='rename';$('#moveField').hidden=action==='rename';$('#organizeResult').hidden=true;$('#organizeSubmit').textContent=action==='rename'?'Rename':action==='move'?'Move':'Copy';openDialog('organizeDialog');
+}
+for(const action of ['move','copy'])$('#'+action+'Selected').onclick=()=>openOrganize(action,[...selectedFiles].map(([path,stamp])=>({path,stamp})));
+$('#organizeForm').onsubmit=event=>{event.preventDefault();action(async()=>{
+  const form=event.target,submit=$('#organizeSubmit'),label=submit.textContent;submit.disabled=true;submit.textContent='Working…';
+  try{
+    const data=Object.fromEntries(new FormData(form));let result;
+    if(data.action==='rename'){result=await api('file/manage',{...data,...organizeItems[0]});selectedFiles.delete(organizeItems[0].path);}
+    else{result=await api('files/manage',{...data,files:organizeItems});for(const item of result.results)selectedFiles.delete(item.source);}
+    await loadFiles();
+    if(result.error){organizeItems=organizeItems.filter(item=>!result.results.some(r=>r.source===item.path));$('#organizeResult').hidden=false;$('#organizeResult').textContent=result.results.length+' completed; '+result.remaining+' remaining. '+result.error;}
+    else{closeDialog($('#organizeDialog'));toast(data.action==='rename'?'File renamed.':result.results.length+' files '+(data.action==='move'?'moved.':'copied.'));}
+  }finally{submit.disabled=false;submit.textContent=label;}
+});};
+$('#deleteFolder').onclick=()=>action(async()=>{
+  if(!filePath)return;const path=filePath,info=await api('folders/inspect',{path});
+  if(!await uiMessage('Permanently delete Zedair/'+path+' and all subfolders? This includes '+info.files+' files ('+bytes(info.bytes)+'). This cannot be undone.',{title:'Delete folder',accept:'Delete folder',danger:true}))return;
+  await api('folders/delete',{path,stamp:info.stamp,confirm:true});filePath=parent(path);selectedFiles.clear();await loadFiles();toast('Folder deleted.');
+});
 $('#profileForm [name=folder]').addEventListener('input',renderTools);
+function fitPreview(){
+  const media=$('img,video,audio',$('#previewBody'));if(!media)return;
+  const width=media.naturalWidth||media.videoWidth,height=media.naturalHeight||media.videoHeight;
+  const available=Math.max(160,innerHeight-240),ratio=width&&height?width/height:16/9;
+  $('#previewDialog').style.width=Math.max(280,Math.min(innerWidth-32,1200,available*ratio+40))+'px';
+}
+window.addEventListener('resize',fitPreview);
+// Use the application's status UI instead of native validation popups.
+for(const form of $$('form'))form.noValidate=true;
+document.addEventListener('submit',event=>{const form=event.target;form.noValidate=true;if(!form.checkValidity()){event.preventDefault();event.stopImmediatePropagation();const field=$(':invalid',form);toast(field?.validationMessage||'Check the form fields.');field?.focus();}},true);

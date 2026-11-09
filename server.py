@@ -27,7 +27,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from media import build_command, engine_for, validate_url
+from media import build_command, engine_for, validate_url, normalize_url, url_key
 import platforms
 import profiles
 from systemstats import SystemStats
@@ -160,7 +160,7 @@ class Desk:
                 last_error TEXT DEFAULT '', position REAL);
         ''')
         columns = {r[1] for r in self.db.execute('PRAGMA table_info(jobs)')}
-        for key, definition in {'container':"TEXT DEFAULT 'auto'", 'layout':'INTEGER DEFAULT 1', 'phase':"TEXT DEFAULT 'download'", 'error_kind':"TEXT DEFAULT ''", 'profile_mode':"TEXT DEFAULT ''", 'profile_username':"TEXT DEFAULT ''", 'scroll_limit':'INTEGER DEFAULT 2000', 'items':'INTEGER DEFAULT 0', 'filename':"TEXT DEFAULT ''", 'images_only':'INTEGER DEFAULT 0', 'browser_fallback':'INTEGER DEFAULT 1'}.items():
+        for key, definition in {'container':"TEXT DEFAULT 'auto'", 'layout':'INTEGER DEFAULT 1', 'phase':"TEXT DEFAULT 'download'", 'error_kind':"TEXT DEFAULT ''", 'profile_mode':"TEXT DEFAULT ''", 'profile_username':"TEXT DEFAULT ''", 'scroll_limit':'INTEGER DEFAULT 2000', 'items':'INTEGER DEFAULT 0', 'filename':"TEXT DEFAULT ''", 'images_only':'INTEGER DEFAULT 0', 'browser_fallback':'INTEGER DEFAULT 1', 'engine':"TEXT DEFAULT 'video'", 'browser_force':'INTEGER DEFAULT 0', 'remove_requested':'INTEGER DEFAULT 0'}.items():
             if key not in columns:
                 self.db.execute('ALTER TABLE jobs ADD COLUMN '+key+' '+definition)
         self.db.execute('CREATE TABLE IF NOT EXISTS published(job TEXT, source TEXT, target TEXT, signature TEXT, complete INTEGER, PRIMARY KEY(job,source))')
@@ -174,6 +174,8 @@ class Desk:
                 (SELECT 1 FROM published p WHERE p.job=jobs.id AND p.complete=1)""")
             self.db.execute("INSERT INTO settings(key,value) VALUES('instagram_download_fix_v131','true')")
         self.db.execute("UPDATE jobs SET status='queued', detail='Recovering after service restart' WHERE status='running'")
+        self.db.execute('DELETE FROM published WHERE job IN (SELECT id FROM jobs WHERE remove_requested=1)')
+        self.db.execute('DELETE FROM jobs WHERE remove_requested=1')
         self.db.commit()
         self.engine_versions={}
         for package in ('yt-dlp','gallery-dl','playwright'):
@@ -311,12 +313,10 @@ class Desk:
         urls = data.get('urls', [])
         if not isinstance(urls, list) or not 1 <= len(urls) <= 100:
             raise APIError('Paste between 1 and 100 URLs')
-        if len(self.rows('SELECT id FROM jobs')) + len(urls) > 1000:
-            raise APIError('History is full (1,000 jobs). Clear finished history first.')
-        quality = data.get('quality', 'platform')
+        quality = data.get('quality', 'best')
         if quality not in (*QUALITY, 'platform'):
             raise APIError('Unknown quality preset')
-        container = data.get('container','platform')
+        container = data.get('container','mp4')
         if container not in ('platform','auto','mp4'):
             raise APIError('Choose automatic format or MP4 only')
         cookie = data.get('cookie_profile', 'auto')
@@ -331,7 +331,8 @@ class Desk:
         # Validate the whole batch before recording any work. Queuing while unplugged is allowed.
         clean = []
         for url in urls:
-            url = url.strip()
+            if not isinstance(url,str):raise APIError('Each download link must be text')
+            url = normalize_url(url.strip())
             validate_url(url, dns=False)
             kind = engine_for(url)
             if kind == 'instagram' and not re.search(r'/(p|reel|reels|tv)/[^/]+', urllib.parse.urlsplit(url).path):
@@ -344,10 +345,15 @@ class Desk:
             clean.append((url, kind))
         result = []
         with self.lock:
-            for url, kind in clean:
-                # Duplicate checks apply to unfinished jobs only; explicit redownloads stay possible.
-                if self.db.execute("SELECT id FROM jobs WHERE url=? AND status IN ('queued','running','retry','paused','blocked')", (url,)).fetchone():
-                    continue
+            existing={url_key(r['url']) for r in self.rows("SELECT url FROM jobs WHERE remove_requested=0 AND status!='cancelled'")}
+            pending=[]
+            for url,kind in clean:
+                key=url_key(url)
+                if key in existing:continue
+                existing.add(key);pending.append((url,kind))
+            if len(self.rows('SELECT id FROM jobs WHERE remove_requested=0'))+len(pending)>1000:
+                raise APIError('History is full (1,000 jobs). Clear finished history first.')
+            for url,kind in pending:
                 jid = secrets.token_hex(6)
                 prefs = self.platform_settings()[platforms.platform_for(url)]
                 subdir = '' if folder or data.get('folder_selected') is True else platforms.platform_folder(url,self.platform_settings())
@@ -366,6 +372,9 @@ class Desk:
         platform=data.get('platform')
         username,url=profiles.profile_target(platform,data.get('profile',''))
         mode=data.get('mode','everything')
+        if mode=='images':
+            if platform!='instagram':raise APIError('Images only is available for Instagram')
+            mode='everything';data={**data,'images_only':True}
         if mode not in (*profiles.MODES,'avatar') or (mode=='avatar' and platform!='instagram'):raise APIError('Choose a supported profile mode')
         images_only=data.get('images_only',False) is True
         if images_only and (platform!='instagram' or mode=='reels'):raise APIError('Images only is available for Instagram posts or everything')
@@ -377,7 +386,7 @@ class Desk:
         folder=safe_relative(data.get('folder',''))
         subdir='' if folder else safe_relative(('Instagram' if platform=='instagram' else 'Facebook')+'/'+username)
         with self.lock:
-            if self.db.execute("SELECT id FROM jobs WHERE url=? AND profile_mode=? AND status IN ('queued','running','retry','paused','blocked')",(url,mode)).fetchone():
+            if self.db.execute("SELECT id FROM jobs WHERE url=? AND profile_mode=? AND images_only=? AND remove_requested=0 AND status IN ('queued','running','retry','paused','blocked')",(url,mode,int(images_only))).fetchone():
                 raise APIError('This profile and selection are already in the queue')
             if self.db.execute('SELECT count(*) FROM jobs').fetchone()[0]>=1000:raise APIError('History is full. Clear finished jobs first.')
             jid=secrets.token_hex(6)
@@ -401,7 +410,7 @@ class Desk:
             if not self.storage(reserve=False)['ready'] or stage.is_symlink():
                 return
             for item in stage.glob('*.json'):
-                if item.is_file() and not item.is_symlink():
+                if item.is_file() and not item.is_symlink() and not item.name.startswith('.'):
                     item.unlink()
             if not any(stage.iterdir()):
                 stage.rmdir()
@@ -422,10 +431,22 @@ class Desk:
     def job_action(self, jid, action):
         with self.lock:
             job = self.job(jid)
+            if action=='remove':
+                self.update_job(jid,status='cancelled',remove_requested=1,detail='Removed from queue')
+                if self.current!=jid:
+                    self.db.execute('DELETE FROM published WHERE job=?',(jid,))
+                    self.db.execute('DELETE FROM jobs WHERE id=?',(jid,));self.db.commit()
+                return
+            if action=='browser':
+                if job['status']=='running':raise APIError('Pause the download before changing its engine')
+                if job['kind']!='video' or job['profile_mode']:raise APIError('Browser retry is for individual video pages')
+                self.update_job(jid,browser_fallback=1,browser_force=1)
+                action='retry'
             if action in ('pause', 'cancel'):
                 self.update_job(jid, status='paused' if action == 'pause' else 'cancelled', detail='Paused' if action == 'pause' else 'Cancelled; partial files kept')
                 # The worker notices the new state and stops its complete process group.
             elif action in ('resume', 'retry'):
+                if job['status']=='done':raise APIError('This download is complete. Remove its queue entry before adding the URL again.')
                 if job['status'] == 'running':
                     raise APIError('This download is already running')
                 self.update_job(jid, status='queued', attempts=0, next_try=0, last_error='', error_kind='', detail='Waiting in queue')
@@ -441,7 +462,11 @@ class Desk:
             if not line:
                 continue
             live = self.live.setdefault(jid, {})
-            if line.startswith('ZEDITEM '):
+            if line.startswith('ZEDENGINE '):
+                engine=line[10:].strip()
+                if engine in ('video','page','browser'):
+                    live['engine']=engine;self.update_job(jid,engine=engine)
+            elif line.startswith('ZEDITEM '):
                 self.write('UPDATE jobs SET items=items+1 WHERE id=?',(jid,))
                 live['detail']='Profile media saved to staging; continuing…'
             elif line.startswith('ZEDPROFILE '):
@@ -474,7 +499,8 @@ class Desk:
             with self.lock:
                 if self.job(jid)['status'] not in ('queued', 'retry', 'blocked'):
                     return
-                self.update_job(jid, status='running', attempts=job['attempts']+1, detail='Connecting…')
+                self.current=jid
+                self.update_job(jid, status='running', attempts=job['attempts']+1, engine='video', detail='Connecting…')
             validate_url(job['url'])
             relative = '/'.join(p for p in (job['folder'], job['subdir']) if p)
             output = self.destination(relative, create=True)
@@ -500,7 +526,7 @@ class Desk:
             args = build_command(job, dest, cookie, settings, self.state)
             if job['kind']=='video' and not job.get('profile_mode') and job.get('browser_fallback',1) and 'yt_dlp' in args:
                 spec=self.state/('video-'+jid+'.json')
-                spec.write_text(json.dumps({'args':args,'url':job['url'],'dest':str(dest),'cookie':str(cookie or ''),'enabled':True}))
+                spec.write_text(json.dumps({'args':args,'url':job['url'],'dest':str(dest),'cookie':str(cookie or ''),'enabled':True,'force':bool(job.get('browser_force'))}))
                 spec.chmod(0o600)
                 args=[sys.executable,str(Path(__file__).with_name('browser_video.py')),str(spec)]
             env = dict(os.environ, TMPDIR=str(dest), XDG_CACHE_HOME=str(dest), PYTHONUNBUFFERED='1')
@@ -576,7 +602,12 @@ class Desk:
         finally:
             if instagram_session:
                 instagram_session.close()
-            self.current = None
+            with self.lock:
+                removed=self.rows('SELECT remove_requested FROM jobs WHERE id=?',(jid,))
+                if removed and removed[0]['remove_requested']:
+                    self.db.execute('DELETE FROM published WHERE job=?',(jid,))
+                    self.db.execute('DELETE FROM jobs WHERE id=?',(jid,));self.db.commit()
+                self.current = None
             self.process = None
             self.live.pop(jid, None)
             (self.state / ('video-' + jid + '.json')).unlink(missing_ok=True)
@@ -656,7 +687,7 @@ class Desk:
         self.db.close()
 
     def snapshot(self):
-        jobs = self.rows("SELECT * FROM jobs ORDER BY CASE WHEN status='running' THEN 0 WHEN status IN ('queued','retry','blocked','paused') THEN 1 ELSE 2 END, CASE WHEN status IN ('queued','retry','blocked','paused') THEN position ELSE -created END LIMIT 1000")
+        jobs = self.rows("SELECT * FROM jobs WHERE remove_requested=0 ORDER BY CASE WHEN status='running' THEN 0 WHEN status IN ('queued','retry','blocked','paused') THEN 1 ELSE 2 END, CASE WHEN status IN ('queued','retry','blocked','paused') THEN position ELSE -created END LIMIT 1000")
         for job in jobs:
             job.update(self.live.get(job['id'], {}))
             job.pop('last_error', None)
@@ -796,9 +827,9 @@ class Handler(BaseHTTPRequestHandler):
             storage=d.storage(reserve=False)
             self.reply(d.systemstats.snapshot(d.root if storage['ready'] else None))
         elif p.path == '/api/progress':
-            jobs=d.rows("SELECT id,status,name,progress,items FROM jobs WHERE status='running'")
+            jobs=d.rows("SELECT id,status,name,progress,items,engine FROM jobs WHERE status='running' AND remove_requested=0")
             for job in jobs:
-                job.update({k:v for k,v in d.live.get(job['id'],{}).items() if k in ('progress','name','speed','eta','detail')})
+                job.update({k:v for k,v in d.live.get(job['id'],{}).items() if k in ('progress','name','speed','eta','detail','engine')})
             self.reply({'jobs':jobs})
         elif p.path == '/api/folders':
             relative = query.get('path', [''])[0]
@@ -964,7 +995,15 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/job/action':
             d.job_action(data.get('id'), data.get('action'))
         elif path == '/api/history/clear':
-            d.write("DELETE FROM jobs WHERE status IN ('done','cancelled')")
+            with d.lock:
+                d.db.execute("DELETE FROM published WHERE job IN (SELECT id FROM jobs WHERE status IN ('done','cancelled') AND id!=?)",(d.current or '',))
+                d.db.execute("DELETE FROM jobs WHERE status IN ('done','cancelled') AND id!=?",(d.current or '',));d.db.commit()
+        elif path == '/api/files/manage':
+            from fileops import manage_batch
+            self.reply(manage_batch(d,data));return
+        elif path == '/api/folders/inspect':
+            from fileops import inspect_folder
+            self.reply(inspect_folder(d,data));return
         elif path == '/api/file/manage':
             from fileops import manage
             self.reply(manage(d,data));return

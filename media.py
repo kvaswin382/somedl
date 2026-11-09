@@ -16,6 +16,28 @@ import platforms
 import profiles
 
 
+def normalize_url(url):
+    if not isinstance(url,str):raise ValueError('Invalid URL')
+    p=urllib.parse.urlsplit(url)
+    # Mobile HQPorner links use the same video paths as its desktop site.
+    if p.hostname and p.hostname.lower() in ('m.hqporner.com','www.hqporner.com'):
+        if p.username or p.password or p.port not in (None,80,443):return url
+        p=p._replace(netloc='hqporner.com')
+    return urllib.parse.urlunsplit(p._replace(fragment=''))
+
+
+def url_key(url):
+    p=urllib.parse.urlsplit(normalize_url(url));host=(p.hostname or '').lower()
+    if host.startswith('www.'):host=host[4:]
+    query=urllib.parse.parse_qsl(p.query,keep_blank_values=True)
+    query=[(k,v) for k,v in query if not k.lower().startswith('utm_') and k.lower() not in ('fbclid','igsh','igshid','si')]
+    if host in ('youtu.be','youtube.com','m.youtube.com'):
+        vid=p.path.strip('/').split('/')[0] if host=='youtu.be' else dict(query).get('v')
+        if not vid and p.path.startswith(('/shorts/','/live/','/embed/')):vid=p.path.split('/')[2]
+        if vid:return 'youtube:'+vid+(':list='+dict(query)['list'] if 'list' in dict(query) else '')
+    return host+(':'+str(p.port) if p.port not in (None,80,443) else '')+p.path.rstrip('/')+'?'+urllib.parse.urlencode(sorted(query))
+
+
 def validate_url(url, dns=True):
     if not isinstance(url, str) or len(url) > 8000:
         raise ValueError('Invalid or overly long URL')
@@ -31,10 +53,13 @@ def validate_url(url, dns=True):
     except ValueError:
         if not dns:
             return url
-        try:
-            addresses = [ipaddress.ip_address(i[4][0]) for i in socket.getaddrinfo(p.hostname, p.port or 443)]
-        except socket.gaierror:
-            raise ValueError('Cannot resolve this website; check your internet connection')
+        for attempt in range(3):
+            try:
+                addresses=[ipaddress.ip_address(i[4][0]) for i in socket.getaddrinfo(p.hostname,p.port or 443,type=socket.SOCK_STREAM)]
+                break
+            except socket.gaierror as exc:
+                if exc.errno==socket.EAI_AGAIN and attempt<2:time.sleep(0.3*(attempt+1));continue
+                raise ValueError(f'DNS lookup failed for {p.hostname} on the Zedair laptop ({exc.errno}). Other sites may still work. Check this domain with getent ahosts and resolvectl query on the laptop; extraction has not started.') from exc
     if any(not a.is_global for a in addresses):
         raise ValueError('Local and reserved network destinations are not allowed')
     return url

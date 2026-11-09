@@ -4,7 +4,11 @@ A private web downloader for your Ubuntu 24.04 laptop. Open it from your phone, 
 
 Built for your x86_64 Zedair with 2 GB RAM, 32 GB eMMC and an existing exFAT SSD. **Do not format the SSD.** Its existing files can stay where they are. This package needs to be installed or upgraded on your laptop; downloading this source does not change the running server.
 
-## v1.4: upgrade and new features
+## Updated v1.4.0 — 9 November 2026
+
+The version number remains **1.4.0**, as requested. This revision adds a three-stage video extraction pipeline, visible engine labels, persistent Instagram loop detection, bulk file actions and the revised interface. Replace the entire source package; copying only the webpage files is not enough.
+
+### Update from GitHub
 
 Copy **all** files in this package into your GitHub checkout, commit and push. On the Ubuntu laptop, run the following from your checkout (change the first path if needed):
 
@@ -17,31 +21,73 @@ sudo bash /opt/zedair/install-browser.sh
 sudo systemctl restart zedair
 ```
 
-Run each command only after the previous one succeeds. `upgrade.sh` updates the app; `update.sh` updates the download engines. The optional browser installer is needed for playback detection, but ordinary downloads and Instagram collections work without it. If you already installed the old Facebook browser, run the new installer once for the Ubuntu sandbox setup/check. Existing accounts, cookies, queues and downloaded files are preserved. Refresh the webpage and check **v1.4.0** in the footer.
+Run each command only after the previous one succeeds. `upgrade.sh` updates the app; `update.sh` updates the download engines. The optional browser installer is needed for playback detection, but ordinary downloads and Instagram collections work without it. If you already installed the old Facebook browser, run the new installer once for the Ubuntu sandbox setup/check. Existing accounts, cookies, queues and downloaded files are preserved. Refresh the webpage with **Ctrl+F5**. The footer still says **v1.4.0**; the new **Move / Copy** selection toolbar, engine labels and MP4 default identify this revision.
 
-New controls:
+### Main changes
 
-- **Add downloads:** optional filename, up to 100 links, explicit destination folders used directly, and optional playback detection.
-- **SSD files → Organize:** rename, move or copy one file within `Zedair`. Choose an existing destination with Browse; the picker also creates folders. Same-name collisions receive numbers. Renaming without an extension keeps the file's actual extension.
-- **SSD files → Delete empty folder:** enter a subfolder first, then delete it. The root, non-empty folders and folders reserved by unfinished jobs/torrents are refused.
-- **Per page:** 24, 50 or 100 files in either layout. Sorting and page-size preferences are remembered on this browser.
-- **Preview:** Previous/Next and left/right arrow keys follow the folder's current sort order, across page boundaries. Non-previewable files are skipped. The old player stops before the next file opens.
-- **Tools → Instagram:** Images only for posts/everything, or Profile picture at the highest available resolution. With no custom destination, both save under `Instagram/<username>`.
-- **Settings → Download engines:** installed versions and the exact update/install commands.
+- **Add downloads:** highest-quality **MP4** is selected by default. Optional filename, up to 100 links, and explicit destination folders still work.
+- **Duplicate URLs:** repeated links in a batch or existing queue/history are skipped. Common share/tracking variants are recognized. Retry a failed entry, or remove a finished entry before deliberately downloading its URL again.
+- **Queue:** non-zero counts appear on each filter. Every item has **Remove from queue**; this stops its transfer and removes the record while keeping downloaded files. **Details** identifies the actual extraction stage.
+- **SSD files:** select one or more files, then use **Move** or **Copy** in the toolbar. Select up to 100 files across pages in the current folder. **Rename** remains beside each file. Changing folders clears selection. Same-name collisions receive numbers, and renaming without an extension preserves the original extension.
+- **Delete folder:** open a subfolder, click **Delete folder**, review the path, file count and size, then confirm. This permanently removes that folder, its files and its subfolders. The `Zedair` root cannot be deleted.
+- **Preview:** the modal follows the image/video ratio on desktop. Previous/Next and arrow keys follow the current folder sort order across pages. The original media is streamed; no background transcoding runs.
+- **Tools → Instagram:** five radio choices: Posts, Reels, Everything, Images only, and Profile picture. Images only includes every exposed carousel image. The default destination is `Instagram/<username>`.
+- **Interface:** neutral charcoal dark mode, selection controls that wrap on mobile, quieter text, and in-page confirmation/name-entry dialogs. There are no JavaScript `alert`, `confirm` or `prompt` calls.
 
-### Playback detection on the laptop
+### How video extraction now works
 
-Normal extraction runs first. If it reports an unsupported player/extraction failure, the optional detector opens one sandboxed headless browser page, attempts playback in the page and embedded frames, and observes MP4/WebM/HLS/DASH responses. It passes the detected URL, necessary request headers and domain-scoped cookies to yt-dlp, then closes the browser before the actual download. The webpage title is used when available; your custom filename takes precedence. Quality and MP4-only controls still apply.
+The downloader accepts video **page** URLs, not just direct CDN links. With playback detection enabled, it tries these stages in order:
 
-This is the same general network-observation approach you described, **not 1DM's proprietary engine**. It is experimental: DRM, verification prompts, login walls, some player interactions and ambiguous multiple videos can remain unsupported. It does not bypass them or rewrite a misspelled domain. Use the complete video-page URL, not only `eporner.com` or another site's homepage. The specific reported sites and your laptop were not live-tested here.
+1. **Video engine:** yt-dlp's normal site extractor.
+2. **Page engine:** a small HTML parser follows up to six pages, including embedded players up to three levels deep. It looks for explicit video sources, video metadata and player source fields. It selects the highest labelled compatible source where that choice is unambiguous. This stage needs no Chromium or Java installation.
+3. **Browser engine:** if static discovery fails and the optional browser is installed, one sandboxed Chromium page loads the player, attempts playback in visible video elements/embedded frames, and watches playback requests. It captures direct video requests without buffering the entire movie in Chromium. The browser closes before yt-dlp transfers the chosen media.
 
-One browser is used at a time. Images/fonts and popups are blocked; the detector checks available RAM before launch and while waiting. It postpones launch below 450 MiB available and stops below 180 MiB. These checks reduce risk but cannot guarantee that every webpage fits in 2 GB. Existing service CPU/memory limits remain in force. Browser caches use the job's SSD staging area. The installer requires 1.5 GiB free internally, installs Playwright 1.64.1 with its headless browser, and checks sandbox startup as the `zedair` user. On Ubuntu with restricted user namespaces, it adds an AppArmor permission for the installed browser executable only; it does not disable the global restriction or browser sandbox. If the check fails, ordinary downloads still work: inspect the installer error before using fallback.
+The job card and Details retain the stage actually used, including after failure. A job stays labelled **Video engine** when yt-dlp succeeds directly; browser installation alone does not mean every job uses Chromium. Missing or mismatched browser files produce a distinct setup error. For a failed individual video, **Details → Retry with browser** skips the earlier extraction stages. It still performs the laptop's DNS and storage checks first.
+
+`m.hqporner.com` video paths are normalized to the site's main hostname. Eporner already has a yt-dlp site extractor; your reported **Cannot resolve this website** error occurs before that extractor or Chromium starts. A website using direct CDN files does not make its page DNS-independent.
+
+The selected source is passed to yt-dlp with its Referer/Origin/User-Agent as needed and domain-scoped cookies. The page title is used if available; your filename overrides it. MP4 and quality controls still apply. No re-encoding is added. For multiple unranked players, the app refuses to guess rather than knowingly choosing an unrelated clip.
+
+This is a playback-observation fallback, not 1DM's proprietary engine and not a guarantee of every website. DRM, verification prompts, inaccessible hosts, changed players and ambiguous sources can still fail. There is no CAPTCHA/age-verification bypass. **The two reported live URLs could not be tested from this workspace because their hostnames did not resolve here.** Local page/iframe/CDN fixtures and the transfer handoff were tested. Actual Chromium playback detection, the supplied live pages and the 2 GB laptop need target-machine validation.
+
+The optional browser installer is:
+
+```bash
+sudo bash /opt/zedair/install-browser.sh
+sudo systemctl restart zedair
+```
+
+It requires 1.5 GiB free internally, installs pinned Playwright and its matching headless browser, and tests sandbox startup as the `zedair` account. It grants Ubuntu AppArmor user-namespace permission to the installed executable when needed; it does not disable the global restriction or Chromium sandbox. Browser launch is deferred below 450 MiB available RAM and detection stops below 180 MiB. Only one media worker/browser runs at a time; CPU/memory service limits remain in force. These checks are safeguards, not a measured memory guarantee for arbitrary pages.
+
+### If a site still fails
+
+1. Open the job's **Details**. Check its engine label and the last error, not only the short Attention summary.
+2. Update the engines with `sudo bash /opt/zedair/update.sh`. For a browser setup error, rerun the installer above. An old Playwright package/browser mismatch cannot be repaired by refreshing the webpage.
+3. For a DNS error, run these **on the Zedair laptop**:
+
+```bash
+getent ahosts www.eporner.com
+resolvectl query www.eporner.com
+getent ahosts hqporner.com
+resolvectl query hqporner.com
+```
+
+If one domain fails while Instagram works, that is a domain-specific resolver/network issue, not proof that the whole internet is offline. Check the router's filtering, resolver configuration or the site's availability. The app retries temporary lookup errors three times, then records the failed hostname and schedules a normal retry. It does not silently switch your DNS, use a proxy or bypass network restrictions. Installing another download engine cannot correct a hostname lookup failure before the page loads.
+
+4. For **unsupported URL / player extraction** after successful DNS, keep playback detection enabled or use **Retry with browser**. Do not paste a homepage or a video-search page.
+5. For a continuing failure, retain the complete job Details and engine versions from Settings. Never post session-cookie values or signed CDN URLs in a public issue.
+
+### What about JDownloader?
+
+JDownloader supports headless operation; its official embedded-device guide recommends 256 MB RAM for headless use and requires a full Java runtime. Its normal remote workflow uses MyJDownloader. That recommendation is not a maximum memory limit for large link collections. It is a possible separate tool, but it is **not installed or integrated by this package**. This revision uses a lightweight static extractor before the existing optional browser, avoiding an additional Java service, queue and remote account. See the [official headless installation guide](https://support.jdownloader.org/en/knowledgebase/article/install-jdownloader-on-nas-and-embedded-devices) if you want to evaluate JDownloader separately.
 
 ### Long Instagram collections and recovery
 
-Retry an existing failed profile job after upgrading; its downloaded-media archive is preserved. To choose **Images only**, create a new collection with that option (it cannot retroactively change the selection of an old job). Every image in a mixed carousel is selected; videos and their preview thumbnails are skipped. **Profile picture** is a separate selection and works even if Images only was checked earlier.
+Retry an existing failed profile job after upgrading; its downloaded-media archive is preserved. To choose **Images only**, create a new collection with that option (it cannot retroactively change the selection of an old job). Every image in a mixed carousel is selected; videos and their preview thumbnails are skipped. **Images only** and **Profile picture** are separate radio selections, so they cannot conflict.
 
 The worker reads one page at a time, records a checkpoint after every successfully processed page and keeps a media-ID archive. Failed items prevent advancing past that page. A restart replays the unfinished page and skips already saved media. Missing pagination metadata or missing carousel media is treated as incomplete, not silent success. If the web posts query returns structurally invalid/empty results, it can try a separate authenticated compatibility feed after a rest; this alternative also validates pagination. It is not used to get around authentication, challenge or rate-limit responses, and is not guaranteed to be accepted by Instagram. Reels still use the reels feed.
+
+Completed-page fingerprints and previous cursors are stored on the SSD across restarts. If Instagram returns a previously completed page or cycles back to an earlier cursor, the worker stops with **pagination loop** and requires attention. It does not mark the collection complete or schedule an endless automatic replay. An unfinished page may be revisited to recover from a failed item, but the media archive skips already saved files. Do not repeatedly retry a pagination-loop error without checking the engine/log first.
 
 Requests are randomly spaced by at least 10–25 seconds (a higher configured Instagram delay raises that range), and actual media downloads by 15–40 seconds. After about 15 minutes, the worker yields at the next completed page, publishes available files and rests for 2–5 minutes, allowing other queued jobs to run. A page with many items can take longer than 15 minutes. No fixed number of posts is imposed.
 
@@ -51,13 +97,13 @@ The queue uses a small progress-only request approximately once per second while
 
 ### File-operation details
 
-Files stay within `Zedair`; paths outside it and symbolic links are refused. Active torrent-managed files must first be removed from the torrent queue without deleting their data. Copies use bounded 1 MiB buffers and check the space reserve; they may take a long time on USB 2.0. Keep the dialog open until completion. Copy/move/rename operations are serialized, and final download publication waits for a file operation to finish. Reads and normal progress polling continue. They are not resumable background copy jobs: a process/power failure may leave a hidden `.zedair-copy-*` temporary file, which can be inspected/removed manually after stopping the service. The source is retained on copy failure. Renames and moves preserve recorded download dates.
+Files stay within `Zedair`; paths outside it and symbolic links are refused. Active torrent-managed files must first be removed from the torrent queue without deleting their data. Copies use bounded 1 MiB buffers and check the space reserve; they may take a long time on USB 2.0. Keep the dialog open until completion. A batch validates all selected files before starting. If a runtime failure occurs partway through, the dialog reports what finished and leaves the remaining files selected; completed moves/copies are not rolled back. Copy/move/rename operations are serialized, and final download publication waits for a file operation to finish. Reads and normal progress polling continue. They are not resumable background copy jobs: a process/power failure may leave a hidden `.zedair-copy-*` temporary file, which can be inspected/removed manually after stopping the service. The source is retained on copy failure. Renames and moves preserve recorded download dates.
 
 ## Previous fix: v1.3.1 Instagram profile downloads
 
 The v1.3 profile command accidentally used gallery-dl's lowercase `--print`, which disables downloading. It still emitted “saved” messages and recorded media IDs in an archive, so the counter increased without any media files. The app then tried to publish an empty folder. Direct post/reel downloads did not use that flag, which is why they could still work with the same session.
 
-This release uses `--Print` (print **and download**), ignores the old false-completion archive, resets affected false counters once, and repairs empty jobs stuck in the publication phase. It keeps existing files and cookies. Counts now come from the engine's after-download event; carousel items count as separate media files, not separate posts.
+The v1.3.1 fix used `--Print` (print **and download**); the v1.4 profile worker now uses gallery-dl’s Python download job API. It, ignores the old false-completion archive, resets affected false counters once, and repairs empty jobs stuck in the publication phase. It keeps existing files and cookies. Counts now come from the engine's after-download event; carousel items count as separate media files, not separate posts.
 
 1. Put this updated source into your GitHub repository, commit and push it.
 2. On Ubuntu, use the Git pull + `upgrade.sh` steps below. No new package or browser installation is required for this fix.
@@ -264,13 +310,13 @@ Example: `My video.mp4`, then `My video (1).mp4`, then `My video (2).mp4`. Exist
 
 Partial media and metadata live in hidden `Zedair/.incomplete/JOB_ID` folders. Completed new jobs publish media directly into the selected or default platform folder; there are no visible random job subfolders. Internal metadata is not offered in the file browser. Cancelled/failed jobs retain partial data for recovery; see storage cleanup below.
 
-Unfinished duplicate URLs are skipped. To deliberately download a finished URL again, add it as a new job.
+Duplicate URLs are skipped within the batch and against non-cancelled queue/history entries, including completed or failed jobs. Common YouTube/share-link variants and tracking parameters are recognized, while meaningful query parameters are retained. To deliberately download a finished URL again, remove its queue record (or clear finished history), then add it. Existing SSD filenames still receive collision numbers.
 
 ### Queue controls and errors
 
 - **Pause** stops the current engine and keeps partial files. **Resume/retry** reuses them where the source supports it.
 - **Hold queue** pauses media work and active torrents. **Resume queue** releases the hold.
-- **Cancel** retains files; **Clear finished history** removes completed/cancelled queue records only.
+- **Remove from queue** stops the transfer and hides/removes that specific record. Downloaded files remain. **Clear finished history** removes completed/cancelled records only. Hidden partial files also remain on the SSD; removing a job loses its resume entry, so use Pause when you intend to continue later.
 - **Move to front** changes the waiting order.
 - **Details** shows the destination, current status and recent engine output.
 
@@ -285,7 +331,7 @@ Video progress usually measures the current stream, not a whole playlist. Mergin
 
 1. Save your Instagram cookies in **Settings → Platforms & cookies → Instagram** (instructions below).
 2. Open **Tools → Instagram**. Enter `@username`, `username`, or its profile URL.
-3. Select **Posts** (images, carousel items and non-reel feed videos), **Reels**, **Everything**, or **Profile picture**. Check **Images only** for posts/everything to skip videos while keeping every carousel image.
+3. Select one radio option: **Posts** (images, carousel items and non-reel feed videos), **Reels**, **Everything**, **Images only** (all exposed images, including carousels), or **Profile picture** (highest available resolution).
 4. Leave the optional destination empty for `Zedair/Instagram/<username>`, or enter e.g. `Collections` to save directly in `Zedair/Collections`.
 5. Click **Queue profile**. Watch **Profile jobs** or the main download queue. **Details** has the engine log; the folder button opens its saved files.
 
@@ -380,7 +426,7 @@ General settings include media/torrent speed limits, torrent seeding ratio, free
 
 Each platform tab has its folder, enable switch and applicable options. YouTube has quality, video-format, playlist and subtitle defaults. Facebook, Reddit, X and other video sites also expose their applicable format/quality defaults. Instagram has session requirements, best-stream/pre-merged video selection, resolution warnings and request delay. X has quality and an advanced API selector; keep **GraphQL** unless troubleshooting an upstream compatibility issue. Disabled platforms reject new jobs; they do not cancel existing ones.
 
-Defaults are copied into newly queued jobs. Cookie replacements and live engine options apply on the next attempt. Checking playlist/subtitle options in Add downloads also enables them when using platform defaults. To override platform defaults with those options off, select an explicit quality preset and leave the checkboxes unchecked.
+The main form defaults to **Highest quality + MP4**. Saved platform quality/format settings are used only when you explicitly select **Use platform defaults**; those values are then copied into the new job. Cookie replacements and live engine options apply on the next attempt. Checking playlist/subtitle options in Add downloads also enables them when using platform defaults. To override platform defaults with those options off, select an explicit quality preset and leave the checkboxes unchecked.
 
 ### Instagram: paste your session from Firefox on Windows
 
@@ -437,7 +483,7 @@ Date sorting uses the completion time recorded by v1.3.1 and later for newly pub
 
 Previews require your normal login and stream the original file from the SSD. They do not convert video or use FFmpeg in the background, which keeps CPU/RAM usage low on the laptop. Your browser still transfers media bytes to display/play them. MP4 with H.264/AAC and common JPEG/PNG/WebP images usually have the broadest browser support. MKV, HEVC, some audio formats and unfinished torrent files may not play in your browser even when the download is valid. Use **Download** and a compatible player in that case. SVG/HTML files are not rendered inline. Seeking uses HTTP byte ranges; a disconnected SSD or expired login can interrupt playback.
 
-Click **Delete** beside an individual file, check its full path, then confirm. **This permanently deletes it from the SSD; there is no recycle bin.** There is no recursive delete-folder button. Files outside `Zedair`, hidden working folders and symbolic links are not accessible.
+Click **Delete** beside an individual file, check its full path, then confirm. **This permanently deletes it from the SSD; there is no recycle bin.** **Delete folder** permanently removes the currently opened subfolder and all its contents after an in-page confirmation showing its file count and size. The confirmation is rejected if the folder changed while you were reviewing it. Active-job/torrent folders, the Zedair root, symlinks and nested mounts are protected. There is no recycle bin; verify the path before confirming. Files outside `Zedair`, hidden working folders and symbolic links are not accessible.
 
 Deletion is refused if the file changed since listing, is still being published, belongs to an unfinished legacy job, or is managed by a torrent. For a torrent file, remove the torrent from **Torrents** first (which keeps its files), then delete the file in **SSD files**. The torrent engine must be reachable to verify this protection; if it is offline, reconnect/mount the SSD and start the torrent service first.
 
@@ -581,6 +627,9 @@ df -h /srv/zedair-ssd
 | SSD offline | USB power/cable, mount UUID and `findmnt`. Reconnect with the Windows/SSD steps. Never disable `require_mount` to hide the error. |
 | Free-space reserve reached | Delete unwanted files through SSD files, or free space in Windows. Browsing/deletion work below the reserve. |
 | Instagram profile shows a count but no files | Upgrade to v1.4.0, then retry the same profile job; see the recovery section at the top. Existing working cookies need no replacement for this bug. |
+| Website DNS lookup fails | Run the hostname checks near the top on the laptop; other sites working does not establish that this domain resolves. |
+| Browser engine unavailable | Rerun `install-browser.sh`, check its sandbox test, restart the app. |
+| Instagram pagination loop | Progress is retained; the server repeated a completed page/cursor. Review Details/update engines before retrying. |
 | Instagram fails | Read Details; renew cookies, finish a browser challenge, wait for a rate limit or update engines as appropriate. |
 | Facebook profile stops | Inspect the experimental collector log; check session, scroll limit, layout changes and browser installation. A finished job is not proof of a complete archive. |
 | MP4-only format unavailable | The source offers no matching MP4/M4A combination at the selected ceiling. Try Automatic if another format is acceptable. |
@@ -634,7 +683,7 @@ This keeps files and configuration. To re-enable: `sudo systemctl enable --now z
 | --- | --- |
 | Your Git checkout, e.g. `~/Zedair-Download-Desk` | Source you pull from GitHub |
 | `/opt/zedair` | Installed application, Python environment and Deno |
-| `/opt/zedair/browsers` | Optional Facebook Chromium installation |
+| `/opt/zedair/browsers` | Optional playback-detection / Facebook Chromium installation |
 | `/etc/systemd/system/zedair-local.socket` and `.service` | Optional port-80 local address proxy |
 | `/etc/zedair` | Private service configuration and setup key |
 | `/var/lib/zedair` | Account, login sessions, queue, preferences, cookies and torrent state |
@@ -659,6 +708,8 @@ python tests/integration_profiles_formats.py
 python tests/integration_instagram_profile_download.py
 python tests/integration_profile_large.py
 python tests/integration_browser_handoff.py
+python tests/integration_page_discovery.py
+python tests/integration_profile_loop.py
 ```
 
 See `TEST-REPORT.md` for actual verification and its limits. This release was not installed on your physical laptop. Live account-specific Instagram/X access, real torrent swarms, SSD/systemd behavior and real laptop speed need confirmation there. No preview account, browser screenshot, cookie file or populated database is included in the release.
