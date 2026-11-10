@@ -2,8 +2,10 @@
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -50,7 +52,23 @@ def available_memory():
         return values.get('MemAvailable',0)
     except OSError:return 1024*1024*1024
 
+def arm_watchdog(seconds):
+    """Hard stop: a wedged browser page can block Playwright calls forever (they have no timeout)."""
+    def fire():
+        print('ERROR Browser fallback: the browser page stopped responding; stopped by watchdog',flush=True)
+        try:
+            if os.getpid()==os.getpgrp():os.killpg(os.getpgrp(),signal.SIGKILL)
+        except Exception:pass
+        os._exit(3)
+    timer=threading.Timer(seconds,fire);timer.daemon=True;timer.start()
+    return timer
+
 def detect(url,cookie,quality='best',mp4=False,telegram=None):
+    watchdog=arm_watchdog(240)
+    try:return _detect(url,cookie,quality,mp4,telegram)
+    finally:watchdog.cancel()
+
+def _detect(url,cookie,quality='best',mp4=False,telegram=None):
     from playwright.sync_api import sync_playwright
     if available_memory()<450*1024**2:raise ValueError('Browser fallback postponed: less than 450 MiB available RAM. Close other tasks and retry.')
     if profiles.BROWSERS.is_dir():os.environ['PLAYWRIGHT_BROWSERS_PATH']=str(profiles.BROWSERS)
@@ -60,15 +78,25 @@ def detect(url,cookie,quality='best',mp4=False,telegram=None):
     tg_token=str(telegram.get('bot_token','')).strip()
     tg_recipients=[str(c).strip() for c in (telegram.get('chat_id'),telegram.get('admin_id')) if str(c).strip()]
     tg_snapshots=bool(telegram.get('snapshots',False)) and bool(tg_token) and bool(tg_recipients)
+    if bool(telegram.get('snapshots',False)) and not tg_snapshots:
+        print('ZEDPROFILE Telegram snapshots are on but the bot token or chat/admin ID is empty; nothing will be sent.',flush=True)
     def send_tg_snapshot(pg,caption):
         if not tg_snapshots:return
         try:
             import telegram_notifier
-            shot=pg.screenshot(type='jpeg',quality=65)
-            telegram_notifier.send_snapshot(tg_token,tg_recipients,shot,caption=caption)
-        except Exception as exc:print(f'Warning: Telegram snapshot failed: {exc}',flush=True)
+        except Exception as exc:
+            print(f'ZEDPROFILE Telegram snapshot unavailable: {exc}. Is telegram_notifier.py installed in /opt/zedair?',flush=True);return
+        try:
+            shot=pg.screenshot(type='jpeg',quality=65,timeout=8000)
+        except Exception as exc:
+            print(f'ZEDPROFILE Telegram snapshot: could not capture the page ({str(exc)[:120]})',flush=True);shot=None
+        # Network I/O runs in a helper thread so a slow Telegram connection cannot stall detection.
+        def deliver():
+            if shot:telegram_notifier.send_snapshot(tg_token,tg_recipients,shot,caption=caption)
+            else:telegram_notifier.send_message(tg_token,tg_recipients,caption+'\n(screenshot unavailable)')
+        worker=threading.Thread(target=deliver,daemon=True);worker.start();worker.join(40)
     with sync_playwright() as playwright:
-        browser=playwright.chromium.launch(headless=True,chromium_sandbox=True,timeout=30000,args=['--disable-dev-shm-usage','--disable-background-networking','--disable-extensions','--disable-quic','--renderer-process-limit=2','--js-flags=--max-old-space-size=128','--autoplay-policy=no-user-gesture-required'])
+        browser=playwright.chromium.launch(headless=True,chromium_sandbox=True,timeout=30000,args=['--disable-dev-shm-usage','--disable-background-networking','--disable-extensions','--disable-quic','--renderer-process-limit=2','--js-flags=--max-old-space-size=384','--autoplay-policy=no-user-gesture-required'])
         page=None
         try:
             context=browser.new_context(accept_downloads=False,service_workers='block',viewport={'width':960,'height':540},user_agent=USER_AGENT,locale='en-US')
@@ -293,9 +321,40 @@ def execute(args):
         tail=tail[-60:]
     return process.wait(),''.join(tail)
 
+def reddit_direct(spec):
+    """Direct Reddit engine. Returns 0 on success, None to continue with yt-dlp/browser, or a fatal exit code."""
+    import reddit_media
+    args=spec['args'];fmt=args[args.index('-f')+1] if '-f' in args else ''
+    ceiling=re.search(r'height<=(\d+)',fmt);quality=ceiling[1] if ceiling else 'best'
+    rate=0
+    if '--limit-rate' in args:
+        value=re.match(r'(\d+)',args[args.index('--limit-rate')+1]);rate=int(value[1]) if value else 0
+    print('ZEDENGINE page',flush=True)
+    print('ZEDPROFILE Reading the Reddit post directly (using your saved Reddit session)…',flush=True)
+    try:
+        outcome=reddit_media.run(spec['url'],spec['dest'],spec.get('cookie',''),quality,rate,'-x' in args)
+    except Exception as exc:
+        message=str(exc)
+        print('Reddit direct extraction: '+message,flush=True)
+        if 'does not contain a video or image' in message:
+            print('ERROR '+message,flush=True);return 1
+        return None
+    if outcome is None:return 0
+    _,external,title=outcome
+    print('ZEDPROFILE Reddit post links to an external host; downloading from there…',flush=True)
+    import http.cookiejar
+    found={'kind':'embed','url':external,'headers':{'referer':'https://www.reddit.com/','user-agent':USER_AGENT}}
+    code=transfer(spec,found,title,http.cookiejar.MozillaCookieJar())
+    return 0 if code==0 else None
+
 def run(spec):
     force=spec.get('force',False)
     print('ZEDENGINE '+('browser' if force else 'video'),flush=True)
+    if not force and platforms.platform_for(spec['url'])=='reddit':
+        outcome=reddit_direct(spec)
+        if outcome is not None:return outcome
+        print('ZEDENGINE video',flush=True)
+        print('ZEDPROFILE Direct Reddit extraction failed; trying the standard video engine…',flush=True)
     if not force:
         code,log=execute(spec['args'])
         if not code:return 0
@@ -412,4 +471,12 @@ def transfer(spec,found,title,jar):
 
 if __name__=='__main__':
     try:raise SystemExit(run(json.loads(Path(sys.argv[1]).read_text())))
-    except Exception as exc:print('ERROR Browser fallback: '+str(exc),flush=True);raise SystemExit(1)
+    except Exception as exc:
+        print('ERROR Browser fallback: '+str(exc),flush=True)
+        try:
+            tg=json.loads(Path(sys.argv[1]).read_text()).get('telegram') or {}
+            if tg.get('snapshots') and tg.get('bot_token'):
+                import telegram_notifier
+                telegram_notifier.send_message(str(tg['bot_token']).strip(),[tg.get('chat_id',''),tg.get('admin_id','')],'Zedair download failed:\n'+str(exc)[:900])
+        except Exception:pass
+        raise SystemExit(1)

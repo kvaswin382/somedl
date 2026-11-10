@@ -502,6 +502,7 @@ class Desk:
             if not line:
                 continue
             live = self.live.setdefault(jid, {})
+            live['ts'] = time.monotonic()
             if line.startswith('ZEDENGINE '):
                 engine=line[10:].strip()
                 if engine in ('video','page','browser'):
@@ -590,6 +591,7 @@ class Desk:
                 self.current = jid
             reader = threading.Thread(target=self.consume, args=(proc.stdout, jid), daemon=True)
             reader.start()
+            started = time.monotonic()
             while proc.poll() is None:
                 if self.stop.wait(1):
                     self.stop_process(jid)
@@ -599,6 +601,13 @@ class Desk:
                 if fresh['status'] != 'running':
                     self.stop_process(jid)
                     return
+                if job['kind'] == 'video' and not job.get('profile_mode'):
+                    # Single-video engines print progress at least every few seconds; ten silent minutes means wedged.
+                    quiet = time.monotonic() - self.live.get(jid, {}).get('ts', started)
+                    if quiet > 600:
+                        tail = self.live.get(jid, {}).get('log', '')[-1500:]
+                        self.stop_process(jid)
+                        raise APIError('Download stalled: the engine produced no output for 10 minutes and was stopped.\n' + tail)
                 disk = self.storage()
                 if self.get_setting('hold', False) or not disk['ready']:
                     self.stop_process(jid)
@@ -1128,7 +1137,13 @@ class Handler(BaseHTTPRequestHandler):
             res = telegram_notifier.send_message(token, recipients, '🔔 Zedair test notification: Telegram integration is working!')
             if not res.get('ok'):
                 raise APIError(res.get('error', 'Failed to send Telegram message'))
-            self.reply({'ok': True, 'successes': res.get('successes', [])})
+            # Browser snapshots use sendPhoto, a different API method: verify it too.
+            photo = telegram_notifier.send_snapshot(token, recipients, telegram_notifier.test_image(),
+                                                    caption='Zedair snapshot test: browser screenshots will arrive like this.',
+                                                    mime='image/png', filename='test.png')
+            if not photo.get('ok'):
+                raise APIError('Text works but photo upload failed: ' + '; '.join(photo.get('errors', [])))
+            self.reply({'ok': True, 'successes': res.get('successes', []), 'photo_successes': photo.get('successes', [])})
             return
         elif path == '/api/speedtest':
             if data.get('action')=='start':
