@@ -51,7 +51,7 @@ def available_memory():
 def detect(url,cookie,quality='best',mp4=False):
     from playwright.sync_api import sync_playwright
     if available_memory()<450*1024**2:raise ValueError('Browser fallback postponed: less than 450 MiB available RAM. Close other tasks and retry.')
-    os.environ['PLAYWRIGHT_BROWSERS_PATH']=str(profiles.BROWSERS)
+    if profiles.BROWSERS.is_dir():os.environ['PLAYWRIGHT_BROWSERS_PATH']=str(profiles.BROWSERS)
     candidates={};active=set();title='';validated=set()
     is_reddit=platforms.platform_for(url)=='reddit'
     with sync_playwright() as playwright:
@@ -134,6 +134,35 @@ def detect(url,cookie,quality='best',mp4=False):
                             loc=page.locator(sel)
                             if loc.count() and loc.first.is_visible():loc.first.click(timeout=800);page.wait_for_timeout(300)
                         except Exception:pass
+                    try:
+                        sp_info = page.evaluate("""() => {
+                            const sp = document.querySelector('shreddit-post');
+                            if (!sp) return null;
+                            return {
+                                title: sp.getAttribute('post-title'),
+                                href: sp.getAttribute('content-href'),
+                                domain: (sp.getAttribute('domain') || '').toLowerCase(),
+                                type: (sp.getAttribute('post-type') || '').toLowerCase()
+                            };
+                        }""")
+                        if sp_info:
+                            if sp_info.get('title'):
+                                title = sp_info['title'].strip()
+                            href = sp_info.get('href')
+                            domain = sp_info.get('domain', '')
+                            if href:
+                                if 'redgifs.com' in domain or 'redgifs.com' in href:
+                                    m = re.search(r'redgifs\.com/(?:ifr|watch)/([a-zA-Z0-9]+)', href, re.I)
+                                    if m:
+                                        w_url = f'https://www.redgifs.com/watch/{m.group(1)}'
+                                        candidates[w_url] = {'url': w_url, 'kind': 'embed', 'headers': {'referer': 'https://www.reddit.com/', 'user-agent': USER_AGENT}}
+                                elif 'imgur.com' in domain or 'streamable.com' in domain:
+                                    candidates[href] = {'url': href, 'kind': 'embed', 'headers': {'referer': 'https://www.reddit.com/', 'user-agent': USER_AGENT}}
+                                elif href.endswith(('.gif', '.jpg', '.jpeg', '.png', '.webp', '.avif')):
+                                    candidates['__gallery__'] = {'url': href, 'kind': 'gallery', 'urls': [href], 'headers': {'referer': 'https://www.reddit.com/', 'user-agent': USER_AGENT}}
+                                elif href.endswith(('.mp4', '.webm', '.mov', '.m3u8', '.mpd')) or 'v.redd.it' in domain:
+                                    candidates[href] = {'url': href, 'kind': media_kind(href) or 'video', 'headers': {'referer': 'https://www.reddit.com/', 'user-agent': USER_AGENT}}
+                    except Exception:pass
                 for frame in page.frames[:12]:
                     if time.monotonic()>=deadline:break
                     rg_frame=re.search(r'https?://(?:www\.)?redgifs\.com/(?:ifr|watch)/([a-zA-Z0-9]+)',frame.url,re.I)
@@ -183,7 +212,7 @@ def detect(url,cookie,quality='best',mp4=False):
                             if buttons.count() and buttons.first.is_visible():buttons.first.click(timeout=1000)
                     except Exception:pass
                 has_playable=any(c.get('kind') in ('video','manifest','embed') for c in candidates.values())
-                if has_playable and _>=3:
+                if (has_playable or (is_reddit and candidates)) and _>=3:
                     try:pick(list(candidates.values()),active,quality,mp4);break
                     except ValueError:pass
                 page.wait_for_timeout(1000)
@@ -209,6 +238,9 @@ def detect(url,cookie,quality='best',mp4=False):
                     if cleaned:
                         candidates['__gallery__']={'url':cleaned[0],'kind':'gallery','urls':cleaned,'headers':{'referer':'https://www.reddit.com/','user-agent':USER_AGENT}}
                 except Exception:pass
+            if is_reddit and title:
+                title=re.sub(r'\s*[:|-]\s*r/\w+.*$','',title,flags=re.I).strip()
+                title=re.sub(r'\s*-\s*Reddit$','',title,flags=re.I).strip()
             result=pick(list(candidates.values()),active,quality,mp4)
             # Cookies are domain-scoped; do not forward a page's raw Cookie/Authorization header to a CDN.
             import http.cookiejar

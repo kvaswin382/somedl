@@ -24,7 +24,7 @@ class RedditSupportTests(unittest.TestCase):
         self.assertIn('reddit.com', platforms.DOMAINS['reddit'])
         self.assertIn('redd.it', platforms.DOMAINS['reddit'])
         self.assertEqual(platforms.platform_for('https://www.reddit.com/r/pics/comments/123/title/'), 'reddit')
-        self.assertEqual(platforms.platform_for('https://old.reddit.com/r/nsfw/comments/456/title/'), 'reddit')
+        self.assertEqual(platforms.platform_for('https://old.reddit.com/r/community/comments/456/title/'), 'reddit')
         self.assertEqual(platforms.platform_for('https://redd.it/789'), 'reddit')
         self.assertEqual(platforms.platform_for('https://v.redd.it/abc123xyz'), 'reddit')
 
@@ -114,14 +114,14 @@ class RedditSupportTests(unittest.TestCase):
 
     def test_run_reddit_error_does_not_abort_fallback(self):
         spec = {
-            'args': ['yt_dlp', '-f', 'best', '--', 'https://www.reddit.com/r/nsfw/comments/123/test/'],
-            'url': 'https://www.reddit.com/r/nsfw/comments/123/test/',
+            'args': ['yt_dlp', '-f', 'best', '--', 'https://www.reddit.com/r/community/comments/123/test/'],
+            'url': 'https://www.reddit.com/r/community/comments/123/test/',
             'dest': str(self.state),
             'cookie': '',
             'enabled': True,
             'force': False
         }
-        # Simulate yt-dlp error output on Reddit NSFW
+        # Simulate yt-dlp error output on Reddit age gate
         reddit_error_output = (
             "WARNING: [Reddit] Session request failed: HTTP Error 403: Blocked\n"
             "ERROR: [Reddit] 123: Account authentication is required. Use --cookies.\n"
@@ -131,7 +131,7 @@ class RedditSupportTests(unittest.TestCase):
 
         with patch('browser_video.execute', return_value=(1, reddit_error_output)), \
              patch('browser_video.profiles.browser_ready', return_value=True), \
-             patch('browser_video.detect', return_value=(fake_found, 'Reddit NSFW Post', jar)) as mock_detect, \
+             patch('browser_video.detect', return_value=(fake_found, 'Reddit Test Post', jar)) as mock_detect, \
              patch('browser_video.transfer', return_value=0) as mock_transfer:
             res = browser_video.run(spec)
             self.assertEqual(res, 0)
