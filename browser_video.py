@@ -24,6 +24,8 @@ def media_kind(url,content_type=''):
     return ''
 
 def pick(candidates,active,quality='best',mp4=False):
+    posts=[c for c in candidates if c.get('kind')=='reddit_post']
+    if posts:return posts[0]
     embeds=[c for c in candidates if c.get('kind')=='embed']
     if embeds:return embeds[0]
     hls_masters=[c for c in candidates if 'hlsplaylist.m3u8' in c['url'].lower()]
@@ -52,10 +54,54 @@ def available_memory():
         return values.get('MemAvailable',0)
     except OSError:return 1024*1024*1024
 
-def arm_watchdog(seconds):
+class TelegramLog:
+    """Best-effort Telegram text/snapshots. Deliveries run in threads that are joined before exit,
+    so a slow Telegram connection never stalls detection and never gets cut off by process exit."""
+    def __init__(self,telegram):
+        telegram=telegram or {}
+        self.token=str(telegram.get('bot_token','')).strip()
+        self.recipients=[str(c).strip() for c in (telegram.get('chat_id'),telegram.get('admin_id')) if str(c or '').strip()]
+        self.enabled=bool(telegram.get('snapshots',False)) and bool(self.token) and bool(self.recipients)
+        self.pending=[]
+        self.notifier=None
+        if bool(telegram.get('snapshots',False)) and not self.enabled:
+            print('ZEDPROFILE Telegram snapshots are on but the bot token or chat/admin ID is empty; nothing will be sent.',flush=True)
+        if self.enabled:
+            try:
+                import telegram_notifier
+                self.notifier=telegram_notifier
+            except Exception as exc:
+                self.enabled=False
+                print(f'Telegram snapshot unavailable: {exc}. Is telegram_notifier.py installed in /opt/zedair?',flush=True)
+    def _deliver(self,fn):
+        worker=threading.Thread(target=fn,daemon=True);worker.start();self.pending.append(worker)
+    def text(self,message):
+        if not self.enabled:return
+        def send():
+            result=self.notifier.send_message(self.token,self.recipients,message)
+            if not result.get('ok'):print('Telegram message failed: '+str(result.get('error',''))[:300],flush=True)
+            for error in result.get('errors') or []:print('Telegram message failed: '+str(error)[:300],flush=True)
+        self._deliver(send)
+    def snapshot(self,page,caption):
+        if not self.enabled:return
+        try:shot=page.screenshot(type='jpeg',quality=65,timeout=8000,animations='disabled')
+        except Exception as exc:
+            print(f'Telegram snapshot: could not capture the page ({str(exc)[:120]})',flush=True);shot=None
+        if shot:self._deliver(lambda:self.notifier.send_snapshot(self.token,self.recipients,shot,caption=caption))
+        else:self.text(caption+'\n(screenshot unavailable)')
+    def flush(self,seconds=60):
+        deadline=time.monotonic()+seconds
+        for worker in self.pending:worker.join(max(0,deadline-time.monotonic()))
+        self.pending=[w for w in self.pending if w.is_alive()]
+
+def arm_watchdog(seconds,on_fire=None):
     """Hard stop: a wedged browser page can block Playwright calls forever (they have no timeout)."""
     def fire():
         print('ERROR Browser fallback: the browser page stopped responding; stopped by watchdog',flush=True)
+        if on_fire:
+            try:
+                notify=threading.Thread(target=on_fire,daemon=True);notify.start();notify.join(20)
+            except Exception:pass
         try:
             if os.getpid()==os.getpgrp():os.killpg(os.getpgrp(),signal.SIGKILL)
         except Exception:pass
@@ -64,37 +110,42 @@ def arm_watchdog(seconds):
     return timer
 
 def detect(url,cookie,quality='best',mp4=False,telegram=None):
-    watchdog=arm_watchdog(240)
-    try:return _detect(url,cookie,quality,mp4,telegram)
-    finally:watchdog.cancel()
+    tg=TelegramLog(telegram)
+    def on_fire():
+        if tg.enabled:tg.notifier.send_message(tg.token,tg.recipients,f'Zedair browser engine timed out (no response for 4 minutes).\nURL: {url}')
+    watchdog=arm_watchdog(240,on_fire)
+    try:return _detect(url,cookie,quality,mp4,tg)
+    finally:
+        watchdog.cancel()
+        tg.flush()
 
-def _detect(url,cookie,quality='best',mp4=False,telegram=None):
+def reddit_post_from_page(page):
+    """Read the post JSON with the browser's own session (cookies + browser network stack)."""
+    import reddit_media
+    match=re.search(r'/comments/([a-z0-9]+)',urlsplit(page.url).path)
+    if not match:return None
+    data=page.evaluate("""async (u) => {
+        const ctl=new AbortController();const timer=setTimeout(()=>ctl.abort(),15000);
+        try{const r=await fetch(u,{credentials:'include',signal:ctl.signal,headers:{'Accept':'application/json'}});
+            return {status:r.status,text:r.ok?(await r.text()).slice(0,8000000):''};}
+        catch(e){return {status:0,text:String(e)};}
+        finally{clearTimeout(timer);}
+    }""",f'/comments/{match[1]}.json?raw_json=1&limit=1')
+    if not data or data.get('status')!=200:
+        print(f"Reddit post JSON in browser: HTTP {data.get('status') if data else '?'}",flush=True);return None
+    post=reddit_media.find_post(json.loads(data['text']))
+    if not post:return None
+    return reddit_media.classify(post)
+
+def _detect(url,cookie,quality='best',mp4=False,tg=None):
     from playwright.sync_api import sync_playwright
+    tg=tg if isinstance(tg,TelegramLog) else TelegramLog(tg)
     if available_memory()<450*1024**2:raise ValueError('Browser fallback postponed: less than 450 MiB available RAM. Close other tasks and retry.')
     if profiles.BROWSERS.is_dir():os.environ['PLAYWRIGHT_BROWSERS_PATH']=str(profiles.BROWSERS)
     candidates={};active=set();title='';validated=set()
     is_reddit=platforms.platform_for(url)=='reddit'
-    telegram=telegram or {}
-    tg_token=str(telegram.get('bot_token','')).strip()
-    tg_recipients=[str(c).strip() for c in (telegram.get('chat_id'),telegram.get('admin_id')) if str(c).strip()]
-    tg_snapshots=bool(telegram.get('snapshots',False)) and bool(tg_token) and bool(tg_recipients)
-    if bool(telegram.get('snapshots',False)) and not tg_snapshots:
-        print('ZEDPROFILE Telegram snapshots are on but the bot token or chat/admin ID is empty; nothing will be sent.',flush=True)
-    def send_tg_snapshot(pg,caption):
-        if not tg_snapshots:return
-        try:
-            import telegram_notifier
-        except Exception as exc:
-            print(f'ZEDPROFILE Telegram snapshot unavailable: {exc}. Is telegram_notifier.py installed in /opt/zedair?',flush=True);return
-        try:
-            shot=pg.screenshot(type='jpeg',quality=65,timeout=8000)
-        except Exception as exc:
-            print(f'ZEDPROFILE Telegram snapshot: could not capture the page ({str(exc)[:120]})',flush=True);shot=None
-        # Network I/O runs in a helper thread so a slow Telegram connection cannot stall detection.
-        def deliver():
-            if shot:telegram_notifier.send_snapshot(tg_token,tg_recipients,shot,caption=caption)
-            else:telegram_notifier.send_message(tg_token,tg_recipients,caption+'\n(screenshot unavailable)')
-        worker=threading.Thread(target=deliver,daemon=True);worker.start();worker.join(40)
+    send_tg_snapshot=tg.snapshot
+    tg.text(f'Zedair browser engine started.\nURL: {url}')
     with sync_playwright() as playwright:
         browser=playwright.chromium.launch(headless=True,chromium_sandbox=True,timeout=30000,args=['--disable-dev-shm-usage','--disable-background-networking','--disable-extensions','--disable-quic','--renderer-process-limit=2','--js-flags=--max-old-space-size=384','--autoplay-policy=no-user-gesture-required'])
         page=None
@@ -151,8 +202,17 @@ def _detect(url,cookie,quality='best',mp4=False,telegram=None):
                 print('ZEDPROFILE Page load timed out; inspecting the player already loaded…',flush=True)
             title=page.title()
             send_tg_snapshot(page,f'Browser page opened: {urlsplit(url).netloc}\nTitle: {title}')
-            for _ in range(25):
+            if is_reddit:
+                try:
+                    info=reddit_post_from_page(page)
+                    if info:
+                        print(f"ZEDPROFILE Reddit post read in the browser session: {info['kind']}",flush=True)
+                        candidates['__reddit_post__']={'url':page.url,'kind':'reddit_post','info':info,'headers':{}}
+                        title=info.get('title') or title
+                except Exception as exc:print('Reddit post JSON in browser: '+str(exc)[:200],flush=True)
+            for _ in range(0 if '__reddit_post__' in candidates else 25):
                 if time.monotonic()>=deadline:break
+                if _==12:send_tg_snapshot(page,f'Browser still searching for playable media…\nTitle: {title}')
                 if available_memory()<180*1024**2:raise ValueError('Browser stopped because available RAM is low')
                 text=page.locator('body').inner_text(timeout=2000)[:12000].lower() if page.locator('body').count() else ''
                 check_tokens=('verify you are human','unusual traffic','complete the captcha') if is_reddit else ('verify you are human','checking your browser','unusual traffic','complete the captcha')
@@ -250,10 +310,12 @@ def _detect(url,cookie,quality='best',mp4=False,telegram=None):
                                 const u=v.currentSrc||v.src;if(u)res.push({url:u,active:true});
                                 for(const s of v.querySelectorAll('source')){if(s.src)res.push({url:s.src,height:s.getAttribute('size')||s.getAttribute('label')||s.getAttribute('res')||0});}
                             }
-                            for(const sp of document.querySelectorAll('shreddit-player')){
+                            for(const sp of document.querySelectorAll('shreddit-player, shreddit-player-2')){
                                 const u=sp.getAttribute('src')||sp.src;if(u)res.push({url:u,active:true});
                                 const pkg=sp.getAttribute('packaged-media-json');
                                 if(pkg){try{const d=JSON.parse(pkg);if(d.playbackHlsUrl)res.push({url:d.playbackHlsUrl,active:true});if(d.playbackMp4Url)res.push({url:d.playbackMp4Url,active:true});}catch(e){}}
+                                const inner=sp.shadowRoot&&sp.shadowRoot.querySelector('video');
+                                if(inner&&(inner.currentSrc||inner.src)&&!(inner.currentSrc||inner.src).startsWith('blob:'))res.push({url:inner.currentSrc||inner.src,active:true});
                             }
                             return res;
                         }""")
@@ -273,7 +335,7 @@ def _detect(url,cookie,quality='best',mp4=False,telegram=None):
                     try:pick(list(candidates.values()),active,quality,mp4);break
                     except ValueError:pass
                 page.wait_for_timeout(1000)
-            if is_reddit and not any(c.get('kind') in ('video','manifest','embed') for c in candidates.values()):
+            if is_reddit and not any(c.get('kind') in ('video','manifest','embed','reddit_post') for c in candidates.values()):
                 try:
                     image_urls=page.evaluate("""() => {
                         const urls=[];
@@ -321,18 +383,37 @@ def execute(args):
         tail=tail[-60:]
     return process.wait(),''.join(tail)
 
-def reddit_direct(spec):
-    """Direct Reddit engine. Returns 0 on success, None to continue with yt-dlp/browser, or a fatal exit code."""
-    import reddit_media
-    args=spec['args'];fmt=args[args.index('-f')+1] if '-f' in args else ''
+def reddit_options(args):
+    fmt=args[args.index('-f')+1] if '-f' in args else ''
     ceiling=re.search(r'height<=(\d+)',fmt);quality=ceiling[1] if ceiling else 'best'
     rate=0
     if '--limit-rate' in args:
         value=re.match(r'(\d+)',args[args.index('--limit-rate')+1]);rate=int(value[1]) if value else 0
+    return quality,rate,'-x' in args
+
+def resolve_reddit_url(spec):
+    """Turn share links into /comments/ permalinks for every engine (yt-dlp does not accept /s/ links)."""
+    import reddit_media,http.cookiejar
+    if not reddit_media.is_share_link(spec['url']):return
+    try:
+        jar=platforms.load_jar(Path(spec['cookie'])) if spec.get('cookie') else http.cookiejar.MozillaCookieJar()
+        final=reddit_media.resolve_share_link(jar,spec['url'])
+    except Exception as exc:
+        print('Reddit share link: '+str(exc)[:300],flush=True);return
+    print('ZEDPROFILE Reddit share link resolved to '+urlsplit(final).path,flush=True)
+    spec['url']=final
+    if spec['args'] and spec['args'][-1]!=final and '--' in spec['args']:spec['args'][-1]=final
+
+def reddit_direct(spec):
+    """Direct Reddit engine. Returns 0 on success, None to continue with yt-dlp/browser, or a fatal exit code."""
+    import reddit_media
+    args=spec['args']
+    quality,rate,audio_only=reddit_options(args)
     print('ZEDENGINE page',flush=True)
     print('ZEDPROFILE Reading the Reddit post directly (using your saved Reddit session)…',flush=True)
+    resolve_reddit_url(spec)
     try:
-        outcome=reddit_media.run(spec['url'],spec['dest'],spec.get('cookie',''),quality,rate,'-x' in args)
+        outcome=reddit_media.run(spec['url'],spec['dest'],spec.get('cookie',''),quality,rate,audio_only)
     except Exception as exc:
         message=str(exc)
         print('Reddit direct extraction: '+message,flush=True)
@@ -403,6 +484,24 @@ def run(spec):
 
 
 def transfer(spec,found,title,jar):
+    if found.get('kind')=='reddit_post':
+        import reddit_media
+        info=found['info'];title=info.get('title') or title
+        if info['kind']=='external':
+            found={'kind':'embed','url':info['url'],'headers':{'referer':'https://www.reddit.com/','user-agent':USER_AGENT}}
+        elif info['kind']=='video':
+            quality,rate,audio_only=reddit_options(spec['args'])
+            try:
+                reddit_media.download_video(reddit_media.make_opener(jar),info,spec['dest'],int(quality) if quality.isdigit() else 0,rate,audio_only)
+                return 0
+            except ValueError as exc:
+                if not info.get('hls'):raise
+                print('Reddit DASH download failed ('+str(exc)[:160]+'); using the HLS stream…',flush=True)
+                found={'kind':'manifest','url':info['hls'],'headers':{}}
+        else:
+            _,rate,_=reddit_options(spec['args'])
+            reddit_media.download_images(reddit_media.make_opener(jar),info,spec['dest'],rate)
+            return 0
     if found.get('kind')=='gallery':
         title_slug=re.sub(r'[\x00-\x1f/\\:*?"<>|]','_',title.strip() or 'reddit_media')[:100]
         urls=found.get('urls',[found['url']])

@@ -301,7 +301,8 @@ def failure_kind(message):
                               'http error 401','401 unauthorized')):
         return 'auth', 'Authentication was not accepted. Check Details and Settings → Platforms. A rejected request does not prove the browser session expired; replace cookies only if the session is missing, expired or revoked.'
     if any(s in low for s in ('requested format is not available','unsupported url','no video could be found','no video formats found',
-                              'does not contain a video','this tweet is unavailable','404 not found')):
+                              'does not contain a video','this tweet is unavailable','404 not found',
+                              'no unambiguous playable media','share link did not lead to a post')):
         return 'unsupported', 'No accessible supported media. Check the link and platform availability.'
     if any(s in low for s in ('403 forbidden','http error 403','no downloadable media','threads did not expose media','reserved output file changed','published output file is missing',
                               'configured scroll limit','no accessible media found')):

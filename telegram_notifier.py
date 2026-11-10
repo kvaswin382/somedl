@@ -38,9 +38,13 @@ class _IPv4Handler(urllib.request.HTTPSHandler):
 
 
 def _open(req, timeout):
-    """Normal request first; on a connection-level failure retry once over IPv4 only."""
+    """Normal request first; on a connection-level failure retry once over IPv4 only.
+
+    The first attempt uses a short timeout: with broken IPv6 the default route can hang for
+    the whole timeout before the IPv4 retry even starts.
+    """
     try:
-        return urllib.request.urlopen(req, timeout=timeout)
+        return urllib.request.urlopen(req, timeout=min(timeout, 8))
     except urllib.error.HTTPError:
         raise
     except (urllib.error.URLError, OSError):
