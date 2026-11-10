@@ -75,13 +75,59 @@ def post_id_and_path(url):
     return None, p.path
 
 
-def resolve_share_link(opener, url):
-    """reddit.com/r/x/s/abc and similar redirect to the real permalink."""
-    p = urllib.parse.urlsplit(url)
-    if re.search(r'/s/[A-Za-z0-9]+/?$', p.path) or p.path.startswith('/video/'):
-        _, final = fetch(opener, url, headers={'Accept': 'text/html'}, limit=64 * 1024, timeout=20)
-        return final
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def is_share_link(url):
+    path = urllib.parse.urlsplit(url).path
+    return bool(re.search(r'/s/[A-Za-z0-9]+/?$', path)) or path.startswith('/video/')
+
+
+def _over18_dest(url):
+    """Reddit's age interstitial (/over18?dest=...) carries the real permalink."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.path.rstrip('/').endswith('over18'):
+        dest = urllib.parse.parse_qs(parts.query).get('dest', [''])[0]
+        if dest:
+            return urllib.parse.urljoin('https://www.reddit.com/', dest)
     return url
+
+
+def resolve_share_link(jar, url):
+    """reddit.com/r/x/s/abc and /video/... redirect to the real permalink.
+
+    Reads Location headers hop by hop instead of downloading the landing page: a full post
+    page is far larger than the old 64 KiB cap, which made every share link fail.
+    """
+    if not is_share_link(url):
+        return url
+    opener = urllib.request.build_opener(_NoRedirect(), urllib.request.HTTPCookieProcessor(jar))
+    current = url
+    for _ in range(6):
+        media.validate_url(current)
+        req = urllib.request.Request(current, headers={'User-Agent': USER_AGENT, 'Accept': 'text/html,*/*;q=0.8',
+                                                       'Accept-Language': 'en-US,en;q=0.8'})
+        try:
+            with opener.open(req, timeout=20) as response:
+                body = response.read(MAX_JSON).decode('utf-8', 'replace')
+        except urllib.error.HTTPError as exc:
+            location = exc.headers.get('Location') if exc.code in (301, 302, 303, 307, 308) else None
+            if not location:
+                raise ValueError(f'Reddit share link returned HTTP {exc.code}')
+            current = _over18_dest(urllib.parse.urljoin(current, location))
+            if post_id_and_path(current)[0] or not is_share_link(current):
+                break
+            continue
+        match = re.search(r'/comments/([a-z0-9]{3,12})\b', body)
+        if match:
+            return 'https://www.reddit.com/comments/' + match[1] + '/'
+        break
+    if not post_id_and_path(current)[0]:
+        raise ValueError('Reddit share link did not lead to a post (ended at ' + urllib.parse.urlsplit(current).path +
+                         '). The share may be deleted, or Reddit did not accept the saved session for this community.')
+    return current
 
 
 def bearer_token(jar):
@@ -107,7 +153,7 @@ def find_post(payload):
 
 
 def load_post(opener, jar, url):
-    url = resolve_share_link(opener, url)
+    url = resolve_share_link(jar, url)
     ident, path = post_id_and_path(url)
     if not ident:
         # v.redd.it/<id> and i.redd.it direct links carry no post ID
@@ -135,8 +181,44 @@ def load_post(opener, jar, url):
                 time.sleep(3)
         except Exception as exc:
             problems.append(f'{label}: {type(exc).__name__}: {str(exc)[:100]}')
+    try:
+        post = post_from_html(opener, ident)
+        if post:
+            say('Reddit post read from the post page (JSON refused: ' + '; '.join(problems) + ')')
+            return post, url
+        problems.append('post page: no media found')
+    except urllib.error.HTTPError as exc:
+        problems.append(f'post page: HTTP {exc.code}')
+    except Exception as exc:
+        problems.append(f'post page: {type(exc).__name__}: {str(exc)[:100]}')
     raise ValueError('Reddit post data unavailable (' + '; '.join(problems) +
                      '). Cookies may be stale, or Reddit is blocking this connection.')
+
+
+def _attr(tag, name):
+    import html
+    m = re.search(r'\s' + name + r'="([^"]*)"', tag)
+    return html.unescape(m[1]) if m else ''
+
+
+def post_from_html(opener, ident):
+    """Minimal post dict from the shreddit post page, for when Reddit refuses the JSON endpoints."""
+    import html
+    raw, _ = fetch(opener, 'https://www.reddit.com/comments/' + ident + '/', headers={'Accept': 'text/html'})
+    text = raw.decode('utf-8', 'replace')
+    tags = [m[0] for m in re.finditer(r'<shreddit-post\b[^>]*>', text)]
+    tag = next((t for t in tags if ident in t), tags[0] if tags else '')
+    href = _attr(tag, 'content-href')
+    vid = re.search(r'https://v\.redd\.it/([a-z0-9]+)', href) or re.search(r'https://v\.redd\.it/([a-z0-9]+)/', text)
+    if not href and not vid:
+        return None
+    post = {'id': ident, 'title': _attr(tag, 'post-title'), 'over_18': ' nsfw' in tag, 'url': href}
+    if vid and (not href or 'v.redd.it' in href or 'reddit.com' in href):
+        post['url'] = 'https://v.redd.it/' + vid[1]
+        hls = re.search(r'https://v\.redd\.it/' + vid[1] + r'/HLSPlaylist\.m3u8[^"\'\s<>]*', text)
+        if hls:
+            post['_hls'] = html.unescape(hls[0])
+    return post
 
 
 # --------------------------------------------------------------------------- classification
@@ -183,7 +265,8 @@ def classify(post):
     if host in ('i.redd.it', 'i.imgur.com') or urllib.parse.urlsplit(dest).path.lower().endswith(IMAGE_EXT):
         return {**base, 'kind': 'image', 'urls': [dest]}
     if host == 'v.redd.it':
-        return {**base, 'kind': 'video', 'dash': dest.rstrip('/') + '/DASHPlaylist.mpd', 'hls': '', 'fallback': '', 'height': 0}
+        return {**base, 'kind': 'video', 'dash': dest.rstrip('/') + '/DASHPlaylist.mpd', 'hls': post.get('_hls', ''),
+                'fallback': '', 'height': 0}
     raise ValueError('This Reddit post does not contain a video or image (text or link post).')
 
 
@@ -226,7 +309,8 @@ def parse_mpd(text, mpd_url, ceiling=0):
 
 def audio_guess(video_url, opener):
     base = video_url.rsplit('/', 1)[0] + '/'
-    for name in ('DASH_AUDIO_128.mp4', 'DASH_audio.mp4', 'DASH_AUDIO_64.mp4', 'DASH_AUDIO_192.mp4'):
+    for name in ('DASH_AUDIO_128.mp4', 'CMAF_AUDIO_128.mp4', 'DASH_audio.mp4', 'DASH_AUDIO_64.mp4',
+                 'CMAF_AUDIO_64.mp4', 'DASH_AUDIO_192.mp4', 'CMAF_AUDIO_192.mp4'):
         try:
             req = urllib.request.Request(base + name, headers={'User-Agent': USER_AGENT, 'Range': 'bytes=0-1',
                                                                'Referer': 'https://www.reddit.com/'})
@@ -316,8 +400,8 @@ def download_video(opener, info, dest, ceiling, rate_kib, audio_only=False):
         except Exception as exc:
             problems.append('DASH: ' + str(exc)[:120])
     if not video_url and info.get('fallback'):
-        video_url = info['fallback'].split('?')[0] if 'DASH_' in info['fallback'] else info['fallback']
-        m = re.search(r'DASH_(\d+)', video_url)
+        video_url = info['fallback'].split('?')[0] if re.search(r'(?:DASH|CMAF)_', info['fallback']) else info['fallback']
+        m = re.search(r'(?:DASH|CMAF)_(\d+)', video_url)
         height = int(m[1]) if m else info.get('height', 0)
         audio_url = audio_guess(video_url, opener)
     if not video_url:
@@ -410,7 +494,13 @@ def run(url, dest, cookie, quality='best', rate_kib=0, audio_only=False):
     if info['kind'] == 'external':
         return ('external', info['url'], info['title'])
     if info['kind'] == 'video':
-        download_video(opener, info, dest, ceiling, rate_kib, audio_only)
+        try:
+            download_video(opener, info, dest, ceiling, rate_kib, audio_only)
+        except ValueError as exc:
+            if not info.get('hls'):
+                raise
+            say('DASH download failed (' + str(exc)[:120] + '); using the HLS stream instead…')
+            return ('external', info['hls'], info['title'])
     else:
         download_images(opener, info, dest, rate_kib)
     return None
