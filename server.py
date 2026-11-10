@@ -38,7 +38,9 @@ HERE = Path(__file__).resolve().parent
 DAYS = 35
 DEFAULTS = {'media_kib': 0, 'torrent_down_kib': 0, 'torrent_up_kib': 256,
             'seed_ratio': 0.0, 'reserve_gib': 5, 'playlist_limit': 100, 'retry_count': 3,
-            'hold': False, 'simultaneous_downloads': 1}
+            'hold': False, 'simultaneous_downloads': 1,
+            'telegram_bot_token': '', 'telegram_chat_id': '', 'telegram_admin_id': '',
+            'telegram_snapshots': False}
 QUALITY = ('best', '4320', '2160', '1080', '720', '480', 'audio')
 COOKIE_SLOTS = tuple(platforms.DEFAULTS)
 ACTIVE = ('queued', 'running', 'retry', 'blocked', 'paused')
@@ -565,7 +567,13 @@ class Desk:
             args = build_command(job, dest, cookie, settings, self.state)
             if job['kind']=='video' and not job.get('profile_mode') and job.get('browser_fallback',1) and 'yt_dlp' in args:
                 spec=self.state/('video-'+jid+'.json')
-                spec.write_text(json.dumps({'args':args,'url':job['url'],'dest':str(dest),'cookie':str(cookie or ''),'enabled':True,'force':bool(job.get('browser_force'))}))
+                telegram_cfg = {
+                    'bot_token': settings.get('telegram_bot_token', ''),
+                    'chat_id': settings.get('telegram_chat_id', ''),
+                    'admin_id': settings.get('telegram_admin_id', ''),
+                    'snapshots': bool(settings.get('telegram_snapshots', False)),
+                }
+                spec.write_text(json.dumps({'args':args,'url':job['url'],'dest':str(dest),'cookie':str(cookie or ''),'enabled':True,'force':bool(job.get('browser_force')),'telegram':telegram_cfg}))
                 spec.chmod(0o600)
                 args=[sys.executable,str(Path(__file__).with_name('browser_video.py')),str(spec)]
             env = dict(os.environ, TMPDIR=str(dest), XDG_CACHE_HOME=str(dest), PYTHONUNBUFFERED='1')
@@ -1091,6 +1099,14 @@ class Handler(BaseHTTPRequestHandler):
                     if not lo <= value <= hi:
                         raise APIError(f'{key} must be between {lo} and {hi}')
                     values[key] = value
+            for str_key in ('telegram_bot_token', 'telegram_chat_id', 'telegram_admin_id'):
+                if str_key in data:
+                    val = str(data[str_key]).strip()
+                    if len(val) > 200:
+                        raise APIError(f'{str_key} is too long')
+                    values[str_key] = val
+            if 'telegram_snapshots' in data:
+                values['telegram_snapshots'] = bool(data['telegram_snapshots'])
             if not values:
                 raise APIError('No valid settings provided')
             for key, value in values.items():
@@ -1099,6 +1115,21 @@ class Handler(BaseHTTPRequestHandler):
                 d.apply_torrent_settings()
             except APIError:
                 pass  # Saved settings are applied when the daemon returns.
+        elif path == '/api/telegram/test':
+            import telegram_notifier
+            token = str(data.get('bot_token') or d.get_setting('telegram_bot_token', '')).strip()
+            chat_id = str(data.get('chat_id') or d.get_setting('telegram_chat_id', '')).strip()
+            admin_id = str(data.get('admin_id') or d.get_setting('telegram_admin_id', '')).strip()
+            recipients = [c for c in (chat_id, admin_id) if c]
+            if not token:
+                raise APIError('Telegram bot token is required')
+            if not recipients:
+                raise APIError('Log group ID or admin user ID is required')
+            res = telegram_notifier.send_message(token, recipients, '🔔 Zedair test notification: Telegram integration is working!')
+            if not res.get('ok'):
+                raise APIError(res.get('error', 'Failed to send Telegram message'))
+            self.reply({'ok': True, 'successes': res.get('successes', [])})
+            return
         elif path == '/api/speedtest':
             if data.get('action')=='start':
                 d.speedtest.start(accept_terms=data.get('accept_terms',False))

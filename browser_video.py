@@ -24,6 +24,8 @@ def media_kind(url,content_type=''):
 def pick(candidates,active,quality='best',mp4=False):
     embeds=[c for c in candidates if c.get('kind')=='embed']
     if embeds:return embeds[0]
+    hls_masters=[c for c in candidates if 'hlsplaylist.m3u8' in c['url'].lower()]
+    if hls_masters:return hls_masters[0]
     dom=[c for c in candidates if c.get('dom') and c.get('height')]
     if dom and len({c.get('group') for c in dom})==1:
         try:return choose(dom,quality,mp4)
@@ -48,14 +50,26 @@ def available_memory():
         return values.get('MemAvailable',0)
     except OSError:return 1024*1024*1024
 
-def detect(url,cookie,quality='best',mp4=False):
+def detect(url,cookie,quality='best',mp4=False,telegram=None):
     from playwright.sync_api import sync_playwright
     if available_memory()<450*1024**2:raise ValueError('Browser fallback postponed: less than 450 MiB available RAM. Close other tasks and retry.')
     if profiles.BROWSERS.is_dir():os.environ['PLAYWRIGHT_BROWSERS_PATH']=str(profiles.BROWSERS)
     candidates={};active=set();title='';validated=set()
     is_reddit=platforms.platform_for(url)=='reddit'
+    telegram=telegram or {}
+    tg_token=str(telegram.get('bot_token','')).strip()
+    tg_recipients=[str(c).strip() for c in (telegram.get('chat_id'),telegram.get('admin_id')) if str(c).strip()]
+    tg_snapshots=bool(telegram.get('snapshots',False)) and bool(tg_token) and bool(tg_recipients)
+    def send_tg_snapshot(pg,caption):
+        if not tg_snapshots:return
+        try:
+            import telegram_notifier
+            shot=pg.screenshot(type='jpeg',quality=65)
+            telegram_notifier.send_snapshot(tg_token,tg_recipients,shot,caption=caption)
+        except Exception as exc:print(f'Warning: Telegram snapshot failed: {exc}',flush=True)
     with sync_playwright() as playwright:
         browser=playwright.chromium.launch(headless=True,chromium_sandbox=True,timeout=30000,args=['--disable-dev-shm-usage','--disable-background-networking','--disable-extensions','--disable-quic','--renderer-process-limit=2','--js-flags=--max-old-space-size=128','--autoplay-policy=no-user-gesture-required'])
+        page=None
         try:
             context=browser.new_context(accept_downloads=False,service_workers='block',viewport={'width':960,'height':540},user_agent=USER_AGENT,locale='en-US')
             context.set_default_timeout(3000)
@@ -77,7 +91,7 @@ def detect(url,cookie,quality='best',mp4=False):
                     if req.resource_type=='font' or urlsplit(req.url).scheme not in ('http','https'):return request_route.abort()
                     if not is_reddit and req.resource_type=='image':return request_route.abort()
                     parsed=urlsplit(req.url);origin=(parsed.scheme,parsed.hostname,parsed.port)
-                    if origin not in validated:validate_url(req.url);validated.add(origin)
+                    if origin not in validated:validate_url(req.url,dns=False);validated.add(origin)
                     if req.resource_type=='media' and media_kind(req.url)=='video':
                         headers=req.all_headers()
                         if len(candidates)<40:candidates[req.url]={'url':req.url,'kind':'video','headers':{k:headers[k] for k in ('referer','origin','user-agent') if k in headers}}
@@ -87,6 +101,7 @@ def detect(url,cookie,quality='best',mp4=False):
             context.route('**/*',route)
             context.route_web_socket('**/*',lambda socket:socket.close())
             page=context.new_page()
+            page.on('dialog',lambda dialog:dialog.dismiss())
             context.on('page',lambda other:other.close() if other!=page else None)
             def response(res):
                 try:
@@ -107,6 +122,7 @@ def detect(url,cookie,quality='best',mp4=False):
                 if 'Timeout' not in type(exc).__name__:raise
                 print('ZEDPROFILE Page load timed out; inspecting the player already loaded…',flush=True)
             title=page.title()
+            send_tg_snapshot(page,f'Browser page opened: {urlsplit(url).netloc}\nTitle: {title}')
             for _ in range(25):
                 if time.monotonic()>=deadline:break
                 if available_memory()<180*1024**2:raise ValueError('Browser stopped because available RAM is low')
@@ -134,6 +150,19 @@ def detect(url,cookie,quality='best',mp4=False):
                             loc=page.locator(sel)
                             if loc.count() and loc.first.is_visible():loc.first.click(timeout=800);page.wait_for_timeout(300)
                         except Exception:pass
+                    try:
+                        page.evaluate("""() => {
+                            document.querySelectorAll('[data-testid="nsfw-warning-accept"], button').forEach(b => {
+                                const txt = (b.textContent || '').trim().toLowerCase();
+                                if (txt.includes('over 18') || txt.includes('view nsfw') || txt.includes('see nsfw') || txt.includes('show nsfw') || txt.includes('continue') || txt.includes('i understand')) {
+                                    try { b.click(); } catch(e) {}
+                                }
+                            });
+                            document.querySelectorAll('*').forEach(el => {
+                                if (el.style && el.style.filter && el.style.filter.includes('blur')) el.style.filter = 'none';
+                            });
+                        }""")
+                    except Exception:pass
                     try:
                         sp_info = page.evaluate("""() => {
                             const sp = document.querySelector('shreddit-post');
@@ -242,12 +271,18 @@ def detect(url,cookie,quality='best',mp4=False):
                 title=re.sub(r'\s*[:|-]\s*r/\w+.*$','',title,flags=re.I).strip()
                 title=re.sub(r'\s*-\s*Reddit$','',title,flags=re.I).strip()
             result=pick(list(candidates.values()),active,quality,mp4)
+            send_tg_snapshot(page,f"Playback detected: {result.get('kind','media')}\nTitle: {title}")
             # Cookies are domain-scoped; do not forward a page's raw Cookie/Authorization header to a CDN.
             import http.cookiejar
             jar=http.cookiejar.MozillaCookieJar()
             for c in context.cookies():
                 jar.set_cookie(http.cookiejar.Cookie(0,c['name'],c['value'],None,False,c['domain'],c['domain'].startswith('.'),c['domain'].startswith('.'),c['path'],True,c['secure'],int(c['expires']) if c.get('expires',-1)>0 else None,c.get('expires',-1)<=0,None,None,{'HttpOnly':None} if c.get('httpOnly') else {},False))
             return result,title,jar
+        except Exception as exc:
+            if page:
+                try:send_tg_snapshot(page,f"Browser error: {exc}\nURL: {url}")
+                except Exception:pass
+            raise
         finally:browser.close()
 
 def execute(args):
@@ -295,7 +330,7 @@ def run(spec):
         if not profiles.browser_ready():raise ValueError('Browser engine is not installed. Run sudo bash /opt/zedair/install-browser.sh and restart zedair, then retry.')
         print('ZEDENGINE browser',flush=True)
         print('ZEDPROFILE Detecting playback in the browser (up to 75 seconds)…',flush=True)
-        detected=detect(spec['url'],spec.get('cookie'),quality,mp4)
+        detected=detect(spec['url'],spec.get('cookie'),quality,mp4,telegram=spec.get('telegram'))
     found,title,jar=detected
     result=transfer(spec,found,title,jar)
     if result and not force and not any(p.suffix.lower() in ('.mp4','.webm','.mkv') for p in Path(spec['dest']).iterdir()) and profiles.browser_ready():
@@ -303,7 +338,7 @@ def run(spec):
         if detected_from_page:
             print('ZEDENGINE browser',flush=True)
             print('ZEDPROFILE Page source failed; trying playback detection once…',flush=True)
-            found,title,jar=detect(spec['url'],spec.get('cookie'),quality,mp4)
+            found,title,jar=detect(spec['url'],spec.get('cookie'),quality,mp4,telegram=spec.get('telegram'))
             return transfer(spec,found,title,jar)
     return result
 
@@ -335,14 +370,41 @@ def transfer(spec,found,title,jar):
     validate_url(found['url'])
     # Use the same quality/container controls on the detected manifest/direct URL.
     args=spec['args'][:];args[-1]=found['url']
+    is_embed=found.get('kind')=='embed'
+    target_netloc=urlsplit(found['url']).netloc.lower()
+    is_external=is_embed or not any(d in target_netloc for d in ('reddit.com','redd.it'))
+    is_reddit=platforms.platform_for(spec['url'])=='reddit'
+
     if '--cookies' in args:
         index=args.index('--cookies');del args[index:index+2]
+
+    if is_external:
+        cleaned_args=[]
+        i=0
+        while i<len(args):
+            if args[i]=='--add-header' and i+1<len(args) and 'referer' in args[i+1].lower():
+                i+=2;continue
+            cleaned_args.append(args[i]);i+=1
+        args=cleaned_args
+
     temporary=Path(spec['dest'])/'.browser-cookies.txt'
     try:
-        temporary.touch(mode=0o600);temporary.chmod(0o600);jar.save(str(temporary),ignore_discard=True,ignore_expires=True)
-        extra=['--cookies',str(temporary)]
-        for k,v in found.get('headers',{}).items():extra+=['--add-header',k+':'+v]
-        if title:extra+=['--replace-in-metadata','title','(?s)^.*$',title.replace('\\','\\\\')]
+        extra=[]
+        if not is_external:
+            temporary.touch(mode=0o600);temporary.chmod(0o600);jar.save(str(temporary),ignore_discard=True,ignore_expires=True)
+            extra+=['--cookies',str(temporary)]
+            for k,v in found.get('headers',{}).items():extra+=['--add-header',k+':'+v]
+        else:
+            for k,v in found.get('headers',{}).items():
+                if k.lower()=='referer' and 'reddit.com' in v.lower():continue
+                extra+=['--add-header',k+':'+v]
+
+        if title:
+            extra+=['--replace-in-metadata','title','(?s)^.*$',title.replace('\\','\\\\')]
+            if is_reddit and '-o' in args:
+                o_idx=args.index('-o')
+                args[o_idx+1]='%(title).160B.%(ext)s'
+
         index=args.index('--');args[index:index]=extra
         print('ZEDPROFILE Playback URL detected; downloading media…',flush=True)
         return execute(args)[0]
