@@ -279,6 +279,14 @@ def classify(post):
     if any(host == d or host.endswith('.' + d) for d in EXTERNAL):
         return {**base, 'kind': 'external', 'url': dest}
     if host in ('i.redd.it', 'i.imgur.com') or urllib.parse.urlsplit(dest).path.lower().endswith(IMAGE_EXT):
+        # Reddit keeps a full-size MP4 rendition of every GIF; it is smaller and sharper than the GIF itself.
+        try:
+            variants = post['preview']['images'][0]['variants']
+            mp4 = clean(variants['mp4']['source']['url'])
+            if mp4:
+                return {**base, 'kind': 'image', 'urls': [mp4]}
+        except (KeyError, IndexError, TypeError):
+            pass
         return {**base, 'kind': 'image', 'urls': [dest]}
     if host == 'v.redd.it':
         return {**base, 'kind': 'video', 'dash': dest.rstrip('/') + '/DASHPlaylist.mpd', 'hls': '', 'fallback': '', 'height': 0}
@@ -454,6 +462,17 @@ def download_video(opener, info, dest, ceiling, rate_kib, audio_only=False):
             pass
 
 
+def gif_to_mp4(source, target):
+    """Highest-quality GIF -> MP4 (H.264, near-lossless, even dimensions, no audio)."""
+    cmd = ['ffmpeg', '-y', '-nostdin', '-loglevel', 'error', '-threads', '1', '-i', str(source),
+           '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2:flags=lanczos,format=yuv420p',
+           '-c:v', 'libx264', '-crf', '12', '-preset', 'slow', '-an', '-movflags', '+faststart', str(target)]
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
+    if result.returncode or not Path(target).is_file() or Path(target).stat().st_size == 0:
+        Path(target).unlink(missing_ok=True)
+        raise ValueError('FFmpeg could not convert the GIF to MP4: ' + (result.stderr or '')[-300:])
+
+
 def download_images(opener, info, dest, rate_kib):
     dest = Path(dest)
     urls = info['urls']
@@ -465,11 +484,19 @@ def download_images(opener, info, dest, rate_kib):
         if ext not in IMAGE_EXT and ext != '.mp4':
             ext = '.jpg'
         target = dest / (f'{name} {i:03}{ext}' if len(urls) > 1 else f'{name}{ext}')
-        if target.exists():
+        if target.exists() or target.with_suffix('.mp4').exists():
             saved += 1
             continue
         try:
-            download_file(opener, url, target, rate_kib, f'item {i}')
+            if ext == '.gif':
+                final = target.with_suffix('.mp4')
+                if not final.exists():
+                    download_file(opener, url, target, rate_kib, f'item {i}')
+                    say('Converting GIF to MP4…')
+                    gif_to_mp4(target, final)
+                target.unlink(missing_ok=True)
+            else:
+                download_file(opener, url, target, rate_kib, f'item {i}')
             saved += 1
             print(f'Completed item {i}/{len(urls)}', flush=True)
         except ValueError as exc:
