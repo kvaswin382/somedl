@@ -321,6 +321,16 @@ def execute(args):
         tail=tail[-60:]
     return process.wait(),''.join(tail)
 
+def notify(spec,text):
+    """Plain Telegram text (no browser needed). Silent unless snapshots/notifications are enabled."""
+    tg=spec.get('telegram') or {}
+    if not (tg.get('snapshots') and str(tg.get('bot_token','')).strip()):return
+    try:
+        import telegram_notifier
+        result=telegram_notifier.send_message(str(tg['bot_token']).strip(),[tg.get('chat_id',''),tg.get('admin_id','')],text[:3500])
+        print('ZEDPROFILE Telegram notice '+('sent' if result.get('ok') else 'FAILED: '+str(result.get('error'))),flush=True)
+    except Exception as exc:print(f'ZEDPROFILE Telegram notice FAILED: {exc}',flush=True)
+
 def reddit_direct(spec):
     """Direct Reddit engine. Returns 0 on success, None to continue with yt-dlp/browser, or a fatal exit code."""
     import reddit_media
@@ -330,12 +340,14 @@ def reddit_direct(spec):
     if '--limit-rate' in args:
         value=re.match(r'(\d+)',args[args.index('--limit-rate')+1]);rate=int(value[1]) if value else 0
     print('ZEDENGINE page',flush=True)
+    notify(spec,'Zedair: started Reddit download '+spec['url'])
     print('ZEDPROFILE Reading the Reddit post directly (using your saved Reddit session)…',flush=True)
     try:
         outcome=reddit_media.run(spec['url'],spec['dest'],spec.get('cookie',''),quality,rate,'-x' in args)
     except Exception as exc:
         message=str(exc)
         print('Reddit direct extraction: '+message,flush=True)
+        notify(spec,'Zedair: direct Reddit extraction failed for '+spec['url']+'\n'+message[:1200])
         if 'does not contain a video or image' in message:
             print('ERROR '+message,flush=True);return 1
         return None
@@ -349,6 +361,17 @@ def reddit_direct(spec):
 
 def run(spec):
     force=spec.get('force',False)
+    if platforms.platform_for(spec['url'])=='reddit':
+        # In-app share links (/s/CODE) must become real post URLs before any engine sees them.
+        try:
+            import reddit_media
+            if reddit_media.is_share_link(spec['url']):
+                import http.cookiejar
+                jar=platforms.load_jar(Path(spec['cookie'])) if spec.get('cookie') else http.cookiejar.MozillaCookieJar()
+                real=reddit_media.resolve_share_link(None,spec['url'],jar)
+                print('ZEDPROFILE Share link resolved to '+real,flush=True)
+                spec['args']=[real if a==spec['url'] else a for a in spec['args']];spec['url']=real
+        except Exception as exc:print('ZEDPROFILE Could not resolve the share link: '+str(exc),flush=True)
     print('ZEDENGINE '+('browser' if force else 'video'),flush=True)
     if not force and platforms.platform_for(spec['url'])=='reddit':
         outcome=reddit_direct(spec)
@@ -358,6 +381,7 @@ def run(spec):
     if not force:
         code,log=execute(spec['args'])
         if not code:return 0
+        notify(spec,'Zedair: standard video engine failed for '+spec['url']+'\n'+log[-900:])
         low=log.lower()
         if not spec['enabled']:return code
         is_reddit=platforms.platform_for(spec['url'])=='reddit'

@@ -75,13 +75,51 @@ def post_id_and_path(url):
     return None, p.path
 
 
-def resolve_share_link(opener, url):
-    """reddit.com/r/x/s/abc and similar redirect to the real permalink."""
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def clean_permalink(url):
+    """Drop tracking parameters (share_id, utm_*, context...) from a post permalink."""
     p = urllib.parse.urlsplit(url)
-    if re.search(r'/s/[A-Za-z0-9]+/?$', p.path) or p.path.startswith('/video/'):
-        _, final = fetch(opener, url, headers={'Accept': 'text/html'}, limit=64 * 1024, timeout=20)
-        return final
-    return url
+    return urllib.parse.urlunsplit((p.scheme, p.netloc, p.path, '', ''))
+
+
+def is_share_link(url):
+    p = urllib.parse.urlsplit(url)
+    return is_reddit_host(p.hostname) and bool(re.search(r'/s/[A-Za-z0-9]+/?$', p.path) or p.path.startswith('/video/'))
+
+
+def resolve_share_link(opener, url, jar=None):
+    """Turn an in-app share link (reddit.com/r/sub/s/CODE) into the real /comments/ permalink.
+
+    The redirect is followed by hand (max 6 hops) so every hop is validated and the
+    Location header is read even when the destination page itself would be refused.
+    """
+    if not is_share_link(url):
+        return url
+    import http.cookiejar
+    manual = urllib.request.build_opener(NoRedirect(), urllib.request.HTTPCookieProcessor(jar or http.cookiejar.CookieJar()))
+    current = url
+    for _ in range(6):
+        media.validate_url(current)
+        request = urllib.request.Request(current, headers={'User-Agent': USER_AGENT, 'Accept': 'text/html,*/*;q=0.8',
+                                                           'Accept-Language': 'en-US,en;q=0.8'})
+        try:
+            with manual.open(request, timeout=20) as response:
+                final = response.geturl()
+                if '/comments/' in final:
+                    return clean_permalink(final)
+                raise ValueError('Reddit share link did not redirect to a post (status %s)' % response.status)
+        except urllib.error.HTTPError as exc:
+            location = exc.headers.get('Location') if exc.code in (301, 302, 303, 307, 308) else None
+            if not location:
+                raise ValueError(f'Reddit share link could not be resolved (HTTP {exc.code})') from None
+            current = urllib.parse.urljoin(current, location)
+            if '/comments/' in urllib.parse.urlsplit(current).path:
+                return clean_permalink(current)
+    raise ValueError('Reddit share link redirected too many times')
 
 
 def bearer_token(jar):
@@ -106,8 +144,62 @@ def find_post(payload):
     return None
 
 
+
+def browser_post(ident, jar):
+    """Fetch the post JSON through real Chromium. Its TLS/HTTP fingerprint is not blocked like urllib's."""
+    import profiles
+    if not profiles.browser_ready():
+        raise ValueError('browser engine not installed')
+    if profiles.BROWSERS.is_dir():
+        os.environ['PLAYWRIGHT_BROWSERS_PATH'] = str(profiles.BROWSERS)
+    import threading
+    from playwright.sync_api import sync_playwright
+
+    def expire():
+        print('ERROR Reddit browser lookup stopped responding; stopped by watchdog', flush=True)
+        os._exit(3)
+    watchdog = threading.Timer(120, expire)
+    watchdog.daemon = True
+    watchdog.start()
+    problems = []
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True, chromium_sandbox=True, timeout=30000,
+                                         args=['--disable-dev-shm-usage', '--disable-extensions', '--renderer-process-limit=1'])
+            try:
+                context = browser.new_context(accept_downloads=False, service_workers='block', user_agent=USER_AGENT, locale='en-US')
+                context.set_default_timeout(20000)
+                items = [{'name': c.name, 'value': c.value, 'domain': c.domain, 'path': c.path or '/', 'secure': bool(c.secure),
+                          **({'expires': c.expires} if c.expires and c.expires > time.time() else {})}
+                         for c in jar if c.value and not c.is_expired() and is_reddit_host(c.domain.lstrip('.'))]
+                if items:
+                    context.add_cookies(items)
+                context.add_cookies([{'name': 'over18', 'value': '1', 'domain': '.reddit.com', 'path': '/'}])
+                context.route('**/*', lambda r: r.continue_() if r.request.resource_type == 'document' else r.abort())
+                page = context.new_page()
+                for label, host in (('browser www', 'www.reddit.com'), ('browser old', 'old.reddit.com')):
+                    try:
+                        response = page.goto(f'https://{host}/comments/{ident}.json?raw_json=1&limit=1', wait_until='commit', timeout=30000)
+                        status = response.status if response else 0
+                        body = response.text() if response else ''
+                        if status == 200:
+                            post = find_post(json.loads(body))
+                            if post:
+                                say('Reddit post read via ' + label)
+                                return post
+                            problems.append(label + ': no post data')
+                        else:
+                            problems.append(f'{label}: HTTP {status} {re.sub(r"<[^>]+>", " ", body)[:80].strip()}')
+                    except Exception as exc:
+                        problems.append(f'{label}: {type(exc).__name__}: {str(exc)[:100]}')
+            finally:
+                browser.close()
+    finally:
+        watchdog.cancel()
+    raise ValueError('; '.join(problems))
+
 def load_post(opener, jar, url):
-    url = resolve_share_link(opener, url)
+    url = resolve_share_link(opener, url, jar)
     ident, path = post_id_and_path(url)
     if not ident:
         # v.redd.it/<id> and i.redd.it direct links carry no post ID
@@ -135,6 +227,12 @@ def load_post(opener, jar, url):
                 time.sleep(3)
         except Exception as exc:
             problems.append(f'{label}: {type(exc).__name__}: {str(exc)[:100]}')
+    try:
+        say('Direct requests were refused (' + '; '.join(problems) + '); trying through the browser engine…')
+        post = browser_post(ident, jar)
+        return post, url
+    except Exception as exc:
+        problems.append('browser: ' + str(exc)[:300])
     raise ValueError('Reddit post data unavailable (' + '; '.join(problems) +
                      '). Cookies may be stale, or Reddit is blocking this connection.')
 

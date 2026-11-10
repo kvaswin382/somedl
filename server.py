@@ -512,7 +512,8 @@ class Desk:
                 live['detail']='Profile media saved to staging; continuing…'
             elif line.startswith('ZEDPROFILE '):
                 live['detail']=line[11:][:250]
-                live['log']=live['detail']
+                tail.append(live['detail'])
+                live['log']='\n'.join(tail)[-8000:]
             elif line.startswith('ZEDPROG '):
                 try:
                     info = json.loads(line[8:])
