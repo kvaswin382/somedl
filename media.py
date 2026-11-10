@@ -160,6 +160,9 @@ def build_command(job, dest, cookie, settings, state):
         args += ['--merge-output-format','mp4','--remux-video','mp4']
     if key == 'x':
         args += ['--extractor-args', 'twitter:api='+prefs['api']]
+    if key == 'reddit':
+        args += ['--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+                 '--add-header', 'Referer:https://www.reddit.com/']
     if quality == 'audio':
         args += ['-x', '--audio-format', 'best']
     if job.get('subtitles'):

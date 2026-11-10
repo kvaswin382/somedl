@@ -416,6 +416,14 @@ class Desk:
         if slot == 'auto':
             slot = platforms.platform_for(job['url'])
         path = self.state / ('cookies-' + slot + '.txt')
+        if path.exists() and slot == 'reddit':
+            try:
+                content = path.read_text(encoding='utf-8', errors='replace')
+                if 'over18' not in content:
+                    jar = platforms.load_jar(path)
+                    jar.save(str(path), ignore_discard=True, ignore_expires=True)
+            except Exception:
+                pass
         return path if path.exists() else None
 
     def clean_metadata(self, stage):

@@ -24,9 +24,9 @@ DEFAULTS = {
     'threads': {'enabled': True, 'folder': 'Threads'},
     'other': {'enabled': True, 'folder': '', 'quality': 'best', 'container': 'auto', 'subtitles': False},
 }
-DOMAINS = {'facebook': ('facebook.com',), 'reddit': ('reddit.com',), 'instagram': ('instagram.com',), 'youtube': ('youtube.com', 'google.com'),
+DOMAINS = {'facebook': ('facebook.com',), 'reddit': ('reddit.com', 'redd.it'), 'instagram': ('instagram.com',), 'youtube': ('youtube.com', 'google.com'),
            'x': ('x.com', 'twitter.com'), 'threads': ('threads.com', 'threads.net', 'instagram.com')}
-RAW_FIELDS = {'facebook': ('c_user','xs','datr','fr'), 'instagram': ('sessionid', 'csrftoken', 'ds_user_id'), 'x': ('auth_token', 'ct0')}
+RAW_FIELDS = {'facebook': ('c_user','xs','datr','fr'), 'instagram': ('sessionid', 'csrftoken', 'ds_user_id'), 'x': ('auth_token', 'ct0'), 'reddit': ('reddit_session', 'token_v2')}
 
 
 def platform_for(url):
@@ -96,10 +96,20 @@ def load_jar(path):
     # gallery-dl exports session cookies as expiry 0 on every completed job.
     # MozillaCookieJar interprets that as epoch zero unless normalized on EVERY read.
     # A positive past timestamp remains expired; never extend a server-set expiry.
+    has_over18 = False
     for cookie in jar:
         if cookie.expires == 0:
             cookie.expires = None
             cookie.discard = True
+        if cookie.name == 'over18' and 'reddit.com' in cookie.domain:
+            has_over18 = True
+    if 'reddit' in str(path).lower() and not has_over18:
+        jar.set_cookie(http.cookiejar.Cookie(
+            0, 'over18', '1', None, False,
+            '.reddit.com', True, True,
+            '/', True, False,
+            2147483647, False, None, None, {}, False
+        ))
     return jar
 
 
@@ -119,6 +129,8 @@ def cookie_status(state, slot):
             result['usable'] = all(any(c.name == n and c.value for c in valid) for n in ('c_user','xs'))
         elif slot == 'x':
             result['usable'] = all(any(c.name == n and c.value for c in valid) for n in ('auth_token','ct0'))
+        elif slot == 'reddit':
+            result['usable'] = any(c.name in ('reddit_session', 'token_v2', 'loid', 'over18') and c.value for c in valid)
     except Exception:
         result['error'] = 'Cookie file cannot be parsed. Replace it in Settings → Platforms.'
     return result
@@ -137,7 +149,7 @@ def _save_cookies(state, slot, data):
         return
     if data.get('fields') is not None:
         if slot not in RAW_FIELDS or not isinstance(data['fields'], dict):
-            raise ValueError('Manual session fields are available for Instagram, Facebook and X')
+            raise ValueError('Manual session fields are available for Instagram, Facebook, X and Reddit')
         fields = {}
         for name in RAW_FIELDS[slot]:
             value = str(data['fields'].get(name, '')).strip()
@@ -147,9 +159,14 @@ def _save_cookies(state, slot, data):
                 raise ValueError('Paste only the cookie value, without spaces, line breaks or semicolons')
             if value:
                 fields[name] = value
-        required = {'instagram':('sessionid',),'facebook':('c_user','xs'),'x':('auth_token','ct0')}[slot]
-        if any(not fields.get(k) for k in required):
-            raise ValueError('Required session fields: '+', '.join(required))
+        if slot == 'reddit':
+            if not fields.get('reddit_session') and not fields.get('token_v2'):
+                raise ValueError('Enter either reddit_session or token_v2')
+            fields['over18'] = '1'
+        else:
+            required = {'instagram':('sessionid',),'facebook':('c_user','xs'),'x':('auth_token','ct0')}[slot]
+            if any(not fields.get(k) for k in required):
+                raise ValueError('Required session fields: '+', '.join(required))
         # Empty expiry is the Netscape representation of a session cookie (not an expired epoch-zero cookie).
         content = '# Netscape HTTP Cookie File\n' + ''.join(
             f'.{domain}\tTRUE\t/\tTRUE\t\t{name}\t{value}\n'
@@ -260,7 +277,7 @@ def redact(text, state):
                 text = text.replace(value, '[redacted]')
         except Exception:
             pass
-    text = re.sub(r'(?i)((?:sessionid|auth_token|csrftoken|ct0|c_user|xs|datr|fr|authorization)[\s\"\x27:=]+)[^\s;,\"\x27]+', r'\1[redacted]', text)
+    text = re.sub(r'(?i)((?:sessionid|auth_token|csrftoken|ct0|c_user|xs|datr|fr|authorization|reddit_session|token_v2)[\s\"\x27:=]+)[^\s;,\"\x27]+', r'\1[redacted]', text)
     return text
 
 
