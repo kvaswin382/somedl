@@ -8,6 +8,7 @@ import collections
 import hashlib
 import hmac
 import http.cookies
+import logging
 import json
 import mimetypes
 import os
@@ -180,6 +181,7 @@ class Desk:
         self.db.execute('DELETE FROM published WHERE job IN (SELECT id FROM jobs WHERE remove_requested=1)')
         self.db.execute('DELETE FROM jobs WHERE remove_requested=1')
         self.db.execute('CREATE TABLE IF NOT EXISTS usage(day TEXT,domain TEXT,bytes INTEGER DEFAULT 0,PRIMARY KEY(day,domain))')
+        self.db.execute('CREATE TABLE IF NOT EXISTS usage_hourly(hour TEXT,domain TEXT,bytes INTEGER DEFAULT 0,PRIMARY KEY(hour,domain))')
         self.db.commit()
         if self.get_setting('telegram_errors') is None:
             # Claude enabled error notices through a configured token/recipient;
@@ -197,6 +199,7 @@ class Desk:
         self.processes = {}
         self.workers = {}
         self.notices = queue.Queue(maxsize=20)
+        self.critical_notices = queue.Queue(maxsize=10)
         self.usage_pending = {}
         self.usage_flushed = now()
         self.live = {}
@@ -227,7 +230,7 @@ class Desk:
 
     def settings(self):
         values={k: self.get_setting(k, v) for k, v in DEFAULTS.items()}
-        values['simultaneous_downloads']=max(1,min(4,int(values['simultaneous_downloads'])))
+        values['simultaneous_downloads']=max(1,min(20,int(values['simultaneous_downloads'])))
         return values
 
     def platform_settings(self):
@@ -332,7 +335,7 @@ class Desk:
         quality = data.get('quality', 'best')
         if quality not in (*QUALITY, 'platform'):
             raise APIError('Unknown quality preset')
-        container = data.get('container','auto')
+        container = data.get('container','mp4')
         if container not in ('platform','auto','mp4'):
             raise APIError('Choose automatic format or MP4 only')
         cookie = data.get('cookie_profile', 'auto')
@@ -671,7 +674,7 @@ class Desk:
             try:
                 if self.get_setting('hold',False) or not self.storage()['ready']:continue
                 with self.lock:
-                    limit=max(1,min(4,int(self.get_setting('simultaneous_downloads',2))))
+                    limit=max(1,min(20,int(self.get_setting('simultaneous_downloads',1))))
                     available=limit-len(self.workers)
                     if available<=0:continue
                     rows=self.rows("SELECT * FROM jobs WHERE status IN ('queued','retry','blocked') AND next_try<=? ORDER BY position",(now(),))
@@ -736,7 +739,7 @@ class Desk:
             self.stop.wait(4)
 
     def start(self):
-        for function in (self.media_loop, self.torrent_loop,self.notification_loop):
+        for function in (self.media_loop, self.torrent_loop,self.notification_loop,self.health_loop):
             thread = threading.Thread(target=function, daemon=True)
             thread.start()
             self.threads.append(thread)
@@ -757,10 +760,10 @@ class Desk:
             job.update(self.live.get(job['id'], {}))
             job.pop('last_error', None)
         return {'storage': self.storage(), 'jobs': jobs, 'torrents': self.torrents,
-                'torrent_error': self.torrent_error, 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
+                'torrent_error': self.torrent_error, 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.0.0', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.1.0', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def add_stories(self,data):
         from instagram_story import target
@@ -780,15 +783,17 @@ class Desk:
         if count<=0:return
         try:domain=urllib.parse.urlsplit(self.job(jid)['url']).hostname or 'unknown'
         except APIError:return
-        day=datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+        hour=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H')
         with self.lock:
-            key=(day,domain);self.usage_pending[key]=self.usage_pending.get(key,0)+count
+            key=(hour,domain);self.usage_pending[key]=self.usage_pending.get(key,0)+count
         self.flush_usage()
 
     def flush_usage(self,force=False):
         with self.lock:
             if not force and now()-self.usage_flushed<10:return
-            for (day,domain),count in self.usage_pending.items():
+            for (hour,domain),count in self.usage_pending.items():
+                day=hour[:10]
+                self.db.execute('INSERT INTO usage_hourly VALUES(?,?,?) ON CONFLICT(hour,domain) DO UPDATE SET bytes=bytes+excluded.bytes',(hour,domain,count))
                 self.db.execute('INSERT INTO usage VALUES(?,?,?) ON CONFLICT(day,domain) DO UPDATE SET bytes=bytes+excluded.bytes',(day,domain,count))
             self.db.commit();self.usage_pending.clear();self.usage_flushed=now()
 
@@ -797,8 +802,21 @@ class Desk:
         starts={'day':today,'week':today-datetime.timedelta(days=today.weekday()),'month':today.replace(day=1),'year':today.replace(month=1,day=1)}
         if period not in starts:raise APIError('Choose day, week, month or year')
         self.flush_usage(force=True)
-        return {'period':period,'timezone':'UTC','since':starts[period].isoformat(),'domains':self.rows('SELECT domain,sum(bytes) AS bytes FROM usage WHERE day>=? GROUP BY domain ORDER BY bytes DESC',(starts[period].isoformat(),)),
-            'note':'Recorded website transfer payload, grouped by submitted site. Engine progress may include resumed bytes; browser traffic, protocol overhead, torrents and transfers without byte progress are excluded.'}
+        since=starts[period].isoformat()
+        domains=self.rows('SELECT domain,sum(bytes) AS bytes FROM usage WHERE day>=? AND day<=? GROUP BY domain ORDER BY bytes DESC',(since,today.isoformat()))
+        if period=='day':
+            points=self.rows('SELECT hour AS label,sum(bytes) AS bytes FROM usage_hourly WHERE hour LIKE ? GROUP BY hour',(since+'%',))
+            labels=[since+'T'+str(h).zfill(2) for h in range(24)]
+        elif period=='year':
+            points=self.rows('SELECT substr(day,1,7) AS label,sum(bytes) AS bytes FROM usage WHERE day>=? AND day<=? GROUP BY label',(since,today.isoformat()))
+            labels=[f'{today.year}-{m:02}' for m in range(1,13)]
+        else:
+            points=self.rows('SELECT day AS label,sum(bytes) AS bytes FROM usage WHERE day>=? AND day<=? GROUP BY day',(since,today.isoformat()))
+            labels=[(starts[period]+datetime.timedelta(days=n)).isoformat() for n in range((today-starts[period]).days+1)]
+        values={r['label']:r['bytes'] for r in points}
+        return {'period':period,'timezone':'UTC','since':since,'domains':domains,
+            'total':sum(r['bytes'] for r in domains),'series':[{'label':k,'bytes':values.get(k,0)} for k in labels],
+            'note':'Recorded website payload estimates, grouped by submitted site. Resumed bytes may be counted again. Browser traffic, protocol overhead, torrents and engines without byte progress are excluded. Hourly history starts with this upgrade.'}
 
     def queue_notice(self,job,error):
         settings=self.settings()
@@ -813,13 +831,31 @@ class Desk:
         try:self.notices.put_nowait((message,photo))
         except queue.Full:pass
 
+    def health_loop(self):
+        from health_alerts import Monitor
+        monitor=Monitor()
+        while not self.stop.is_set():
+            try:
+                settings=self.settings()
+                snapshot=self.systemstats.snapshot(self.root if self.storage(reserve=False)['ready'] else None)
+                for message in monitor.sample(snapshot,settings,time.monotonic()):
+                    try:self.critical_notices.put_nowait((message,None))
+                    except queue.Full:pass
+            except Exception:
+                logging.exception('System alert sampling failed')
+            self.stop.wait(5)
+
     def notification_loop(self):
         from notifications import send
         while not self.stop.is_set():
-            try:message,photo=self.notices.get(timeout=1)
-            except queue.Empty:continue
-            result=send(self.settings(),message,photo)
-            self.set_setting('telegram_last_result',result)
+            critical=True
+            try:message,photo=self.critical_notices.get_nowait()
+            except queue.Empty:
+                critical=False
+                try:message,photo=self.notices.get(timeout=1)
+                except queue.Empty:continue
+            result=send(self.settings(),message,photo,critical=critical)
+            if not self.stop.is_set():self.set_setting('telegram_last_result',result)
 
     def get_session(self, raw):
         jar = http.cookies.SimpleCookie()
@@ -951,7 +987,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(d.usage_summary(query.get('period',['day'])[0]))
         elif p.path == '/api/engines':
             from maintenance import inventory
-            self.reply(inventory(d))
+            self.reply(inventory(d,check=query.get('check',[''])[0]=='1'))
         elif p.path == '/api/favicon':
             from maintenance import favicon
             raw,mime=favicon(d,query.get('id',[''])[0])
@@ -1153,7 +1189,7 @@ class Handler(BaseHTTPRequestHandler):
             d.set_setting('hold', bool(data.get('hold')))
         elif path == '/api/settings':
             values=engine_settings.checked(data)
-            for key,lo,hi in [('media_kib',0,100000),('torrent_down_kib',0,100000),('torrent_up_kib',1,100000),('reserve_gib',1,100),('playlist_limit',1,500),('retry_count',0,8),('seed_ratio',0,10)]:
+            for key,(lo,hi) in engine_settings.TRANSFER_RANGES.items():
                 if key not in data:continue
                 value=float(data[key]) if key=='seed_ratio' else int(data[key])
                 if isinstance(data[key],bool) or not lo<=value<=hi:raise APIError(f'{key} must be between {lo} and {hi}')

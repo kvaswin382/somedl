@@ -11,3 +11,5 @@ config.json
 _preview.py
 preview-data/
 *.zip
+
+/test-artifacts/

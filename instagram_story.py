@@ -1,4 +1,6 @@
 """Explicit Instagram stories/highlights; uses gallery-dl's maintained extractors."""
+import base64
+import binascii
 import json
 import re
 import sys
@@ -16,7 +18,14 @@ def target(value,mode):
         if parts[:2]==['stories','highlights'] and len(parts)>=3 and parts[2].isdigit():
             return '', 'https://www.instagram.com/stories/highlights/'+parts[2]+'/'
         if parts[0]=='s' and len(parts)==2 and re.fullmatch(r'aGlnaGxpZ2h0[A-Za-z0-9_=-]+',parts[1]):
-            return '', 'https://www.instagram.com/s/'+parts[1]+'/'
+            try:
+                token=parts[1].rstrip('=')
+                decoded=base64.b64decode(token+'='*((-len(token))%4),altchars=b'-_',validate=True).decode('ascii')
+            except (ValueError,UnicodeError,binascii.Error):
+                raise ValueError('Invalid Instagram highlight share token') from None
+            match=re.fullmatch(r'highlight:(\d{1,30})',decoded)
+            if not match:raise ValueError('This share link does not identify an Instagram highlight')
+            return '', 'https://www.instagram.com/stories/highlights/'+match[1]+'/'
         if parts[0]=='stories' and len(parts)>=2:value=parts[1]
         elif len(parts)<=2 and (len(parts)==1 or parts[1]=='highlights'):value=parts[0]
         else:raise ValueError('Use a username, profile, story or highlight URL')
@@ -37,7 +46,11 @@ def run(spec):
         'instagram':{'videos':'dash','previews':False,'sleep-request':'10-20','sleep-download':'2-5'}},
         'downloader':{'http':{'rate':str(settings.get('media_kib',0))+'k' if settings.get('media_kib') else None},
                       'ytdl':{'options':{'format':'bv*+ba/b','concurrent_fragment_downloads':1}}}})
-    ext=extractor.find(spec['url'])
+    # Normalize again for jobs queued before the share-link fix.
+    url=spec['url']
+    if urlsplit(url).path.startswith('/s/'):
+        _,url=target(url,'highlights')
+    ext=extractor.find(url)
     if ext is None:raise ValueError('Installed gallery-dl does not recognize this story/highlight URL')
     class Download(job.DownloadJob):
         def initialize(self,kwdict=None):

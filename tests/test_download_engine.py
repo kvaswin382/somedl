@@ -171,7 +171,7 @@ class SettingsAndTools(Fixture):
         self.assertFalse(self.desk.get_setting('telegram_errors'))
     def test_settings_bounds_and_strict_booleans(self):
         self.assertEqual(engine_settings.checked({'browser_timeout':'120'})['browser_timeout'],120)
-        for data in ({'simultaneous_downloads':5},{'auto_cookies':'false'},{'telegram_chat_id':'a;command'},{'browser_timeout':True}):
+        for data in ({'simultaneous_downloads':21},{'auto_cookies':'false'},{'telegram_chat_id':'a;command'},{'browser_timeout':True}):
             with self.assertRaises(ValueError):engine_settings.checked(data)
     def test_cookie_persistence_and_domain_scope(self):
         s=Session(self.desk.state,'https://a.test/watch')
@@ -283,6 +283,6 @@ class EngineHTTP(Fixture):
         self.assertEqual(self.desk.get_setting('telegram_bot_token'),'123:secret')
         self.assertEqual(self.request('/api/settings',{'clear_telegram_token':True})[0],200)
         self.assertEqual(self.desk.get_setting('telegram_bot_token'),'')
-        self.assertEqual(self.request('/api/settings',{'simultaneous_downloads':20})[0],400)
+        self.assertEqual(self.request('/api/settings',{'simultaneous_downloads':21})[0],400)
 
 if __name__=='__main__':unittest.main()

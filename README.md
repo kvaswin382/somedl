@@ -1,6 +1,17 @@
-# Zedair Download Desk — v2.0.0
+# Zedair Download Desk — v2.1.0
 
 A private, headless downloader for Ubuntu 24.04, Python 3.12 and a 2 GB x86_64 laptop with an external SSD. Submit original webpage links from the web interface; the laptop resolves and downloads their media in the background. Existing SSD files, accounts, cookies and queue history are preserved by the application upgrader.
+
+
+## v2.1 stability and interface update
+
+- Queue rows keep their favicon nodes across polling. Exactly one favicon or fallback is visible.
+- Instagram `/s/<token>/` highlight shares are decoded into `/stories/highlights/<id>/`, including old queued jobs on retry.
+- MP4 is the default **video** container; quality is independent. Photos keep their actual format. GIF animations are encoded to MP4 using one CPU thread; HLS/M3U8 streams are remuxed with their original codecs into MP4. GIF encoding uses CRF 18; it is not a lossless byte copy.
+- General settings use server-described slider bounds and autosave. The download dialog has a live link count, compact primary controls and collapsed advanced options. All modal backdrops close the modal.
+- Engine cards check stable PyPI releases in the background, cache results for one hour, and only offer an update when a newer release is known and the managed updater is installed.
+- Data usage shows an activity chart and domain totals. Hourly data starts with this upgrade; existing daily history remains. These are partial payload estimates, not total network billing figures.
+- GitHub Actions runs on `main`, `fix/**`, `improve/**` and pull requests, with real browser regressions and desktop/mobile screenshots.
 
 ## Upgrade from main or claude
 
@@ -16,7 +27,7 @@ sudo bash /opt/zedair/install-browser.sh
 sudo systemctl restart zedair
 ```
 
-If Git reports local edits or a diverged branch, keep those edits and resolve that state before switching; do not force-reset the checkout. `upgrade.sh` creates a private backup in `/var/backups/zedair`, installs application files, checks startup and restores the previous app/state if the health check fails. It does not format, relocate or wipe the SSD. The browser installer installs a matched Playwright/Chromium pair and tests its sandbox as the service user. Refresh the web interface with **Ctrl+F5**; the footer should show **v2.0.0**.
+If Git reports local edits or a diverged branch, keep those edits and resolve that state before switching; do not force-reset the checkout. `upgrade.sh` creates a private backup in `/var/backups/zedair`, installs application files, checks startup and restores the previous app/state if the health check fails. It does not format, relocate or wipe the SSD. The browser installer installs a matched Playwright/Chromium pair and tests its sandbox as the service user. Refresh the web interface with **Ctrl+F5**; the footer should show **v2.1.0**.
 
 Package updates are separate from application upgrades. Settings → Engines lists the application's Python packages and key system tools. Its Update buttons manage yt-dlp, gallery-dl and Playwright through a root-owned service with a fixed allowlist. Downloads pause during an engine update and recover when the app restarts. System tools remain Ubuntu-managed. A failed engine update attempts to restore the previous engine version; this is not a full dependency-environment rollback. The web process retains `NoNewPrivileges=true` and cannot submit arbitrary commands or package names.
 
@@ -28,7 +39,7 @@ Package updates are separate from application upgrades. Settings → Engines lis
 4. Parse static player sources, video metadata and nested iframe pages. Explicit download links and supported image-host pages can also lead to file downloads.
 5. When needed, launch one sandboxed Chromium instance. Observe network responses, rendered players, shadow roots and bounded embedded frames; try visible play controls and collect variants before selection. Link a playing low-quality URL to higher variants advertised by its player data. Inspect bounded HLS/DASH manifests instead of assuming the first playing URL is the best quality. Close Chromium before the file transfer.
 
-The default is **Highest quality + Original format**. The video extractor requests the best available streams without an MP4-only filter or hidden 1080p cap. An explicit resolution selects a ceiling; an explicit MP4 choice copies compatible original codecs into MP4 without re-encoding. Unsupported codec/container combinations report an error instead of silently selecting a smaller rendition. A direct file URL offers only that file's quality; submit the original webpage to discover other renditions.
+The default is **Highest quality + MP4**. The video extractor requests the best available streams without an MP4-only filter or hidden 1080p cap. An explicit resolution selects a ceiling; MP4 output copies compatible original codecs into MP4 without re-encoding. Unsupported codec/container combinations report an error instead of silently selecting a smaller rendition. A direct file URL offers only that file's quality; submit the original webpage to discover other renditions.
 
 **Refresh source & resume** is available in a failed/paused individual download's Details. It opens the stored original webpage again; no replacement CDN URL needs to be pasted. Failed transfers can also re-extract automatically. Progressive HTTP downloads append only after a strong ETag, matching length and correct byte range confirm the same entity. A changed or unverifiable entity restarts safely. Browser-discovered adaptive manifests restart when their previous representation cannot be validated; site extractors retain their native resume behavior. Expired direct CDN links cannot reveal a missing original webpage.
 
@@ -39,11 +50,11 @@ No extractor can promise every website. Ambiguous unrelated players, protected c
 ## Tools, queue and settings
 
 - **Tools → Instagram stories & highlights:** submit a username/profile to collect currently accessible stories or all accessible highlights, or submit a particular story/highlight URL. A story URL collects that user's accessible current stories. Uses the saved Instagram session. Default destination: `Instagram/<username>`; a custom folder wins. Highlight owner metadata determines the default destination. Expired stories and content unavailable to that account cannot be recovered.
-- **Concurrent downloads:** default 2, configurable 1–4. Existing saved limits remain in effect within that cap. Instagram/Facebook account jobs are serialized per platform, and all browser collectors share one cross-process slot. Browser startup checks both host and service-cgroup memory headroom (default 350 MiB), with a bounded discovery deadline. This is a safeguard, not a memory guarantee for arbitrary pages.
+- **Concurrent downloads:** default 1, configurable 1–20 in steps of 1. Existing saved values remain in effect. Sliders autosave on release. Instagram/Facebook account jobs are serialized per platform, and all browser collectors share one cross-process slot. Individual browser-engine jobs also hold a separate single-job lease through download and link refresh. Browser startup checks both host and service-cgroup memory headroom (default 350 MiB), with a bounded discovery deadline. This is a safeguard, not a memory guarantee for arbitrary pages.
 - **Queue:** Retry All retries failed entries; paused and completed jobs are untouched. Pagination, cached site favicons, detailed stage/error logs, and combined download speed when multiple downloads run. Cancel/remove affects only its own worker.
 - **General settings:** SSD free-space reserve, torrent seeding ratio, retries, playlist limits, per-job media speed cap and separate torrent speed caps. The media cap applies to each media transfer, not a global bandwidth allocator.
 - **Browser settings:** timeout, settling time, frame/candidate budgets, memory headroom, refresh attempts, cookie persistence and configurable tracker-host blocking. Tracker blocking can be disabled for a page whose player depends on a blocked host. Popups are closed; arbitrary advertisements are not clicked.
-- **Telegram:** optional bot token, numeric group/chat and admin IDs, error notifications and browser failure screenshots. The token is masked in state responses. Text diagnostics redact cookies and signed URL queries. Screenshots are opt-in and can contain visible private page content. Test delivery happens only when you click Test.
+- **Telegram:** ordinary errors and browser screenshots go only to the configured group. Critical CPU, RAM, system-disk, temperature and low-SSD-space alerts go to the group and admin; group alerts can be pinned when the bot has permission. Thresholds, sustain time and per-condition cooldown are configurable with nonzero lower bounds. Default CPU/RAM/disk threshold is 90% for 60 seconds; temperature is 80°C; cooldown is 15 minutes. The SSD threshold follows the free-space reserve. Missing sensors are skipped. The token is masked in state responses. Text diagnostics redact cookies and signed URL queries. Screenshots are opt-in and can contain visible private page content. The Test button checks group delivery. Critical monitoring runs in the background when enabled and a bot is configured.
 - **Data usage:** calendar day/week/month/year in UTC, grouped by submitted website. These are recorded transfer-payload estimates, not router/ISP totals. Browser traffic, protocol overhead, torrents and engines without byte-progress output are excluded; resumed engine counters may overcount.
 - **Clear cache:** removes bounded diagnostic/favicon caches. Active stages, saved sessions and resumable partial files are retained. A separate confirmation can remove cancelled/orphaned working folders.
 
@@ -91,7 +102,7 @@ The v1.3.1 fix used `--Print` (print **and download**); the v1.4 profile worker 
 
 1. Put this updated source into your GitHub repository, commit and push it.
 2. On Ubuntu, use the Git pull + `upgrade.sh` steps below. No new package or browser installation is required for this fix.
-3. Reload the webpage and check the footer says **v2.0.0**.
+3. Reload the webpage and check the footer says **v2.1.0**.
 4. Open **Tools → Profile jobs**, find the failed Instagram profile, and click **Resume / retry**. You can reuse the same job and saved cookies; do not delete SSD folders or replace a working session just for this bug.
 5. Watch the media count and open its destination after the attempt finishes. Completed files are published under `Instagram/<username>`.
 
@@ -145,7 +156,7 @@ After success:
 systemctl status zedair zedair-transmission --no-pager
 ```
 
-Refresh the page with **Ctrl+F5** on Windows. On your phone, reload the page. The footer should show **v2.0.0**. Existing jobs keep their old folders so they can resume; newly added jobs use your explicit destination directly or an automatic platform folder when none is selected. For a legacy individual-download job that uses an old folder layout, cancel it and add the URL again only if you want to change that layout. For the Instagram profile bug fixed in v1.3.1, retry the existing job as described above. Existing files are not relocated automatically.
+Refresh the page with **Ctrl+F5** on Windows. On your phone, reload the page. The footer should show **v2.1.0**. Existing jobs keep their old folders so they can resume; newly added jobs use your explicit destination directly or an automatic platform folder when none is selected. For a legacy individual-download job that uses an old folder layout, cancel it and add the URL again only if you want to change that layout. For the Instagram profile bug fixed in v1.3.1, retry the existing job as described above. Existing files are not relocated automatically.
 
 ### First time using Git on this laptop
 
@@ -280,7 +291,7 @@ With destination `Travel`, a YouTube download lands directly in `Zedair/Travel`.
 
 ### Video format and highest quality
 
-Use **Highest quality + Original format** by default. MP4 is an optional video container request, not an image extension or a lower-quality format filter. Original codecs are copied without re-encoding. If MP4 cannot hold those codecs, select Original format. Audio-only preserves the source audio codec. A direct file has no alternative quality variants to select; use its original webpage for that.
+Use **Highest quality + MP4** by default. MP4 is an optional video container request, not an image extension or a lower-quality format filter. Original codecs are copied without re-encoding. If MP4 cannot hold those codecs, select Original format. Audio-only preserves the source audio codec. A direct file has no alternative quality variants to select; use its original webpage for that.
 
 ### Filenames and duplicates
 
@@ -406,7 +417,7 @@ General settings include media/torrent speed limits, torrent seeding ratio, free
 
 Each platform tab has its folder, enable switch and applicable options. YouTube has quality, video-format, playlist and subtitle defaults. Facebook, Reddit, X and other video sites also expose their applicable format/quality defaults. Instagram has session requirements, best-stream/pre-merged video selection, resolution warnings and request delay. X has quality and an advanced API selector; keep **GraphQL** unless troubleshooting an upstream compatibility issue. Disabled platforms reject new jobs; they do not cancel existing ones.
 
-The main form defaults to **Highest quality + Original format**. Saved platform quality/format settings are used only when you explicitly select **Use platform defaults**; those values are then copied into the new job. Cookie replacements and live engine options apply on the next attempt. Checking playlist/subtitle options in Add downloads also enables them when using platform defaults. To override platform defaults with those options off, select an explicit quality preset and leave the checkboxes unchecked.
+The main form defaults to **Highest quality + MP4**. Saved platform quality/format settings are used only when you explicitly select **Use platform defaults**; those values are then copied into the new job. Cookie replacements and live engine options apply on the next attempt. Checking playlist/subtitle options in Add downloads also enables them when using platform defaults. To override platform defaults with those options off, select an explicit quality preset and leave the checkboxes unchecked.
 
 ### Instagram: paste your session from Firefox on Windows
 
@@ -606,13 +617,13 @@ df -h /srv/zedair-ssd
 | Webpage cannot connect | Laptop IP, port 8787, service status, firewall and guest-network isolation. |
 | SSD offline | USB power/cable, mount UUID and `findmnt`. Reconnect with the Windows/SSD steps. Never disable `require_mount` to hide the error. |
 | Free-space reserve reached | Delete unwanted files through SSD files, or free space in Windows. Browsing/deletion work below the reserve. |
-| Instagram profile shows a count but no files | Upgrade to v2.0.0, then retry the same profile job; see the recovery section at the top. Existing working cookies need no replacement for this bug. |
+| Instagram profile shows a count but no files | Upgrade to v2.1.0, then retry the same profile job; see the recovery section at the top. Existing working cookies need no replacement for this bug. |
 | Website DNS lookup fails | Run the hostname checks near the top on the laptop; other sites working does not establish that this domain resolves. |
 | Browser engine unavailable | Rerun `install-browser.sh`, check its sandbox test, restart the app. |
 | Instagram pagination loop | Progress is retained; the server repeated a completed page/cursor. Review Details/update engines before retrying. |
 | Instagram fails | Read Details; renew cookies, finish a browser challenge, wait for a rate limit or update engines as appropriate. |
 | Facebook profile stops | Inspect the experimental collector log; check session, scroll limit, layout changes and browser installation. A finished job is not proof of a complete archive. |
-| MP4 container conversion failed | The source codec cannot be copied into MP4. Select Original format; no lower-quality version is silently substituted. |
+| MP4 container conversion failed | The source codec cannot be copied into MP4. Select Keep source container; no lower-quality version is silently substituted. |
 | Reddit video fails | Use a direct Reddit post/video link, update engines, and import Reddit cookies if that content needs login. |
 | X video fails | Confirm it is a video status URL; check your session and update engines. Private/deleted/restricted posts can remain unavailable. |
 | YouTube fails | Update engines, check Deno, inspect Details, and add YouTube cookies when required. |

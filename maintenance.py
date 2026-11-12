@@ -7,6 +7,9 @@ import shutil
 import subprocess
 import sys
 import time
+import re
+import threading
+import urllib.request
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -15,7 +18,8 @@ UPDATE_STATE=Path('/var/lib/zedair-updates')
 UPDATE_RULE=Path('/etc/polkit-1/rules.d/49-zedair-updates.rules')
 
 
-def inventory(desk):
+def inventory(desk,check=False):
+    releases=check_releases(desk,force=check)
     packages=sorted([{'name':d.metadata.get('Name','unknown'),'version':d.version} for d in importlib.metadata.distributions()],key=lambda d:d['name'].lower())
     for name in sorted(UPDATES):
         if not any(p['name'].lower()==name for p in packages):packages.append({'name':name,'version':'Not installed'})
@@ -36,9 +40,61 @@ def inventory(desk):
     # user. Read the root-owned public installation marker instead.
     try:update_available=(UPDATE_STATE/'integration.json').is_file()
     except OSError:update_available=False
-    return {'python':sys.version.split()[0],'packages':packages,'system_tools':binaries,'updates':status,
+    for package in packages:
+        current=releases.get('packages',{}).get(package['name'].lower(),{})
+        package.update(current)
+        package['has_update']=newer(current.get('latest_version'),package['version'])
+    return {'checking':releases.get('checking',False),'checked_at':releases.get('checked_at'), 'python':sys.version.split()[0],'packages':packages,'system_tools':binaries,'updates':status,
             'update_available':update_available,
             'telegram':desk.get_setting('telegram_last_result',{})}
+
+
+def newer(latest,installed):
+    # Managed engines use numeric stable versions. Do not offer prereleases or
+    # make an upgrade decision for an unknown/custom installed version.
+    if not latest or not re.fullmatch(r'\d+(?:\.\d+)*',latest):return False
+    if installed=='Not installed':return False
+    if not re.fullmatch(r'\d+(?:\.\d+)*',installed):return False
+    left=tuple(map(int,latest.split('.')));right=tuple(map(int,installed.split('.')))
+    n=max(len(left),len(right))
+    return left+(0,)*(n-len(left))>right+(0,)*(n-len(right))
+
+
+def fetch_releases():
+    result={}
+    for package in sorted(UPDATES):
+        try:
+            request=urllib.request.Request('https://pypi.org/pypi/'+package+'/json',headers={'User-Agent':'Zedair release checker'})
+            with urllib.request.urlopen(request,timeout=4) as response:raw=response.read(4*1024*1024+1)
+            if len(raw)>4*1024*1024:raise ValueError('Release metadata too large')
+            value=json.loads(raw)['info']['version']
+            if not isinstance(value,str) or not re.fullmatch(r'\d+(?:\.\d+)*',value):raise ValueError('No stable release metadata')
+            result[package]={'latest_version':value}
+        except Exception:result[package]={'check_error':True}
+    return result
+
+
+def check_releases(desk,force=False):
+    """Lazy asynchronous check, cached one hour; never block the UI on PyPI."""
+    with desk.lock:
+        if not hasattr(desk,'release_cache'):
+            try:desk.release_cache=json.loads((desk.state/'engine-releases.json').read_text())
+            except (OSError,ValueError):desk.release_cache={}
+            desk.release_checking=False
+        age=time.time()-desk.release_cache.get('checked_at',0)
+        if not desk.release_checking and (age>3600 or (force and age>30)) and not desk.stop.is_set():
+            desk.release_checking=True
+            def work():
+                result={'checked_at':time.time(),'packages':fetch_releases()}
+                with desk.lock:
+                    desk.release_cache=result;desk.release_checking=False
+                    if not desk.stop.is_set():
+                        try:
+                            temp=desk.state/'engine-releases.tmp';temp.write_text(json.dumps(result));temp.chmod(0o600)
+                            os.replace(temp,desk.state/'engine-releases.json')
+                        except OSError:pass
+            threading.Thread(target=work,daemon=True).start()
+        return {**desk.release_cache,'checking':desk.release_checking}
 
 
 def request_update(desk,package):

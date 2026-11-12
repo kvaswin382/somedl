@@ -3,6 +3,7 @@
 Keep the submitted page URL as the durable source; signed CDN URLs are disposable.
 Site extractors remain valuable, but they no longer own all file downloads.
 """
+import contextlib
 import html
 import http.cookiejar
 import json
@@ -136,12 +137,38 @@ def finish_media(path,spec):
     os.replace(temp,target);path.unlink();http.output_register(path.parent,target.name)
 
 
+def finish_gifs(dest):
+    """Convert completed GIF animations once, using one encoding thread.
+    Write atomically; keep the source GIF if conversion fails or is cancelled.
+    """
+    for path in Path(dest).iterdir():
+        if not path.is_file() or path.is_symlink() or path.name.startswith('.') or path.suffix.lower()!='.gif':continue
+        target=path.with_suffix('.mp4')
+        if target.exists():target=path.with_name(path.stem+'-animation.mp4')
+        if target.exists():raise ValueError('Animation output already exists: '+target.name)
+        temp=path.parent/('.gif-'+path.stem+'.mp4')
+        say('Converting GIF to MP4 with one CPU thread.')
+        result=subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y',
+            '-threads','1','-ignore_loop','1','-i',str(path),'-an','-vf','pad=ceil(iw/2)*2:ceil(ih/2)*2',
+            '-c:v','libx264','-threads','1','-preset','veryfast','-crf','18','-pix_fmt','yuv420p',
+            '-movflags','+faststart',str(temp)],capture_output=True,text=True)
+        if result.returncode:
+            temp.unlink(missing_ok=True)
+            raise ValueError('GIF conversion failed; the original is preserved. '+result.stderr[-1000:])
+        os.replace(temp,target);path.unlink();http.output_register(path.parent,target.name)
+
+
 def run(spec):
     spec['settings']={**DEFAULTS,**spec.get('settings',{})}
     settings=spec['settings'];dest=Path(spec['dest']);state=Path(spec.get('state',dest))
     session=Session(state,spec['url'],spec.get('cookie',''),settings['auto_cookies'])
     client=http.opener(session.jar);jarfile=dest/'.engine-cookies.txt'
     problems=[]
+    browser_job=contextlib.ExitStack()
+    browser_slot=False
+    def completed():
+        finish_gifs(dest)
+        return 0
     def save_jar():
         jarfile.touch(mode=0o600);jarfile.chmod(0o600);session.jar.save(str(jarfile),ignore_discard=True,ignore_expires=False)
     def download(found,title):
@@ -157,7 +184,12 @@ def run(spec):
             if info['kind']=='video' or (info['kind']=='audio' and spec.get('quality')=='audio'):finish_media(path,spec)
             return 0
         save_jar()
-        return execute(media_args(spec,found['url'],jarfile,found.get('headers'),stable=True))[0]
+        args=media_args(spec,found['url'],jarfile,found.get('headers'),stable=True)
+        if spec.get('quality')!='audio':
+            # HLS/DASH segments become a normal MP4, with original codecs.
+            if '--remux-video' in args:args[args.index('--remux-video')+1]='mp4'
+            else:args[args.index('--'):args.index('--')]=['--remux-video','mp4']
+        return execute(args)[0]
     try:
         for attempt in range(settings['refresh_attempts']+1):
             save_jar()
@@ -175,7 +207,7 @@ def run(spec):
                 info=http.inspect(client,source,timeout=settings['http_timeout'])
                 if info['kind']!='page':
                     print('ZEDENGINE direct',flush=True)
-                    if download(info,title)==0:return 0
+                    if download(info,title)==0:return completed()
             except Exception as exc:
                 problems.append('HTTP inspection/transfer: '+diagnostic(exc));say(problems[-1])
             force=bool(spec.get('force')) or attempt>0
@@ -186,7 +218,7 @@ def run(spec):
                         if code:
                             items=threads_media(info['html'],code[1],spec.get('quality','best'))
                             found={'kind':'collection','items':[{'url':u,'headers':{'referer':source}} for u,e in items]}
-                            if download(found,spec.get('filename') or 'Threads '+code[1])==0:return 0
+                            if download(found,spec.get('filename') or 'Threads '+code[1])==0:return completed()
                     except Exception as exc:problems.append('Threads structured post: '+diagnostic(exc))
                 # Images on supported hosts must reach gallery-dl before video remuxing.
                 prefer_gallery=platforms.platform_for(source)=='reddit' or (urllib.parse.urlsplit(source).hostname or '').endswith(('ibb.co','imgbb.com'))
@@ -199,7 +231,7 @@ def run(spec):
                         status,log=execute(args)
                         # Keep the same CookieJar object used by the HTTP client.
                         for c in platforms.load_jar(jarfile):session.jar.set_cookie(c)
-                        if status==0:return 0
+                        if status==0:return completed()
                         problems.append(stage+': '+log[-1200:])
                         if stop_reason(log):raise PermissionError('Site verification, DRM or rate limit requires attention; '+log[-700:])
                     except PermissionError:raise
@@ -211,19 +243,24 @@ def run(spec):
                 from page_media import discover
                 found,page_title,jar=discover(source,str(jarfile),spec.get('quality','best'),False)
                 for c in jar:session.jar.set_cookie(c)
-                if download(found,spec.get('filename') or page_title or title)==0:return 0
+                if download(found,spec.get('filename') or page_title or title)==0:return completed()
             except Exception as exc:problems.append('page: '+diagnostic(exc));say(problems[-1])
             print('ZEDENGINE browser',flush=True)
             try:
+                if not browser_slot:
+                    from web_session import lock
+                    say('Waiting for the single browser-download slot…')
+                    browser_job.enter_context(lock(state/'browser-download.lock'));browser_slot=True
                 from browser_capture import capture
                 found,page_title,jar=capture(source,session.jar,state,spec.get('quality','best'),settings,dest)
-                if download(found,spec.get('filename') or page_title or title)==0:return 0
+                if download(found,spec.get('filename') or page_title or title)==0:return completed()
             except Exception as exc:
                 problems.append('browser: '+diagnostic(exc));say(problems[-1])
                 if any(s in str(exc).lower() for s in ('insufficient','executable doesn\'t exist','no playable media','unrelated or unranked')):break
             if attempt<settings['refresh_attempts']:time.sleep(min(10,2**attempt))
         raise ValueError('All applicable extraction stages failed.\n'+'\n'.join(p[:180]+' … '+p[-320:] if len(p)>520 else p for p in problems[-5:]))
     finally:
+        browser_job.close()
         try:session.save()
         except OSError as exc:say('Could not persist website session: '+type(exc).__name__)
         jarfile.unlink(missing_ok=True)

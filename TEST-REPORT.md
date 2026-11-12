@@ -1,3 +1,17 @@
+# Verification report — Zedair 2.1.0
+
+Built from the user's installed `873313e` revision. No live account credentials, Telegram messages, or laptop service changes were used during development.
+
+Local verification: **160 unit tests passed**, JavaScript syntax and Python compilation passed, and **12 non-browser integration scripts passed**. The additional real HLS/GIF test verifies H.264/AAC codecs and source dimensions, MP4 output, odd-dimension GIF padding, and exact unchanged JPEG bytes despite MP4 being selected.
+
+New regressions cover the supplied Instagram highlight share through actual gallery-dl extractor construction, concurrency 1–20 step 1, nonzero alert bounds, sustained usage/cooldown, missing sensors, low SSD space, group-only diagnostics, critical group/admin routing and group-only pinning, stable release comparisons, and hourly/daily usage totals.
+
+The release workflow runs all integration scripts, including real sandboxed Chromium extraction and UI tests. UI checks cover a single persistent favicon, live link counts, default MP4, slider autosave, masked tokens, release-aware engine cards, charts, highlight submission, backdrop close, and mobile/dark layout overflow. Screenshots are attached as CI artifacts. CI results are recorded after the candidate run completes.
+
+Live Instagram availability still depends on the account/session and Instagram's response; the exact base64 exception is reproduced and fixed without claiming a live account download. Hardware load on the Atom laptop, Telegram delivery/pinning permissions, real systemd upgrades and physical SSD behavior require checking on the laptop. See the prior report for the inherited engine/security fixture scope.
+
+---
+
 # Verification report — Zedair 2.0.0
 
 Revision date: 12 November 2026. Target: Ubuntu 24.04 x86_64, Python 3.12, 2 GB RAM and external exFAT SSD.
