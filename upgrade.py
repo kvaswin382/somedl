@@ -17,7 +17,7 @@ APP=Path('/opt/zedair')
 STATE=Path('/var/lib/zedair')
 CONFIG=Path('/etc/zedair')
 BACKUPS=Path('/var/backups/zedair')
-FILES=('server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-browser.sh','install-speedtest.py','install-speedtest.sh','README.md','TEST-REPORT.md','LICENSE','requirements.txt','update.sh','upgrade.sh','upgrade.py')
+FILES=('download_http.py','engine_settings.py','web_session.py','notifications.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-browser.sh','install-speedtest.py','install-speedtest.sh','README.md','TEST-REPORT.md','LICENSE','requirements.txt','update.sh','upgrade.sh','upgrade.py')
 
 def run(*args):
     subprocess.run([str(x) for x in args],check=True)
@@ -98,7 +98,7 @@ def main():
         for name in FILES:
             if not (BASE/name).is_file():raise SystemExit('Missing package file: '+name)
         with tempfile.TemporaryDirectory() as temp:
-            for name in ('server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py','profiles.py','facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py','setup-local.py','install-speedtest.py','upgrade.py'):
+            for name in ('download_http.py','engine_settings.py','web_session.py','notifications.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py','profiles.py','facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py','setup-local.py','install-speedtest.py','upgrade.py'):
                 import py_compile
                 py_compile.compile(str(BASE/name),cfile=str(Path(temp)/(name+'c')),doraise=True)
         run(APP/'venv/bin/python','-c','import yt_dlp, gallery_dl')
@@ -124,6 +124,9 @@ def main():
             for item in (APP/'static').rglob('*'):
                 item.chmod(0o755 if item.is_dir() else 0o644)
             (APP/'static').chmod(0o755)
+        if APP==Path('/opt/zedair'):
+            from maintenance import install_update_service
+            install_update_service()
         start()
         healthy()
     except Exception:

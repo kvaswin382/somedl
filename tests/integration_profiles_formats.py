@@ -36,11 +36,11 @@ formats=[{'format_id':'mp4-low','url':'https://example.com/low.mp4','ext':'mp4',
          {'format_id':'mp4-high','url':'https://example.com/high.mp4','ext':'mp4','vcodec':'av01','acodec':'none','height':2160},
          {'format_id':'webm-higher','url':'https://example.com/high.webm','ext':'webm','vcodec':'vp9','acodec':'none','height':4320},
          {'format_id':'audio','url':'https://example.com/audio.m4a','ext':'m4a','vcodec':'none','acodec':'mp4a','abr':128}]
-for quality,expected in [('best','mp4-high+audio'),('1080','mp4-low')]:
+for quality,expected in [('best','webm-higher+audio'),('1080','mp4-low')]:
     with YoutubeDL({'format':video_format(quality,True),'quiet':True,'no_warnings':True,'skip_download':True}) as ydl:
         result=ydl.process_ie_result({'id':'fixture','title':'Fixture','formats':[dict(x) for x in formats]},download=False)
         assert result['format_id']==expected,result['format_id']
 with YoutubeDL({'quiet':True,'no_warnings':True}) as ydl:
     selector=ydl.build_format_selector(video_format('best',True))
-    assert not list(selector({'formats':[formats[2]],'has_merged_format':False,'incomplete_formats':False}))
-print('PASS: real gallery-dl traverses three pages, excludes reels from posts and persists media-ID deduplication; real yt-dlp chooses highest MP4, respects a quality ceiling and rejects WebM-only selection. All network responses are fixtures.')
+    assert list(selector({'formats':[formats[2]],'has_merged_format':False,'incomplete_formats':True}))
+print('PASS: real gallery-dl pagination and archive persistence; real yt-dlp chooses the highest resolution regardless of container and respects a quality ceiling. All network responses are fixtures.')

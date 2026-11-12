@@ -15,7 +15,7 @@ ADS=re.compile(r'(?:doubleclick|adservice|exoclick|trafficjunky|popads|juicyads)
 
 class PlayerHTML(HTMLParser):
     def __init__(self,base):
-        super().__init__();self.base=base;self.media=[];self.embeds=[];self.title=[];self.in_title=False;self.script=False;self.script_type='';self.text=[];self.group=0
+        super().__init__();self.base=base;self.media=[];self.embeds=[];self.title=[];self.in_title=False;self.script=False;self.script_type='';self.text=[];self.group=0;self.downloads=[];self.images=[]
     def add(self,url,group,height=0):
         if not isinstance(url,str):return
         url=urllib.parse.urljoin(self.base,html.unescape(url.replace('\\/','/')))
@@ -35,6 +35,9 @@ class PlayerHTML(HTMLParser):
         if tag=='video':self.group+=1;self.add(a.get('src'),self.group,a.get('height',0))
         if tag=='source':self.add(a.get('src'),self.group,a.get('size') or a.get('label') or a.get('res') or 0)
         if tag=='iframe':self.embed(a.get('src') or a.get('data-src'))
+        if tag=='a' and a.get('href') and ('download' in a or re.search(r'(?:^|\s)(?:download|download-link|download-button)(?:$|\s)',a.get('class',''))):
+            self.downloads.append(urllib.parse.urljoin(self.base,html.unescape(a['href'])))
+        if tag=='meta' and a.get('property')=='og:image':self.images.append(urllib.parse.urljoin(self.base,html.unescape(a.get('content',''))))
         if tag=='meta' and a.get('property') in ('og:video','og:video:url','og:video:secure_url'):
             value=a.get('content','');self.add(value,0);self.embed(value) if not MEDIA.search(value) else None
         if tag=='script':self.script=True;self.script_type=a.get('type','');self.text=[]
@@ -96,6 +99,10 @@ def discover(url,cookie='',quality='best',mp4=False):
                 if len(raw)>2*1024*1024:raise ValueError('Player page exceeds 2 MiB')
                 parser=PlayerHTML(final);parser.feed(raw.decode('utf-8','replace'))
             if depth==0:title=html.unescape(''.join(parser.title)).strip()[:240]
+            if not parser.media and len(set(parser.downloads))==1:
+                return {'url':parser.downloads[0],'kind':'file','headers':{'referer':final,'user-agent':USER_AGENT}},title,jar
+            if not parser.media and parser.images and (urllib.parse.urlsplit(final).hostname or '').endswith(('ibb.co','imgbb.com')):
+                return {'url':parser.images[0],'kind':'image','headers':{'referer':final,'user-agent':USER_AGENT}},title,jar
             if parser.media:
                 try:return choose(parser.media,quality,mp4),title,jar
                 except ValueError as exc:problems.append(str(exc))

@@ -212,7 +212,11 @@ def run(config):
     dest=Path(config['dest']);db=sqlite3.connect(dest/'.facebook-profile.sqlite3')
     db.execute('CREATE TABLE IF NOT EXISTS media(key TEXT PRIMARY KEY,kind TEXT,url TEXT,done INTEGER)')
     try:
-        limited,failures=collect(config,db)
+        from web_session import browser_lease,available_memory
+        with browser_lease(config.get('state',str(Path(config['cookie']).parent))):
+            if available_memory()<config.get('browser_min_memory_mib',350)*1024**2:
+                raise ValueError('Browser waiting: insufficient memory headroom; reduce concurrent downloads')
+            limited,failures=collect(config,db)
         count=db.execute("SELECT count(*) FROM media WHERE kind!='post'").fetchone()[0]
         if not count:raise ValueError('No accessible media found. Facebook may require verification or its page layout may have changed.')
         # Browser is closed before FFmpeg/video downloading to reduce peak memory.

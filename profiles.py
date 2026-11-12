@@ -54,6 +54,7 @@ def facebook_command(job,dest,cookie,settings,state):
     path=state/('profile-'+job['id']+'.json')
     path.write_text(json.dumps({'url':job['url'],'username':job['profile_username'],'mode':job['profile_mode'],
         'scroll_limit':job.get('scroll_limit',2000),'dest':str(dest),'cookie':str(cookie or ''),
-        'media_kib':settings['media_kib'],'browsers':str(BROWSERS)}))
+        'media_kib':settings['media_kib'],'browsers':str(BROWSERS),'state':str(state),
+        'browser_min_memory_mib':settings.get('browser_min_memory_mib',350)}))
     path.chmod(0o600)
     return [sys.executable,str(Path(__file__).with_name('facebook_profile.py')),str(path)]

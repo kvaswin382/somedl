@@ -1,85 +1,69 @@
-# Zedair Download Desk — v1.4.0
+# Zedair Download Desk — v2.0.0
 
-A private web downloader for your Ubuntu 24.04 laptop. Open it from your phone, tablet or computer on the same home network. The laptop does the downloading and saves files on the USB SSD.
+A private, headless downloader for Ubuntu 24.04, Python 3.12 and a 2 GB x86_64 laptop with an external SSD. Submit original webpage links from the web interface; the laptop resolves and downloads their media in the background. Existing SSD files, accounts, cookies and queue history are preserved by the application upgrader.
 
-Built for your x86_64 Zedair with 2 GB RAM, 32 GB eMMC and an existing exFAT SSD. **Do not format the SSD.** Its existing files can stay where they are. This package needs to be installed or upgraded on your laptop; downloading this source does not change the running server.
+## Upgrade from main or claude
 
-## Updated v1.4.0 — 9 November 2026
-
-The version number remains **1.4.0**, as requested. This revision adds a three-stage video extraction pipeline, visible engine labels, persistent Instagram loop detection, bulk file actions and the revised interface. Replace the entire source package; copying only the webpage files is not enough.
-
-### Update from GitHub
-
-Copy **all** files in this package into your GitHub checkout, commit and push. On the Ubuntu laptop, run the following from your checkout (change the first path if needed):
+This implementation starts from `main` and independently implements the useful `claude` changes. It does not merge that branch. From your existing checkout, run each command only after the preceding command succeeds:
 
 ```bash
-cd ~/Zedair-Download-Desk
+git status --short
+git fetch origin
+git switch main
 git pull --ff-only
 sudo bash upgrade.sh
-sudo bash /opt/zedair/update.sh
 sudo bash /opt/zedair/install-browser.sh
 sudo systemctl restart zedair
 ```
 
-Run each command only after the previous one succeeds. `upgrade.sh` updates the app; `update.sh` updates the download engines. The optional browser installer is needed for playback detection, but ordinary downloads and Instagram collections work without it. If you already installed the old Facebook browser, run the new installer once for the Ubuntu sandbox setup/check. Existing accounts, cookies, queues and downloaded files are preserved. Refresh the webpage with **Ctrl+F5**. The footer still says **v1.4.0**; the new **Move / Copy** selection toolbar, engine labels and MP4 default identify this revision.
+If Git reports local edits or a diverged branch, keep those edits and resolve that state before switching; do not force-reset the checkout. `upgrade.sh` creates a private backup in `/var/backups/zedair`, installs application files, checks startup and restores the previous app/state if the health check fails. It does not format, relocate or wipe the SSD. The browser installer installs a matched Playwright/Chromium pair and tests its sandbox as the service user. Refresh the web interface with **Ctrl+F5**; the footer should show **v2.0.0**.
 
-### Main changes
+Package updates are separate from application upgrades. Settings → Engines lists the application's Python packages and key system tools. Its Update buttons manage yt-dlp, gallery-dl and Playwright through a root-owned service with a fixed allowlist. Downloads pause during an engine update and recover when the app restarts. System tools remain Ubuntu-managed. A failed engine update attempts to restore the previous engine version; this is not a full dependency-environment rollback. The web process retains `NoNewPrivileges=true` and cannot submit arbitrary commands or package names.
 
-- **Add downloads:** highest-quality **MP4** is selected by default. Optional filename, up to 100 links, and explicit destination folders still work.
-- **Duplicate URLs:** repeated links in a batch or existing queue/history are skipped. Common share/tracking variants are recognized. Retry a failed entry, or remove a finished entry before deliberately downloading its URL again.
-- **Queue:** non-zero counts appear on each filter. Every item has **Remove from queue**; this stops its transfer and removes the record while keeping downloaded files. **Details** identifies the actual extraction stage.
-- **SSD files:** select one or more files, then use **Move** or **Copy** in the toolbar. Select up to 100 files across pages in the current folder. **Rename** remains beside each file. Changing folders clears selection. Same-name collisions receive numbers, and renaming without an extension preserves the original extension.
-- **Delete folder:** open a subfolder, click **Delete folder**, review the path, file count and size, then confirm. This permanently removes that folder, its files and its subfolders. The `Zedair` root cannot be deleted.
-- **Preview:** the modal follows the image/video ratio on desktop. Previous/Next and arrow keys follow the current folder sort order across pages. The original media is streamed; no background transcoding runs.
-- **Tools → Instagram:** five radio choices: Posts, Reels, Everything, Images only, and Profile picture. Images only includes every exposed carousel image. The default destination is `Instagram/<username>`.
-- **Interface:** neutral charcoal dark mode, selection controls that wrap on mobile, quieter text, and in-page confirmation/name-entry dialogs. There are no JavaScript `alert`, `confirm` or `prompt` calls.
+## Download engine
 
-### How video extraction now works
+1. Resolve supported Reddit mobile-share and Threads share links to canonical post URLs, with bounded redirects restricted to that platform.
+2. Inspect actual response bytes and content type. Direct images and files use a bounded streaming HTTP downloader. **Video format settings never rename or convert images.** A JPEG stays `.jpg`, even if MP4 and a custom filename were selected.
+3. Try maintained site extractors: yt-dlp and supported gallery-dl extractors, including image hosts. Threads also reads structured data for the exact requested post and selects its largest exposed rendition, without substituting recommendations or preview thumbnails.
+4. Parse static player sources, video metadata and nested iframe pages. Explicit download links and supported image-host pages can also lead to file downloads.
+5. When needed, launch one sandboxed Chromium instance. Observe network responses, rendered players, shadow roots and bounded embedded frames; try visible play controls and collect variants before selection. Link a playing low-quality URL to higher variants advertised by its player data. Inspect bounded HLS/DASH manifests instead of assuming the first playing URL is the best quality. Close Chromium before the file transfer.
 
-The downloader accepts video **page** URLs, not just direct CDN links. With playback detection enabled, it tries these stages in order:
+The default is **Highest quality + Original format**. The video extractor requests the best available streams without an MP4-only filter or hidden 1080p cap. An explicit resolution selects a ceiling; an explicit MP4 choice copies compatible original codecs into MP4 without re-encoding. Unsupported codec/container combinations report an error instead of silently selecting a smaller rendition. A direct file URL offers only that file's quality; submit the original webpage to discover other renditions.
 
-1. **Video engine:** yt-dlp's normal site extractor.
-2. **Page engine:** a small HTML parser follows up to six pages, including embedded players up to three levels deep. It looks for explicit video sources, video metadata and player source fields. It selects the highest labelled compatible source where that choice is unambiguous. This stage needs no Chromium or Java installation.
-3. **Browser engine:** if static discovery fails and the optional browser is installed, one sandboxed Chromium page loads the player, attempts playback in visible video elements/embedded frames, and watches playback requests. It captures direct video requests without buffering the entire movie in Chromium. The browser closes before yt-dlp transfers the chosen media.
+**Refresh source & resume** is available in a failed/paused individual download's Details. It opens the stored original webpage again; no replacement CDN URL needs to be pasted. Failed transfers can also re-extract automatically. Progressive HTTP downloads append only after a strong ETag, matching length and correct byte range confirm the same entity. A changed or unverifiable entity restarts safely. Browser-discovered adaptive manifests restart when their previous representation cannot be validated; site extractors retain their native resume behavior. Expired direct CDN links cannot reveal a missing original webpage.
 
-The job card and Details retain the stage actually used, including after failure. A job stays labelled **Video engine** when yt-dlp succeeds directly; browser installation alone does not mean every job uses Chromium. Missing or mismatched browser files produce a distinct setup error. For a failed individual video, **Details → Retry with browser** skips the earlier extraction stages. It still performs the laptop's DNS and storage checks first.
+Website cookie persistence is optional, private and domain-scoped. Browser requests and file transfers share the relevant cookie jar, Referer and browser identity. **No cookies** disables saved-session reuse for that job. Deleting a platform's cookies also removes its saved browser sessions and prevents in-flight jobs from restoring them. Cookies improve continuity where a site accepts them; they do not guarantee exemption from bot detection. Login/verification, rate limits and DRM are not bypassed.
 
-`m.hqporner.com` video paths are normalized to the site's main hostname. Eporner already has a yt-dlp site extractor; your reported **Cannot resolve this website** error occurs before that extractor or Chromium starts. A website using direct CDN files does not make its page DNS-independent.
+No extractor can promise every website. Ambiguous unrelated players, protected content, changed site APIs and some browser-only session mechanisms can still fail. The supplied Threads share/post and expiring CDN examples have not been confirmed as working live in this environment. See [TEST-REPORT.md](TEST-REPORT.md) for what was actually tested.
 
-The selected source is passed to yt-dlp with its Referer/Origin/User-Agent as needed and domain-scoped cookies. The page title is used if available; your filename overrides it. MP4 and quality controls still apply. No re-encoding is added. For multiple unranked players, the app refuses to guess rather than knowingly choosing an unrelated clip.
+## Tools, queue and settings
 
-This is a playback-observation fallback, not 1DM's proprietary engine and not a guarantee of every website. DRM, verification prompts, inaccessible hosts, changed players and ambiguous sources can still fail. There is no CAPTCHA/age-verification bypass. **The two reported live URLs could not be tested from this workspace because their hostnames did not resolve here.** Local page/iframe/CDN fixtures and the transfer handoff were tested. Actual Chromium playback detection, the supplied live pages and the 2 GB laptop need target-machine validation.
+- **Tools → Instagram stories & highlights:** submit a username/profile to collect currently accessible stories or all accessible highlights, or submit a particular story/highlight URL. A story URL collects that user's accessible current stories. Uses the saved Instagram session. Default destination: `Instagram/<username>`; a custom folder wins. Highlight owner metadata determines the default destination. Expired stories and content unavailable to that account cannot be recovered.
+- **Concurrent downloads:** default 2, configurable 1–4. Existing saved limits remain in effect within that cap. Instagram/Facebook account jobs are serialized per platform, and all browser collectors share one cross-process slot. Browser startup checks both host and service-cgroup memory headroom (default 350 MiB), with a bounded discovery deadline. This is a safeguard, not a memory guarantee for arbitrary pages.
+- **Queue:** Retry All retries failed entries; paused and completed jobs are untouched. Pagination, cached site favicons, detailed stage/error logs, and combined download speed when multiple downloads run. Cancel/remove affects only its own worker.
+- **General settings:** SSD free-space reserve, torrent seeding ratio, retries, playlist limits, per-job media speed cap and separate torrent speed caps. The media cap applies to each media transfer, not a global bandwidth allocator.
+- **Browser settings:** timeout, settling time, frame/candidate budgets, memory headroom, refresh attempts, cookie persistence and configurable tracker-host blocking. Tracker blocking can be disabled for a page whose player depends on a blocked host. Popups are closed; arbitrary advertisements are not clicked.
+- **Telegram:** optional bot token, numeric group/chat and admin IDs, error notifications and browser failure screenshots. The token is masked in state responses. Text diagnostics redact cookies and signed URL queries. Screenshots are opt-in and can contain visible private page content. Test delivery happens only when you click Test.
+- **Data usage:** calendar day/week/month/year in UTC, grouped by submitted website. These are recorded transfer-payload estimates, not router/ISP totals. Browser traffic, protocol overhead, torrents and engines without byte-progress output are excluded; resumed engine counters may overcount.
+- **Clear cache:** removes bounded diagnostic/favicon caches. Active stages, saved sessions and resumable partial files are retained. A separate confirmation can remove cancelled/orphaned working folders.
 
-The optional browser installer is:
+## Code map
 
-```bash
-sudo bash /opt/zedair/install-browser.sh
-sudo systemctl restart zedair
-```
+| Area | Files |
+| --- | --- |
+| HTTP API, authentication, SQLite queue and concurrent workers | `server.py` |
+| Media command construction and exact-post Threads parsing | `media.py`, `platforms.py` |
+| Resolver and fallback orchestration | `download_engine.py`, `page_media.py` |
+| Browser discovery and candidate ranking | `browser_capture.py` |
+| Content typing, streaming and validated HTTP resume | `download_http.py` |
+| Scoped sessions and global browser slot | `web_session.py` |
+| Instagram profile and story/highlight collectors | `instagram_profile.py`, `instagram_story.py`, `profiles.py` |
+| Safe publication and file operations | `publishing.py`, `fileops.py` |
+| Settings, notifications and managed maintenance | `engine_settings.py`, `notifications.py`, `maintenance.py`, `engine_update.py` |
+| Web interface | `static/index.html`, `static/app.js`, `static/style.css` |
+| Installation and recoverable app upgrades | `install.py`, `upgrade.py`, `install-browser.sh` |
 
-It requires 1.5 GiB free internally, installs pinned Playwright and its matching headless browser, and tests sandbox startup as the `zedair` account. It grants Ubuntu AppArmor user-namespace permission to the installed executable when needed; it does not disable the global restriction or Chromium sandbox. Browser launch is deferred below 450 MiB available RAM and detection stops below 180 MiB. Only one media worker/browser runs at a time; CPU/memory service limits remain in force. These checks are safeguards, not a measured memory guarantee for arbitrary pages.
-
-### If a site still fails
-
-1. Open the job's **Details**. Check its engine label and the last error, not only the short Attention summary.
-2. Update the engines with `sudo bash /opt/zedair/update.sh`. For a browser setup error, rerun the installer above. An old Playwright package/browser mismatch cannot be repaired by refreshing the webpage.
-3. For a DNS error, run these **on the Zedair laptop**:
-
-```bash
-getent ahosts www.eporner.com
-resolvectl query www.eporner.com
-getent ahosts hqporner.com
-resolvectl query hqporner.com
-```
-
-If one domain fails while Instagram works, that is a domain-specific resolver/network issue, not proof that the whole internet is offline. Check the router's filtering, resolver configuration or the site's availability. The app retries temporary lookup errors three times, then records the failed hostname and schedules a normal retry. It does not silently switch your DNS, use a proxy or bypass network restrictions. Installing another download engine cannot correct a hostname lookup failure before the page loads.
-
-4. For **unsupported URL / player extraction** after successful DNS, keep playback detection enabled or use **Retry with browser**. Do not paste a homepage or a video-search page.
-5. For a continuing failure, retain the complete job Details and engine versions from Settings. Never post session-cookie values or signed CDN URLs in a public issue.
-
-### What about JDownloader?
-
-JDownloader supports headless operation; its official embedded-device guide recommends 256 MB RAM for headless use and requires a full Java runtime. Its normal remote workflow uses MyJDownloader. That recommendation is not a maximum memory limit for large link collections. It is a possible separate tool, but it is **not installed or integrated by this package**. This revision uses a lightweight static extractor before the existing optional browser, avoiding an additional Java service, queue and remote account. See the [official headless installation guide](https://support.jdownloader.org/en/knowledgebase/article/install-jdownloader-on-nas-and-embedded-devices) if you want to evaluate JDownloader separately.
+`browser_video.py` remains for compatibility and historical regression tests; new individual downloads run through `download_engine.py` and `browser_capture.py`.
 
 ### Long Instagram collections and recovery
 
@@ -107,7 +91,7 @@ The v1.3.1 fix used `--Print` (print **and download**); the v1.4 profile worker 
 
 1. Put this updated source into your GitHub repository, commit and push it.
 2. On Ubuntu, use the Git pull + `upgrade.sh` steps below. No new package or browser installation is required for this fix.
-3. Reload the webpage and check the footer says **v1.4.0**.
+3. Reload the webpage and check the footer says **v2.0.0**.
 4. Open **Tools → Profile jobs**, find the failed Instagram profile, and click **Resume / retry**. You can reuse the same job and saved cookies; do not delete SSD folders or replace a working session just for this bug.
 5. Watch the media count and open its destination after the attempt finishes. Completed files are published under `Instagram/<username>`.
 
@@ -161,7 +145,7 @@ After success:
 systemctl status zedair zedair-transmission --no-pager
 ```
 
-Refresh the page with **Ctrl+F5** on Windows. On your phone, reload the page. The footer should show **v1.4.0**. Existing jobs keep their old folders so they can resume; newly added jobs use your explicit destination directly or an automatic platform folder when none is selected. For a legacy individual-download job that uses an old folder layout, cancel it and add the URL again only if you want to change that layout. For the Instagram profile bug fixed in v1.3.1, retry the existing job as described above. Existing files are not relocated automatically.
+Refresh the page with **Ctrl+F5** on Windows. On your phone, reload the page. The footer should show **v2.0.0**. Existing jobs keep their old folders so they can resume; newly added jobs use your explicit destination directly or an automatic platform folder when none is selected. For a legacy individual-download job that uses an old folder layout, cancel it and add the URL again only if you want to change that layout. For the Instagram profile bug fixed in v1.3.1, retry the existing job as described above. Existing files are not relocated automatically.
 
 ### First time using Git on this laptop
 
@@ -199,17 +183,17 @@ Backups contain private account sessions. Keep them private and keep at least th
 | Source | Downloads | Default destination |
 | --- | --- | --- |
 | YouTube / youtu.be | Videos, audio-only, optional playlists and subtitles | `Zedair/YouTube` |
-| Instagram | Direct posts/carousels/reels; profile Posts / Reels / Everything in Tools | `Zedair/Instagram` or `Zedair/Instagram/<username>` |
+| Instagram | Posts/carousels/reels; profile, story and highlight Tools | `Zedair/Instagram` or `Zedair/Instagram/<username>` |
 | Facebook | Direct video/reel links; experimental profile collector in Tools | `Zedair/Facebook` or `Zedair/Facebook/<username>` |
-| Reddit | Video posts and supported direct Reddit video links | `Zedair/Reddit` |
+| Reddit | Canonical/mobile-share posts and supported Reddit media | `Zedair/Reddit` |
 | X.com / Twitter | Video posts and animated GIFs via a direct status URL | `Zedair/X` |
-| Threads | Experimental photos/videos from an exact public post | `Zedair/Threads` |
+| Threads | Share-link resolution and exact-post media; live compatibility not guaranteed | `Zedair/Threads` |
 | Other supported video sites | yt-dlp-supported URLs, including supported adult sites | `Zedair/website-domain` |
 | BitTorrent | v1/hybrid magnets and `.torrent` files | `Zedair/Torrents` by default |
 
 This is a downloader, not a website search directory. Availability depends on the source website and your session. DRM-protected media and X photo/feed crawling are not included. Profile collection only includes media the website exposes to your session; Facebook collection is experimental and cannot guarantee a complete archive. Threads support is experimental: login walls and changes to embedded page data can prevent downloads. It will not substitute profile pictures for missing post media.
 
-The interface includes a charcoal sidebar, light/dark themes, platform settings, a persistent background queue, image/video previews, list/grid file browsing, deletion, server CPU/RAM/storage gauges, and an **Ookla speed test run on the laptop**, with saved reports. Closing your browser does not stop work. There is one media job and one active torrent download at a time to keep resource use modest.
+The interface includes a charcoal sidebar, light/dark themes, platform settings, a persistent background queue, image/video previews, list/grid file browsing, deletion, server CPU/RAM/storage gauges, and an **Ookla speed test run on the laptop**, with saved reports. Closing your browser does not stop work. Media concurrency is configurable from 1 to 4, with one browser at a time; torrents have their own queue limit.
 
 ## First installation
 
@@ -284,9 +268,9 @@ That key works only before an administrator exists. Browser logins last **35 day
 ## Add downloads and choose folders
 
 1. Open **Downloads → Add downloads**.
-2. Paste one direct URL per line, up to 100. For X, use `https://x.com/USERNAME/status/POST_ID`; old `twitter.com` links also work. Instagram uses a `/p/`, `/reel/` or `/tv/` link.
+2. Paste one webpage or direct file URL per line, up to 100. For X, use `https://x.com/USERNAME/status/POST_ID`; old `twitter.com` links also work. Instagram uses a `/p/`, `/reel/` or `/tv/` link.
 3. Leave the destination empty for an automatic platform folder, or click **Browse** to choose/create an exact destination. To use the root itself, select it in Browse or check **Use Zedair root directly**.
-4. Choose **Best available** for the highest available quality without a resolution cap, or an explicit ceiling such as 1080p. Select **Video file format → MP4 only** to prevent WebM output, or keep the platform default. A source may not offer your preferred format/resolution.
+4. Choose **Best available** for the highest available quality without a resolution cap, or an explicit ceiling such as 1080p. Keep **Original format** for the best available source; select **MP4 · video only** for lossless container conversion where supported. A source may not offer your preferred format/resolution.
 5. Optionally enter a **Filename**. Leave it empty to use the source title. The separate display label only labels the queue job.
 6. Leave **Website cookies** on automatic selection unless you deliberately need another profile.
 7. Add to the queue. You may close the browser.
@@ -294,13 +278,9 @@ That key works only before an administrator exists. Browser logins last **35 day
 With destination `Travel`, a YouTube download lands directly in `Zedair/Travel`. Platform folders are appended only when no destination is selected. Change those default folder names in **Settings → Platforms & cookies** if wanted. For unknown video sites, the hostname is used unless you set a shared Other websites folder.
 
 
-### MP4 only and highest quality
+### Video format and highest quality
 
-In **Add downloads**, choose **Video quality → Best available** and **Video file format → MP4 only**. To make this permanent for new YouTube jobs, open **Settings → Platforms & cookies → YouTube**, set the quality and default format, then save.
-
-MP4-only requests the best MP4 video stream and M4A audio, or the best combined MP4 if separate streams are unavailable. FFmpeg merges/remuxes them without re-encoding. There is no 1080p cap and no fallback to WebM. If the website offers only WebM, the job needs attention instead of silently ignoring your choice. “Best” means best within your chosen format; a website can offer a higher resolution only in another format. MP4 is a container, not a guarantee of H.264: high-resolution MP4 can use AV1/HEVC and may need a compatible player.
-
-**Automatic · any format** permits the engine's best format, including WebM. Audio-only keeps its audio format. Instagram/Threads image and gallery handling is unchanged by this video-engine option. Existing queue jobs retain their format; cancel and re-add a pending job to change it. Downloaded WebM files are not converted retroactively.
+Use **Highest quality + Original format** by default. MP4 is an optional video container request, not an image extension or a lower-quality format filter. Original codecs are copied without re-encoding. If MP4 cannot hold those codecs, select Original format. Audio-only preserves the source audio codec. A direct file has no alternative quality variants to select; use its original webpage for that.
 
 ### Filenames and duplicates
 
@@ -420,13 +400,13 @@ The page refreshes roughly every four seconds while visible and backs off when t
 
 ## Settings and website login cookies
 
-Open **Settings**. The submenu has **General & transfers**, **Platforms & cookies**, **Storage**, **System usage**, and **Account & appearance**.
+Open **Settings**. The submenu has **General & transfers**, **Platforms & cookies**, **Storage**, **System usage**, **Engines**, **Data usage**, and **Account & appearance**.
 
-General settings include media/torrent speed limits, torrent seeding ratio, free-space reserve and retry count. Defaults are a 5 GiB SSD reserve, unlimited download speed, 256 KiB/s torrent upload and seeding ratio 0. KiB/s means kibibytes/second; 1,024 KiB/s is about 8.4 Mbps. Threads currently has no speed cap. YouTube has its own playlist limit in its platform tab; the general playlist limit is the fallback for other video extractors.
+General settings include media/torrent speed limits, torrent seeding ratio, free-space reserve and retry count. Defaults are a 5 GiB SSD reserve, unlimited download speed, 256 KiB/s torrent upload and seeding ratio 0. KiB/s means kibibytes/second; 1,024 KiB/s is about 8.4 Mbps. The HTTP transfer path applies the media speed cap to Threads too. YouTube has its own playlist limit in its platform tab; the general playlist limit is the fallback for other video extractors.
 
 Each platform tab has its folder, enable switch and applicable options. YouTube has quality, video-format, playlist and subtitle defaults. Facebook, Reddit, X and other video sites also expose their applicable format/quality defaults. Instagram has session requirements, best-stream/pre-merged video selection, resolution warnings and request delay. X has quality and an advanced API selector; keep **GraphQL** unless troubleshooting an upstream compatibility issue. Disabled platforms reject new jobs; they do not cancel existing ones.
 
-The main form defaults to **Highest quality + MP4**. Saved platform quality/format settings are used only when you explicitly select **Use platform defaults**; those values are then copied into the new job. Cookie replacements and live engine options apply on the next attempt. Checking playlist/subtitle options in Add downloads also enables them when using platform defaults. To override platform defaults with those options off, select an explicit quality preset and leave the checkboxes unchecked.
+The main form defaults to **Highest quality + Original format**. Saved platform quality/format settings are used only when you explicitly select **Use platform defaults**; those values are then copied into the new job. Cookie replacements and live engine options apply on the next attempt. Checking playlist/subtitle options in Add downloads also enables them when using platform defaults. To override platform defaults with those options off, select an explicit quality preset and leave the checkboxes unchecked.
 
 ### Instagram: paste your session from Firefox on Windows
 
@@ -626,7 +606,7 @@ df -h /srv/zedair-ssd
 | Webpage cannot connect | Laptop IP, port 8787, service status, firewall and guest-network isolation. |
 | SSD offline | USB power/cable, mount UUID and `findmnt`. Reconnect with the Windows/SSD steps. Never disable `require_mount` to hide the error. |
 | Free-space reserve reached | Delete unwanted files through SSD files, or free space in Windows. Browsing/deletion work below the reserve. |
-| Instagram profile shows a count but no files | Upgrade to v1.4.0, then retry the same profile job; see the recovery section at the top. Existing working cookies need no replacement for this bug. |
+| Instagram profile shows a count but no files | Upgrade to v2.0.0, then retry the same profile job; see the recovery section at the top. Existing working cookies need no replacement for this bug. |
 | Website DNS lookup fails | Run the hostname checks near the top on the laptop; other sites working does not establish that this domain resolves. |
 | Browser engine unavailable | Rerun `install-browser.sh`, check its sandbox test, restart the app. |
 | Instagram pagination loop | Progress is retained; the server repeated a completed page/cursor. Review Details/update engines before retrying. |
@@ -710,6 +690,9 @@ python tests/integration_profile_large.py
 python tests/integration_browser_handoff.py
 python tests/integration_page_discovery.py
 python tests/integration_profile_loop.py
+python tests/integration_automatic_engine.py
+python tests/integration_instagram_stories.py
+python tests/integration_browser_capture.py  # requires matching sandboxed Chromium
 ```
 
 See `TEST-REPORT.md` for actual verification and its limits. This release was not installed on your physical laptop. Live account-specific Instagram/X access, real torrent swarms, SSD/systemd behavior and real laptop speed need confirmation there. No preview account, browser screenshot, cookie file or populated database is included in the release.

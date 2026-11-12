@@ -39,13 +39,13 @@ class ProfileTests(Fixture):
     def test_mp4_setting_is_resolved_and_persisted_per_job(self):
         prefs=self.desk.platform_settings();prefs['youtube']['container']='mp4'
         self.desk.set_setting('platforms',prefs)
-        jid=self.create_job();job=self.desk.job(jid)
+        jid=self.desk.add_jobs({'urls':['https://youtube.com/watch?v=fixture'],'container':'platform'})['ids'][0];job=self.desk.job(jid)
         self.assertEqual(job['container'],'mp4')
         args=build_command(job,self.desk.root,None,self.desk.settings(),self.desk.state)
-        self.assertEqual(args[args.index('-f')+1],'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]')
+        self.assertEqual(args[args.index('-f')+1],'bv*+ba/b')
         self.assertIn('--merge-output-format',args);self.assertIn('--remux-video',args)
         self.assertNotIn('--recode-video',args)
-        self.assertEqual(video_format('1080',True),'bv*[ext=mp4][height<=1080]+ba[ext=m4a]/b[ext=mp4][height<=1080]')
+        self.assertEqual(video_format('1080',True),'bv*[height<=1080]+ba/b[height<=1080]')
         self.assertEqual(video_format('audio',True),'ba/b')
         with self.assertRaises(APIError):self.desk.add_jobs({'urls':['https://example.com/a'],'container':'invalid'})
         jid=self.desk.add_jobs({'urls':['https://youtube.com/watch?v=other'],'container':'auto'})['ids'][0]

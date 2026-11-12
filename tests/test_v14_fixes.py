@@ -13,7 +13,7 @@ class FixTests(Fixture):
     def setUp(self):super().setUp();self.desk.rpc.call=lambda *a,**k:{'torrents':[]}
     def stamp(self,p):return f'{p.stat().st_size}:{p.stat().st_mtime_ns}'
     def test_defaults_and_duplicate_url_variants_all_history(self):
-        first=self.create_job();j=self.desk.job(first);self.assertEqual((j['quality'],j['container']),('best','mp4'))
+        first=self.create_job();j=self.desk.job(first);self.assertEqual((j['quality'],j['container']),('best','auto'))
         self.desk.update_job(first,status='done')
         result=self.desk.add_jobs({'urls':['https://youtu.be/fixture?si=share','https://youtube.com/watch?v=fixture&utm_source=x#t=9']})
         self.assertEqual(result,{'ids':[],'skipped':2})

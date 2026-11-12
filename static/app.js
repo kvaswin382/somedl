@@ -9,6 +9,8 @@ if(!['date-desc','date-asc','name-asc','name-desc','size-desc','size-asc'].inclu
 let filePageSize=Number(localStorage.getItem('zedair-page-size'))||24;
 if(![24,50,100].includes(filePageSize))filePageSize=24;
 let lastFullRefresh=0;
+let queueOffset=0,queuePageSize=Number(localStorage.getItem('zedair-queue-page-size'))||10;
+if(![10,25,50].includes(queuePageSize))queuePageSize=10;
 const selectedFiles=new Map();let organizeItems=[];
 let previewPath='',previewKind='',previewRequest=0,previewBusy=false;
 let fileView=localStorage.getItem('zedair-file-view')==='grid'?'grid':'list',fileOffset=0,fileEntries=[],fileTotal=0,fileRequest=0,loadedFilePath=null;
@@ -37,7 +39,7 @@ function uiMessage(text,{title='Confirm',accept='Confirm',input=false,danger=fal
     openDialog('messageDialog');(input?$('#messageInput'):$('#messageCancel')).focus();
   });
 }
-function engineName(j){return j.kind==='instagram'?'Instagram engine':j.kind==='threads'?'Threads engine':j.engine==='browser'?'Browser engine':j.engine==='page'?'Page engine':'Video engine';}
+function engineName(j){return j.kind==='instagram'?'Instagram engine':j.kind==='threads'?'Threads engine':j.engine==='browser'?'Browser engine':j.engine==='page'?'Page engine':j.engine==='direct'?'HTTP file engine':j.engine==='gallery'?'Gallery engine':'Video engine';}
 function jobMatches(j,type){return type==='all'||type==='active'&&j.status==='running'||type==='waiting'&&['queued','retry','blocked','paused'].includes(j.status)||type==='error'&&j.status==='error'||type==='done'&&['done','cancelled'].includes(j.status);}
 function empty(icon,title,message,button=''){return `<div class="empty"><div class="empty-icon">${icon}</div><h3>${E(title)}</h3><p>${E(message)}</p>${button}</div>`;}
 function button(symbol,title,attrs){return `<button class="icon-button" title="${E(title)}" aria-label="${E(title)}" ${attrs}>${symbol}</button>`;}
@@ -64,7 +66,7 @@ async function refresh(tick=false){
     if(tick&&!document.hidden&&page==='queue'&&state?.jobs.some(j=>j.status==='running')&&Date.now()-lastFullRefresh<4000){
       const progress=await api('progress');
       const old=state.jobs.filter(j=>j.status==='running').map(j=>j.id).sort().join(',');
-      if(progress.jobs.map(j=>j.id).sort().join(',')===old){for(const live of progress.jobs)Object.assign(state.jobs.find(j=>j.id===live.id),live);renderJobs(true);return;}
+      if(progress.jobs.map(j=>j.id).sort().join(',')===old){for(const live of progress.jobs)Object.assign(state.jobs.find(j=>j.id===live.id),live);renderJobs(true);renderOverview();return;}
     }
     state=await api('state');lastFullRefresh=Date.now(); $('#connection').textContent='● Connected';$('#connection').classList.remove('offline');
     renderOverview(); if(page==='queue')renderJobs(); if(page==='torrents')renderTorrents(); if(page==='speed')renderSpeed(); if(page==='tools')renderProfileJobs(); if(page==='settings'&&settingsTab==='system'&&!document.hidden)await renderSystem();
@@ -73,6 +75,7 @@ async function refresh(tick=false){
 }
 function renderOverview(){
   const s=state, jobs=s.jobs;
+  const running=jobs.filter(j=>j.status==='running'), torrents=s.torrents.filter(t=>t.status===4);const total=$('#aggregateSpeed');if(total){total.hidden=running.length+torrents.length<2;total.textContent='↓ '+bytes(running.reduce((n,j)=>n+(Number(j.speed)||0),0)+torrents.reduce((n,t)=>n+(Number(t.rateDownload)||0),0))+'/s total';}
   $('#navCount').textContent=jobs.filter(j=>['queued','running','retry','blocked'].includes(j.status)).length;
   $('#torrentCount').textContent=s.torrents.length;
   $('#statActive').textContent=jobs.filter(j=>j.status==='running').length+s.torrents.filter(t=>[4,6].includes(t.status)).length;
@@ -91,12 +94,14 @@ function renderJobs(fast=false){
   const query=$('#searchJobs').value.trim().toLowerCase();
   for(const b of $$('[data-filter]')){const count=state.jobs.filter(j=>jobMatches(j,b.dataset.filter)).length;const label={all:'All',active:'Active',waiting:'Waiting',error:'Attention',done:'Finished'}[b.dataset.filter];b.innerHTML=label+(count?`<span class="tab-count">${count}</span>`:'');}
   const jobs=state.jobs.filter(j=>(!query||`${j.name} ${j.url} ${j.folder}`.toLowerCase().includes(query))&&(filter==='all'||(filter==='active'&&j.status==='running')||(filter==='waiting'&&['queued','retry','blocked','paused'].includes(j.status))||(filter==='error'&&j.status==='error')||(filter==='done'&&['done','cancelled'].includes(j.status))));
-  if(!jobs.length){$('#jobs').innerHTML=empty('↙',state.jobs.length?'No matches here.':'No downloads yet.',state.jobs.length?'Try another filter or search.':'Add a link to start downloading.',state.jobs.length?'':'<button class="secondary" data-open="downloadDialog">＋ Add download</button>');return;}
-  $('#jobs').innerHTML=jobs.map(j=>{
+  if(!jobs.length){$('#queuePageLabel').textContent='0 of 0';$('#queuePrev').disabled=true;$('#queueNext').disabled=true;$('#jobs').innerHTML=empty('↙',state.jobs.length?'No matches here.':'No downloads yet.',state.jobs.length?'Try another filter or search.':'Add a link to start downloading.',state.jobs.length?'':'<button class="secondary" data-open="downloadDialog">＋ Add download</button>');return;}
+  if(queueOffset>=jobs.length)queueOffset=Math.max(0,Math.floor((jobs.length-1)/queuePageSize)*queuePageSize);
+  $('#queuePrev').disabled=queueOffset===0;$('#queueNext').disabled=queueOffset+queuePageSize>=jobs.length;$('#queuePageSize').value=queuePageSize;$('#queuePageLabel').textContent=`${queueOffset+1}–${Math.min(queueOffset+queuePageSize,jobs.length)} of ${jobs.length}`;
+  $('#jobs').innerHTML=jobs.slice(queueOffset,queueOffset+queuePageSize).map(j=>{
     const active=['queued','running','retry','blocked'].includes(j.status);
     const info=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · ${j.status==='running'?'total unknown':labels[j.status]||j.status}`:j.status==='running'?`${bytes(j.speed)}/s · ETA ${eta(j.eta)}`:j.status==='retry'?`Retry in ${eta(Math.max(1,j.next_try-Date.now()/1000))}`:j.status==='done'?'On the SSD':`Attempt ${j.attempts} · ${engineName(j)}`;
     const percent=Math.max(0,Math.min(100,Number(j.progress)||0));
-    return `<article class="job" data-progress-job="${j.id}"><div class="source-icon ${E(j.kind)}">${symbols[j.kind]||'↙'}</div><div class="job-info"><span class="job-title" title="${E(j.name)}">${E(j.name)}</span><div class="job-meta" title="${E(shortFolder(j))}">${E(shortFolder(j))}</div><span class="engine-badge">${E(engineName(j))}</span>${j.status==='error'?`<span class="attention-note">${E(j.detail)}</span>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><span>${j.status==='running'?(j.profile_mode?'Working…':percent.toFixed(1)+'%'):''}</span></div><div class="progress"><i style="width:${percent}%"></i></div><div class="job-speed">${E(info)}</div></div><div class="job-controls">${active?button('Ⅱ','Pause',`data-job="${j.id}" data-action="pause"`):j.status!=='done'?button('▶','Resume / retry',`data-job="${j.id}" data-action="retry"`):button('▤','Open destination',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Details and log',`data-detail="${j.id}"`)}${button('×','Remove from queue',`data-job="${j.id}" data-action="remove"`)}</div></article>`;
+    return `<article class="job" data-progress-job="${j.id}"><div class="source-icon ${E(j.kind)}"><img class="queue-favicon" src="/api/favicon?id=${j.id}" loading="lazy" alt="">${symbols[j.kind]||'↙'}</div><div class="job-info"><span class="job-title" title="${E(j.name)}">${E(j.name)}</span><div class="job-meta" title="${E(shortFolder(j))}">${E(shortFolder(j))}</div><span class="engine-badge">${E(engineName(j))}</span>${j.status==='error'?`<span class="attention-note">${E(j.detail)}</span>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><span>${j.status==='running'?(j.profile_mode?'Working…':percent.toFixed(1)+'%'):''}</span></div><div class="progress"><i style="width:${percent}%"></i></div><div class="job-speed">${E(info)}</div></div><div class="job-controls">${active?button('Ⅱ','Pause',`data-job="${j.id}" data-action="pause"`):j.status!=='done'?button('▶','Resume / retry',`data-job="${j.id}" data-action="retry"`):button('▤','Open destination',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Details and log',`data-detail="${j.id}"`)}${button('×','Remove from queue',`data-job="${j.id}" data-action="remove"`)}</div></article>`;
   }).join('');
 }
 function renderTorrents(){
@@ -159,12 +164,13 @@ async function loadFolders(){
 }
 const platformNames={youtube:'YouTube',facebook:'Facebook',reddit:'Reddit',instagram:'Instagram',x:'X / Twitter',threads:'Threads',other:'Other websites'};
 function selectSettingsTab(tab){
-  settingsTab=tab; if(tab==='system')renderSystem(); $$('[data-settings-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.settingsTab===tab));
+  settingsTab=tab; if(tab==='system')renderSystem();if(tab==='engines')action(loadPackages);if(tab==='usage')action(loadUsage); $$('[data-settings-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.settingsTab===tab));
   $$('[data-settings-panel]').forEach(p=>p.hidden=p.dataset.settingsPanel!==tab);
 }
 function renderSettings(){
   $('#engineVersions').innerHTML=Object.entries(state.engine_versions||{}).map(([key,value])=>`<p><strong>${E(key)}</strong> · ${E(value)}</p>`).join('');
-  Object.entries(state.settings).forEach(([k,v])=>{const field=$(`[name="${k}"]`,$('#settingsForm'));if(field)field.value=v;});
+  Object.entries(state.settings).forEach(([k,v])=>{const field=$(`[name="${k}"]`,$('#settingsForm'));if(field){if(field.type==='checkbox')field.checked=Boolean(v);else field.value=v;}});
+  $('#telegramTokenStatus').textContent=state.settings.telegram_token_set?'Token saved (hidden)':'No token saved';
   selectSettingsTab(settingsTab);renderPlatform();
 }
 function renderPlatform(){
@@ -173,7 +179,7 @@ function renderPlatform(){
   const check=(name,label)=>`<label class="check"><input type="checkbox" name="${name}" ${p[name]?'checked':''}>${label}</label>`;
   const select=(name,label,choices)=>`<label>${label}<select name="${name}">${choices.map(([v,t])=>`<option value="${v}" ${p[name]===v?'selected':''}>${t}</option>`).join('')}</select></label>`;
   let fields=check('enabled','Enable this platform')+`<label>Platform folder<input name="folder" value="${E(p.folder)}" placeholder="${key==='other'?'Automatic website domain':'Folder name'}" maxlength="150" ${key==='other'?'':'required'}><small>Used only when no explicit destination is selected.</small></label>`;
-  if('quality' in p)fields+=select('quality','Default video quality',[['best','Best available'],['2160','Up to 4K'],['1080','Up to 1080p'],['720','Up to 720p'],['480','Up to 480p'],['audio','Audio only']]);
+  if('quality' in p)fields+=select('quality','Default video quality',[['best','Best available'],['4320','Up to 8K'],['2160','Up to 4K'],['1080','Up to 1080p'],['720','Up to 720p'],['480','Up to 480p'],['audio','Audio only']]);
   if('container' in p)fields+=select('container','Default video file format',[['auto','Automatic · any format'],['mp4','MP4 only']]);
   if('subtitles' in p)fields+=check('subtitles','English / Malayalam subtitles');
   if(key==='youtube')fields+=check('playlist','Include playlists by default')+`<label>Playlist item limit<input type="number" name="playlist_limit" min="1" max="500" value="${p.playlist_limit}" required></label>`;
@@ -189,7 +195,7 @@ function renderPlatform(){
 }
 async function showDetail(id){
   const j=await api('job?id='+encodeURIComponent(id));$('#detailTitle').textContent=j.name;
-  $('#detailBody').innerHTML=`<p class="detail-label">SOURCE URL</p><p class="detail-value">${E(j.url)}</p><p class="detail-label">DESTINATION</p><p class="detail-value">${E(shortFolder(j))}</p><p class="detail-label">ENGINE</p><p class="detail-value">${E(engineName(j))}</p><p class="detail-label">VIDEO OPTIONS</p><p class="detail-value">${E(j.quality==='best'?'Highest available':j.quality)} · ${j.kind==='video'&&!j.profile_mode&&j.quality!=='audio'?(j.container==='mp4'?'MP4 only':'Automatic format'):'Platform media format'}</p><p class="detail-label">STATUS</p><p class="detail-value">${E(labels[j.status])} · ${j.attempts} attempt(s)</p><p class="detail-value">${E(j.detail)}</p>${j.error_kind==='auth'?'<button class="secondary" data-open-platforms>Open platform settings</button>':''}<p class="detail-label">RECENT ENGINE OUTPUT</p><pre class="log">${E(j.log||j.last_error||j.detail||'No engine output yet.')}</pre><p class="hint">Gallery jobs report completed items rather than a reliable overall percentage. Video progress is for the current stream/item; merging can continue after it reaches 100%.</p><div class="dialog-footer"><button class="secondary" data-job="${j.id}" data-action="first">Move to front</button><button class="secondary danger" data-job="${j.id}" data-action="remove">Remove from queue</button>${j.kind==='video'&&!j.profile_mode&&!['running','done'].includes(j.status)?`<button class="secondary" data-job="${j.id}" data-action="browser">Retry with browser</button>`:''}<button class="primary" data-job-folder="${E(join(j.folder,j.subdir))}">Open folder</button></div>`;
+  $('#detailBody').innerHTML=`<p class="detail-label">SOURCE URL</p><p class="detail-value">${E(j.url)}</p><p class="detail-label">DESTINATION</p><p class="detail-value">${E(shortFolder(j))}</p><p class="detail-label">ENGINE</p><p class="detail-value">${E(engineName(j))}</p><p class="detail-label">VIDEO OPTIONS</p><p class="detail-value">${E(j.quality==='best'?'Highest available':j.quality)} · ${j.kind==='video'&&!j.profile_mode&&j.quality!=='audio'?(j.container==='mp4'?'MP4 only':'Automatic format'):'Platform media format'}</p><p class="detail-label">STATUS</p><p class="detail-value">${E(labels[j.status])} · ${j.attempts} attempt(s)</p><p class="detail-value">${E(j.detail)}</p>${j.error_kind==='auth'?'<button class="secondary" data-open-platforms>Open platform settings</button>':''}<p class="detail-label">RECENT ENGINE OUTPUT</p><pre class="log">${E(j.log||j.last_error||j.detail||'No engine output yet.')}</pre><p class="hint">Gallery jobs report completed items rather than a reliable overall percentage. Video progress is for the current stream/item; merging can continue after it reaches 100%.</p><div class="dialog-footer"><button class="secondary" data-job="${j.id}" data-action="first">Move to front</button><button class="secondary danger" data-job="${j.id}" data-action="remove">Remove from queue</button>${['video','threads'].includes(j.kind)&&!j.profile_mode&&!['running','done'].includes(j.status)?`<button class="secondary" data-job="${j.id}" data-action="refresh">Refresh source &amp; resume</button>`:''}<button class="primary" data-job-folder="${E(join(j.folder,j.subdir))}">Open folder</button></div>`;
   openDialog('detailDialog');
 }
 async function showTorrentFiles(id){
@@ -201,7 +207,7 @@ async function showTorrentFiles(id){
 $('#authForm').addEventListener('submit',async event=>{event.preventDefault();const form=event.target;const button=$('button[type=submit]',form);button.disabled=true;$('#authError').textContent='';try{const data=Object.fromEntries(new FormData(form));await api(form.dataset.setup==='true'?'setup':'login',data);form.reset();await showAuth();}catch(error){$('#authError').textContent=error.message;}finally{button.disabled=false;}});
 $('#downloadForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target,data=Object.fromEntries(new FormData(form));data.urls=data.urls.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);data.filename=form.filename.value.trim();data.folder_selected=form.folder_selected.checked;data.browser_fallback=form.browser_fallback.checked;data.playlist=form.playlist.checked;data.subtitles=form.subtitles.checked;const result=await api('jobs',data);closeDialog($('#downloadDialog'));form.urls.value='';toast(`${result.ids.length} download(s) queued${result.skipped?`; ${result.skipped} duplicate(s) skipped`:''}.`);await refresh();});});
 $('#torrentForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target;const data={folder:form.folder.value,magnet:form.magnet.value.trim(),paused:form.paused.checked};if(!data.magnet){const file=form.torrent.files[0];if(!file)throw Error('Paste a magnet link or choose a .torrent file.');if(file.size>8*1024*1024)throw Error('Torrent file must be smaller than 8 MiB.');const array=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<array.length;i+=8192)binary+=String.fromCharCode(...array.subarray(i,i+8192));data.metainfo=btoa(binary);}await api('torrents',data);closeDialog($('#torrentDialog'));form.reset();toast('Torrent added.');await setPage('torrents');await refresh();});});
-$('#settingsForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{await api('settings',Object.fromEntries(new FormData(event.target)));toast('Settings saved. Media limits apply to the next job.');await refresh();});});
+$('#settingsForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const data=Object.fromEntries(new FormData(event.target));for(const field of $$('input[type=checkbox]',event.target))data[field.name]=field.checked;await api('settings',data);toast('Settings saved. Media limits apply to the next job.');await refresh();});});
 $('#passwordForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{await api('password',Object.fromEntries(new FormData(event.target)));event.target.reset();toast('Password changed. Sign in again on each device.');await showAuth();});});
 $('#folderCreate').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const path=join(folderPath,event.target.elements.name.value.trim());await api('folders',{path});event.target.reset();folderPath=path;await loadFolders();});});
 $('#folderUp').onclick=()=>action(async()=>{folderPath=parent(folderPath);await loadFolders();});
@@ -214,7 +220,7 @@ $('#unplugBtn').onclick=()=>action(async()=>{await api('hold',{hold:true});await
 $('#logoutBtn').onclick=()=>action(async()=>{await api('logout',{});await showAuth();});
 $('#themeBtn').onclick=()=>{document.body.classList.toggle('dark');localStorage.setItem('zedair-theme',document.body.classList.contains('dark')?'dark':'light');};
 if(localStorage.getItem('zedair-theme')==='dark')document.body.classList.add('dark');
-$('#searchJobs').addEventListener('input',renderJobs);
+$('#searchJobs').addEventListener('input',()=>{queueOffset=0;renderJobs();});
 $('#clearHistory').onclick=()=>action(async()=>{if(!await uiMessage('Clear completed and cancelled jobs from history? Downloaded files will stay on the SSD.'))return;await api('history/clear',{});await refresh();});
 $('#cookieFile').addEventListener('change',event=>action(async()=>{const file=event.target.files[0];if(!file)return;if(file.size>1024*1024)throw Error('Cookie file must be smaller than 1 MiB.');await api('cookies',{slot:cookieSlot,content:await file.text()});event.target.value='';await refresh();renderSettings();toast('Cookie file imported. It will be used by new download attempts.');}));
 document.addEventListener('click',event=>{
@@ -236,7 +242,7 @@ document.addEventListener('click',event=>{
     if(el.dataset.close!==undefined)closeDialog(el.closest('dialog'));
     if(el.dataset.open)openDialog(el.dataset.open);
     if(el.dataset.page)await setPage(el.dataset.page);
-    if(el.dataset.filter){filter=el.dataset.filter;$$('[data-filter]').forEach(b=>b.classList.toggle('selected',b===el));renderJobs();}
+    if(el.dataset.filter){queueOffset=0;filter=el.dataset.filter;$$('[data-filter]').forEach(b=>b.classList.toggle('selected',b===el));renderJobs();}
     if(el.dataset.browse){folderTarget=el.dataset.browse;folderPath=$('#'+folderTarget+' [name=folder]').value.trim();try{await loadFolders();}catch(_){folderPath='';await loadFolders();}openDialog('folderDialog');}
     if(el.dataset.folder!==undefined){folderPath=el.dataset.folder;await loadFolders();}
     if(el.dataset.fileFolder!==undefined){filePath=el.dataset.fileFolder;await loadFiles();}
@@ -397,3 +403,19 @@ window.addEventListener('resize',fitPreview);
 // Use the application's status UI instead of native validation popups.
 for(const form of $$('form'))form.noValidate=true;
 document.addEventListener('submit',event=>{const form=event.target;form.noValidate=true;if(!form.checkValidity()){event.preventDefault();event.stopImmediatePropagation();const field=$(':invalid',form);toast(field?.validationMessage||'Check the form fields.');field?.focus();}},true);
+
+// Maintenance uses the same authenticated, CSRF-protected API as other settings.
+$('#retryAll').onclick=()=>action(async()=>{await api('jobs/retry-all',{});toast('Failed downloads queued for retry.');await refresh();});
+$('#queuePrev').onclick=()=>{queueOffset=Math.max(0,queueOffset-queuePageSize);renderJobs();};
+$('#queueNext').onclick=()=>{queueOffset+=queuePageSize;renderJobs();};
+$('#queuePageSize').onchange=e=>{queuePageSize=Number(e.target.value);queueOffset=0;localStorage.setItem('zedair-queue-page-size',queuePageSize);renderJobs();};
+document.addEventListener('error',e=>{if(e.target.matches?.('.queue-favicon'))e.target.hidden=true;},true);
+$('#storiesForm').onsubmit=e=>{e.preventDefault();action(async()=>{const r=await api('instagram/stories',Object.fromEntries(new FormData(e.target)));toast('Collection queued → '+r.destination);await refresh();renderProfileJobs();});};
+$('#telegramTest').onclick=()=>action(async()=>{await api('telegram/test',{});toast('Test queued. Check the result in Download engines after a few seconds.');});
+$('#telegramClear').onclick=()=>action(async()=>{await api('settings',{clear_telegram_token:true});await refresh();renderSettings();});
+$('#clearCache').onclick=()=>action(async()=>{const abandon=$('#removeAbandoned').checked;if(abandon&&!await uiMessage('Permanently remove cancelled and orphan partial downloads? Finished files and active jobs are kept.',{danger:true}))return;const r=await api('cache/clear',{remove_abandoned:abandon,confirm:abandon});$('#cacheResult').textContent=`Removed ${r.removed} cached items/folders · ${bytes(r.bytes)} freed`;});
+async function loadUsage(){const r=await api('usage?period='+$('#usagePeriod').value);$('#usageReport').innerHTML='<table><thead><tr><th>Source website</th><th>Recorded payload</th></tr></thead><tbody>'+r.domains.map(x=>`<tr><td>${E(x.domain)}</td><td>${bytes(x.bytes)}</td></tr>`).join('')+'</tbody></table>'+(r.domains.length?'':'<p>No recorded transfers for this period.</p>');}
+$('#usagePeriod').onchange=()=>action(loadUsage);
+async function loadPackages(){const r=await api('engines');$('#packageInventory').innerHTML=`<p>Python ${E(r.python)}</p>`+r.system_tools.map(p=>`<p><strong>${E(p.name)}</strong> · ${E(p.version)} <small>(Ubuntu-managed)</small></p>`).join('')+'<table><thead><tr><th>Python package</th><th>Version</th><th>Update</th></tr></thead><tbody>'+r.packages.map(p=>`<tr><td>${E(p.name)}</td><td>${E(p.version)}</td><td>${['yt-dlp','gallery-dl','playwright'].includes(p.name.toLowerCase())?`<button type="button" class="secondary" data-update-package="${E(p.name.toLowerCase())}" ${r.update_available?'':'disabled'}>Update</button>`:'dependency'}</td></tr>`).join('')+'</tbody></table>'+Object.entries(r.updates).map(([k,v])=>`<p>${E(k)}: ${E(v.status)} — ${E(v.detail)}</p>`).join('');$('#telegramResult').textContent=r.telegram.ok?'Last Telegram delivery succeeded':(r.telegram.errors||[]).join('; ');}
+$('#loadPackages').onclick=()=>action(loadPackages);
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.updatePackage)action(async()=>{if(!await uiMessage('Update '+b.dataset.updatePackage+'? Downloads pause while the service updates and restarts.'))return;const r=await api('engines/update',{package:b.dataset.updatePackage});toast(r.message);});});

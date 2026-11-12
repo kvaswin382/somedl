@@ -45,14 +45,15 @@ def _publish(desk, job, stage, destination):
     # Journal commits precede rename. A restart in the publish phase never re-downloads.
     for row in desk.rows('SELECT * FROM published WHERE job=? AND complete=0',(jid,)):
         finish(desk,row,stage,destination)
-    candidates=sorted(p for p in stage.iterdir() if p.is_file() and not p.is_symlink() and p.suffix.lower() in MEDIA)
+    registered=json.loads((stage/'.outputs.json').read_text()) if (stage/'.outputs.json').exists() else []
+    candidates=sorted(p for p in stage.iterdir() if p.is_file() and not p.is_symlink() and not p.name.startswith('.') and (p.suffix.lower() in MEDIA or p.name in registered))
     occupied={p.name.casefold() for p in destination.iterdir()}
     for source in candidates:
         if desk.rows('SELECT source FROM published WHERE job=? AND source=?',(jid,source.name)):
             continue
         desk.destination(str(destination.relative_to(desk.root)),reserve=False)
         custom=job.get('filename','')
-        stem=filename(Path(custom).stem if Path(custom).suffix.lower() in MEDIA else custom) if custom else title_for(source)
+        stem=filename(Path(custom).stem if Path(custom).suffix.lower() in MEDIA or Path(custom).suffix.lower()==source.suffix.lower() else custom) if custom else title_for(source)
         marker=('ZEDAIR-RESERVED:'+jid+':'+source.name).encode()
         for index in range(100000):
             target=destination/(stem+(f' ({index})' if index else '')+source.suffix.lower())

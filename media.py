@@ -76,8 +76,8 @@ def engine_for(url):
 
 def video_format(quality='best',mp4=False):
     if quality=='audio':return 'ba/b'
-    ceiling=f'[height<={quality}]' if quality in ('2160','1080','720','480') else ''
-    if mp4:return f'bv*[ext=mp4]{ceiling}+ba[ext=m4a]/b[ext=mp4]{ceiling}'
+    ceiling=f'[height<={quality}]' if quality in ('4320','2160','1080','720','480') else ''
+    if mp4:return f'bv*{ceiling}+ba/b{ceiling}'
     return f'bv*{ceiling}+ba/b{ceiling}'
 
 
@@ -145,7 +145,7 @@ def build_command(job, dest, cookie, settings, state):
     args = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-cache-dir',
             '--newline', '--progress', '--no-colors', '--windows-filenames', '--trim-filenames', '160',
             '--continue', '--write-info-json', '--no-overwrites', '--retries', '3', '--fragment-retries', '3',
-            '--socket-timeout', '30', '--concurrent-fragments', '1',
+            '--socket-timeout', str(settings.get('http_timeout',30)), '--concurrent-fragments', '1', '--format-sort', 'res,fps,vbr,abr',
             '--progress-delta', '1', '--progress-template',
             'download:ZEDPROG %(progress)j', '--print', 'before_dl:ZEDTITLE %(title)s',
             '--no-simulate', '-f', fmt, '-P', str(dest), '-P', f'temp:{dest}',
@@ -195,7 +195,7 @@ class JSONScripts(HTMLParser):
             self.inside = False
 
 
-def threads_media(page, shortcode):
+def threads_media(page, shortcode, quality='best'):
     """Only read the requested post's structured media, never recommendations or OG thumbnails."""
     parser = JSONScripts()
     parser.feed(page)
@@ -209,6 +209,9 @@ def threads_media(page, shortcode):
             stack.extend(node.values())
         elif isinstance(node, list):
             stack.extend(node)
+        elif isinstance(node,str) and len(node)<2*1024*1024 and node.lstrip().startswith(('{','[')):
+            try:stack.append(json.loads(node))
+            except ValueError:pass
     found = []
     for post in matches:
         for item in post.get('carousel_media') or [post]:
@@ -216,13 +219,15 @@ def threads_media(page, shortcode):
             images = (item.get('image_versions2') or {}).get('candidates') or []
             candidates = videos or images
             candidates = [c for c in candidates if isinstance(c, dict) and isinstance(c.get('url'), str)]
+            if videos and quality.isdigit():
+                candidates=[c for c in candidates if int(c.get('height') or 0)<=int(quality)]
             if candidates:
                 best = max(candidates, key=lambda c: (int(c.get('width') or 0) * int(c.get('height') or 0), int(c.get('bitrate') or 0)))
                 pair = (html.unescape(best['url']), 'mp4' if videos else 'jpg')
                 if pair not in found:
                     found.append(pair)
     if not found:
-        raise ValueError('Threads did not expose media for this exact post. Try fresh Threads cookies; login walls and changed page formats are not supported. No thumbnails were substituted.')
+        raise ValueError('Threads structured data did not contain media for this post; rendered-player discovery is needed (this does not establish that cookies expired).' )
     return found
 
 

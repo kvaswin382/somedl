@@ -110,7 +110,7 @@ def main():
         raise SystemExit('Keep at least 2 GiB free on the internal drive before installation.')
     transmission_was_installed = shutil.which('transmission-daemon') is not None
     run('apt-get', 'update')
-    run('apt-get', 'install', '-y', 'python3-venv', 'ffmpeg', 'transmission-daemon', 'exfatprogs', 'ca-certificates')
+    run('apt-get', 'install', '-y', 'python3-venv', 'ffmpeg', 'transmission-daemon', 'exfatprogs', 'ca-certificates', 'polkitd')
     if not transmission_was_installed:
         subprocess.run(['systemctl', 'disable', '--now', 'transmission-daemon'], check=False)
     try:
@@ -159,7 +159,7 @@ def main():
         (root/folder).mkdir(exist_ok=True)
     if previous and Path('/etc/systemd/system/zedair.service').exists():
         run('systemctl', 'stop', 'zedair.service')
-    for name in ('server.py', 'media.py', 'platforms.py', 'publishing.py', 'speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-browser.sh', 'install-speedtest.py', 'install-speedtest.sh', 'README.md', 'TEST-REPORT.md', 'LICENSE', 'requirements.txt', 'update.sh', 'upgrade.sh', 'upgrade.py'):
+    for name in ('download_http.py','engine_settings.py','web_session.py','notifications.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py', 'media.py', 'platforms.py', 'publishing.py', 'speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-browser.sh', 'install-speedtest.py', 'install-speedtest.sh', 'README.md', 'TEST-REPORT.md', 'LICENSE', 'requirements.txt', 'update.sh', 'upgrade.sh', 'upgrade.py'):
         shutil.copy2(BASE/name, APP/name)
     shutil.copytree(BASE/'static', APP/'static', dirs_exist_ok=True)
     run('python3', '-m', 'venv', APP/'venv')
@@ -188,6 +188,8 @@ def main():
                   'preallocation': 1, 'umask': 63}
         save(settings, json.dumps(params, indent=2)+'\n', 0o600)
         os.chown(settings, user.pw_uid, user.pw_gid)
+    from maintenance import install_update_service
+    install_update_service()
     mount_unit = run('systemd-escape', '--path', '--suffix=mount', MOUNT, capture=True).strip()
     save(Path('/etc/systemd/system/zedair-transmission.service'), f'''[Unit]
 Description=Zedair private torrent engine

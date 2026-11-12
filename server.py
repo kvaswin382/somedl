@@ -22,6 +22,9 @@ import subprocess
 import sys
 import threading
 import time
+import queue
+import datetime
+import engine_settings
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,8 +41,8 @@ HERE = Path(__file__).resolve().parent
 DAYS = 35
 DEFAULTS = {'media_kib': 0, 'torrent_down_kib': 0, 'torrent_up_kib': 256,
             'seed_ratio': 0.0, 'reserve_gib': 5, 'playlist_limit': 100, 'retry_count': 3,
-            'hold': False}
-QUALITY = ('best', '2160', '1080', '720', '480', 'audio')
+            'hold': False, **engine_settings.DEFAULTS}
+QUALITY = ('best', '4320', '2160', '1080', '720', '480', 'audio')
 COOKIE_SLOTS = tuple(platforms.DEFAULTS)
 ACTIVE = ('queued', 'running', 'retry', 'blocked', 'paused')
 
@@ -176,6 +179,7 @@ class Desk:
         self.db.execute("UPDATE jobs SET status='queued', detail='Recovering after service restart' WHERE status='running'")
         self.db.execute('DELETE FROM published WHERE job IN (SELECT id FROM jobs WHERE remove_requested=1)')
         self.db.execute('DELETE FROM jobs WHERE remove_requested=1')
+        self.db.execute('CREATE TABLE IF NOT EXISTS usage(day TEXT,domain TEXT,bytes INTEGER DEFAULT 0,PRIMARY KEY(day,domain))')
         self.db.commit()
         self.engine_versions={}
         for package in ('yt-dlp','gallery-dl','playwright'):
@@ -185,6 +189,11 @@ class Desk:
         self.stop = threading.Event()
         self.current = None
         self.process = None
+        self.processes = {}
+        self.workers = {}
+        self.notices = queue.Queue(maxsize=20)
+        self.usage_pending = {}
+        self.usage_flushed = now()
         self.live = {}
         self.torrents = []
         self.torrent_error = 'Connecting to torrent engine…'
@@ -316,7 +325,7 @@ class Desk:
         quality = data.get('quality', 'best')
         if quality not in (*QUALITY, 'platform'):
             raise APIError('Unknown quality preset')
-        container = data.get('container','mp4')
+        container = data.get('container','auto')
         if container not in ('platform','auto','mp4'):
             raise APIError('Choose automatic format or MP4 only')
         cookie = data.get('cookie_profile', 'auto')
@@ -337,7 +346,7 @@ class Desk:
             kind = engine_for(url)
             if kind == 'instagram' and not re.search(r'/(p|reel|reels|tv)/[^/]+', urllib.parse.urlsplit(url).path):
                 raise APIError('Instagram requires a direct post, carousel or reel URL')
-            if kind == 'threads' and not re.search(r'/(post|t)/[\w-]+', urllib.parse.urlsplit(url).path):
+            if kind == 'threads' and not re.search(r'/(post|t|share)/[\w-]+', urllib.parse.urlsplit(url).path):
                 raise APIError('Threads requires a direct post URL')
             if not self.platform_settings()[platforms.platform_for(url)]['enabled']:
                 raise APIError('This platform is disabled in Settings')
@@ -417,29 +426,32 @@ class Desk:
         except OSError:
             pass  # Publication has completed; optional metadata cleanup must not change its status.
 
-    def stop_process(self):
-        process = self.process
-        if process and process.poll() is None:
+    def stop_process(self, jid=None):
+        with self.lock:
+            targets=[self.processes[jid]] if jid in self.processes else [] if jid else list(self.processes.values())
+            if jid is None and self.process and self.process not in targets:targets.append(self.process)
+        for process in targets:
+            if process.poll() is not None:continue
             try:
-                os.killpg(process.pid, signal.SIGTERM)
+                os.killpg(process.pid,signal.SIGTERM)
                 process.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+                try:os.killpg(process.pid,signal.SIGKILL);process.wait(timeout=3)
+                except ProcessLookupError:pass
+            except ProcessLookupError:pass
 
     def job_action(self, jid, action):
         with self.lock:
             job = self.job(jid)
             if action=='remove':
                 self.update_job(jid,status='cancelled',remove_requested=1,detail='Removed from queue')
-                if self.current!=jid:
+                if jid not in self.workers and jid not in self.processes and self.current!=jid:
                     self.db.execute('DELETE FROM published WHERE job=?',(jid,))
                     self.db.execute('DELETE FROM jobs WHERE id=?',(jid,));self.db.commit()
                 return
-            if action=='browser':
+            if action in ('browser','refresh'):
                 if job['status']=='running':raise APIError('Pause the download before changing its engine')
-                if job['kind']!='video' or job['profile_mode']:raise APIError('Browser retry is for individual video pages')
+                if job['kind'] not in ('video','threads') or job['profile_mode']:raise APIError('Browser retry is for individual video pages')
                 self.update_job(jid,browser_fallback=1,browser_force=1)
                 action='retry'
             if action in ('pause', 'cancel'):
@@ -462,21 +474,32 @@ class Desk:
             if not line:
                 continue
             live = self.live.setdefault(jid, {})
+            live['activity']=time.monotonic()
             if line.startswith('ZEDENGINE '):
                 engine=line[10:].strip()
-                if engine in ('video','page','browser'):
+                if engine in ('video','page','browser','direct','gallery'):
                     live['engine']=engine;self.update_job(jid,engine=engine)
+            elif line.startswith('ZEDOWNER '):
+                owner=line[9:].strip()
+                if re.fullmatch(r'[A-Za-z0-9_.]{1,30}',owner):live['owner']=owner
+            elif line.startswith('ZEDBYTES '):
+                try:
+                    live['exact_bytes']=True;self.record_usage(jid,int(line[9:]))
+                except ValueError:pass
             elif line.startswith('ZEDITEM '):
                 self.write('UPDATE jobs SET items=items+1 WHERE id=?',(jid,))
                 live['detail']='Profile media saved to staging; continuing…'
             elif line.startswith('ZEDPROFILE '):
                 live['detail']=line[11:][:250]
-                live['log']=live['detail']
+                tail.append(live['detail']);live['log']='\n'.join(tail)[-8000:]
             elif line.startswith('ZEDPROG '):
                 try:
                     info = json.loads(line[8:])
                     done = info.get('downloaded_bytes') or 0
                     total = info.get('total_bytes') or info.get('total_bytes_estimate') or 0
+                    if not live.get('exact_bytes'):
+                        old=live.get('counted_bytes',0) if live.get('counted_file')==info.get('filename') else 0
+                        self.record_usage(jid,max(0,done-old));live['counted_bytes']=done;live['counted_file']=info.get('filename')
                     live.update(progress=min(99.9, done / total * 100) if total else 0,
                                 speed=info.get('speed') or 0, eta=info.get('eta'), bytes=done,
                                 detail='Merging / finishing' if info.get('status') == 'finished' else 'Downloading')
@@ -495,6 +518,7 @@ class Desk:
     def run_job(self, job):
         jid = job['id']
         instagram_session = None
+        process = None
         try:
             with self.lock:
                 if self.job(jid)['status'] not in ('queued', 'retry', 'blocked'):
@@ -518,17 +542,23 @@ class Desk:
                 if not cookie or not platforms.cookie_status(self.state,slot)['usable']:
                     raise APIError('Instagram login required: add a valid sessionid in Settings → Platforms → Instagram')
             settings = self.settings()
+            if job['cookie_profile']=='none':settings['auto_cookies']=False
             settings['platforms'] = self.platform_settings()
             cookie = self.cookie_for(job)
             if key in ('instagram','facebook') and cookie:
                 instagram_session = platforms.CookieSession(cookie,key)
                 cookie = instagram_session.path
-            args = build_command(job, dest, cookie, settings, self.state)
-            if job['kind']=='video' and not job.get('profile_mode') and job.get('browser_fallback',1) and 'yt_dlp' in args:
+            command_job={**job,'kind':'video'} if job['kind']=='threads' else job
+            args = build_command(command_job, dest, cookie, settings, self.state) if job.get('profile_mode') not in ('stories','highlights') else []
+            if job.get('profile_mode') in ('stories','highlights'):
+                spec=self.state/('profile-'+jid+'.json')
+                spec.write_text(json.dumps({'url':job['url'],'dest':str(dest),'cookie':str(cookie or ''),'settings':settings}));spec.chmod(0o600)
+                args=[sys.executable,str(HERE/'instagram_story.py'),str(spec)]
+            if job['kind'] in ('video','threads') and not job.get('profile_mode') and 'yt_dlp' in args:
                 spec=self.state/('video-'+jid+'.json')
-                spec.write_text(json.dumps({'args':args,'url':job['url'],'dest':str(dest),'cookie':str(cookie or ''),'enabled':True,'force':bool(job.get('browser_force'))}))
+                spec.write_text(json.dumps({'args':args,'url':job['url'],'dest':str(dest),'state':str(self.state),'cookie':str(cookie or ''),'enabled':bool(job.get('browser_fallback',1)),'force':bool(job.get('browser_force')),'quality':job['quality'],'container':job.get('container','auto'),'filename':job.get('filename',''),'settings':settings}))
                 spec.chmod(0o600)
-                args=[sys.executable,str(Path(__file__).with_name('browser_video.py')),str(spec)]
+                args=[sys.executable,str(Path(__file__).with_name('download_engine.py')),str(spec)]
             env = dict(os.environ, TMPDIR=str(dest), XDG_CACHE_HOME=str(dest), PYTHONUNBUFFERED='1')
             self.current = jid
             self.live[jid] = {}
@@ -536,38 +566,50 @@ class Desk:
                 # Recheck after preparation so a concurrent pause is respected.
                 if self.job(jid)['status'] != 'running':
                     return
-                self.process = subprocess.Popen(args, cwd=dest, env=env, stdout=subprocess.PIPE,
+                process = subprocess.Popen(args, cwd=dest, env=env, stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, start_new_session=True)
-            reader = threading.Thread(target=self.consume, args=(self.process.stdout, jid), daemon=True)
+                self.processes[jid]=process;self.process=process
+            reader = threading.Thread(target=self.consume, args=(process.stdout, jid), daemon=True)
             reader.start()
-            while self.process.poll() is None:
+            started=time.monotonic()
+            while process.poll() is None:
                 if self.stop.wait(1):
-                    self.stop_process()
+                    self.stop_process(jid)
                     self.update_job(jid, status='queued', detail='Waiting for service restart')
                     return
                 fresh = self.job(jid)
                 if fresh['status'] != 'running':
-                    self.stop_process()
+                    self.stop_process(jid)
                     return
+                if time.monotonic()-self.live.get(jid,{}).get('activity',started)>900:
+                    self.stop_process(jid);raise APIError('Worker produced no output for 15 minutes; process stopped and partial files kept')
                 disk = self.storage()
                 if self.get_setting('hold', False) or not disk['ready']:
-                    self.stop_process()
+                    self.stop_process(jid)
                     self.update_job(jid, status='blocked', detail='Queue held' if self.get_setting('hold', False) else disk['reason'])
                     return
             reader.join(timeout=3)
             if self.job(jid)['status'] != 'running':
                 return
             live = self.live.get(jid, {})
-            if self.process.returncode == 79 and job.get('images_only') and key=='instagram':
+            if process.returncode == 79 and job.get('images_only') and key=='instagram':
                 self.update_job(jid,status='done',progress=100,detail='Available feed examined; no matching images were exposed by Instagram.')
                 return
-            if self.process.returncode == 75 and job.get('profile_mode') and key=='instagram':
+            if process.returncode == 75 and job.get('profile_mode') and key=='instagram':
                 if instagram_session:instagram_session.commit()
                 if any(p.is_file() and p.suffix.lower() in MEDIA for p in dest.iterdir()):publish(self,job,dest,output)
                 self.update_job(jid,status='retry',next_try=now()+random.randint(120,300),position=now(),
                     detail='Page checkpoint saved. Short rest before continuing; other downloads can run.',last_error=live.get('log',''))
                 return
-            if self.process.returncode == 0:
+            if job.get('profile_mode') in ('stories','highlights') and not job['folder']:
+                owner=live.get('owner') or job.get('profile_username')
+                if owner:
+                    relative='Instagram/'+safe_relative(owner)
+                    output=self.destination(relative,create=True)
+                    self.update_job(jid,subdir=relative,profile_username=owner);job={**job,'subdir':relative}
+                elif process.returncode==0:
+                    raise APIError('Instagram did not identify the story owner; media kept in staging. Choose a custom folder to retry.')
+            if process.returncode == 0:
                 if instagram_session:
                     try:
                         instagram_session.commit()
@@ -585,14 +627,15 @@ class Desk:
                     # Keep the original authentication/rate-limit error if nothing was downloaded.
                     if any(p.is_file() and p.suffix.lower() in MEDIA for p in dest.iterdir()) or self.rows('SELECT source FROM published WHERE job=?',(jid,)):
                         publish(self,job,dest,output)
-                raise APIError(live.get('log', '')[-8000:] or f'Downloader exited with code {self.process.returncode}')
+                raise APIError(live.get('log', '')[-8000:] or f'Downloader exited with code {process.returncode}')
         except Exception as exc:
             fresh = self.job(jid)
             if fresh['status'] not in ('paused', 'cancelled'):
                 attempts = max(fresh['attempts'], job['attempts'] + 1)
                 error = platforms.redact(str(exc), self.state)[-8000:]
                 category, detail = platforms.failure_kind(error)
-                profile_retry=job.get('profile_mode') and job['kind']=='instagram' and category in ('transient','rate_limit','access') and attempts<=96
+                self.queue_notice(job,error)
+                profile_retry=job.get('profile_mode') in ('posts','reels','everything','avatar') and job['kind']=='instagram' and category in ('transient','rate_limit','access') and attempts<=96
                 again = profile_retry or (category=='transient' and attempts <= self.get_setting('retry_count', 3))
                 delay=random.randint(1800,3600)*min(8,2**min(attempts-1,3)) if profile_retry else min(1800,60*2**min(attempts-1,5))
                 if profile_retry:detail='Collection incomplete. Saved progress kept; cooling down before automatic retry.'
@@ -607,8 +650,10 @@ class Desk:
                 if removed and removed[0]['remove_requested']:
                     self.db.execute('DELETE FROM published WHERE job=?',(jid,))
                     self.db.execute('DELETE FROM jobs WHERE id=?',(jid,));self.db.commit()
-                self.current = None
-            self.process = None
+                self.processes.pop(jid,None);self.workers.pop(jid,None)
+                if self.current==jid:self.current=next(iter(self.processes),None)
+                if self.process is process:self.process=next(iter(self.processes.values()),None)
+            self.flush_usage(force=True)
             self.live.pop(jid, None)
             (self.state / ('video-' + jid + '.json')).unlink(missing_ok=True)
             (self.state / ('gallery-' + jid + '.json')).unlink(missing_ok=True)
@@ -617,24 +662,35 @@ class Desk:
     def media_loop(self):
         while not self.stop.wait(1):
             try:
-                if self.get_setting('hold', False) or not self.storage()['ready']:
-                    continue
-                items = self.rows("SELECT * FROM jobs WHERE status IN ('queued','retry','blocked') AND next_try<=? ORDER BY position LIMIT 1", (now(),))
-                if items:
-                    self.run_job(items[0])
+                if self.get_setting('hold',False) or not self.storage()['ready']:continue
+                with self.lock:
+                    limit=max(1,min(4,int(self.get_setting('simultaneous_downloads',2))))
+                    available=limit-len(self.workers)
+                    if available<=0:continue
+                    rows=self.rows("SELECT * FROM jobs WHERE status IN ('queued','retry','blocked') AND next_try<=? ORDER BY position",(now(),))
+                    for row in rows:
+                        if available<=0:break
+                        if row['id'] in self.workers:continue
+                        # Account-bound collections never overlap with another job using the same platform.
+                        key=platforms.platform_for(row['url'])
+                        running=[self.job(jid) for jid in self.workers]
+                        if key in ('instagram','facebook') and any(platforms.platform_for(r['url'])==key for r in running):continue
+                        thread=threading.Thread(target=self.run_job,args=(row,),daemon=True)
+                        self.workers[row['id']]=thread  # reserve BEFORE starting/preparation
+                        thread.start();available-=1
             except Exception as exc:
-                print('Queue monitor:', type(exc).__name__, flush=True)
+                print('Queue monitor:',type(exc).__name__,flush=True)
 
     def apply_torrent_settings(self):
         s = self.settings()
         return self.rpc.call('session-set', {
-            'download-queue-enabled': True, 'download-queue-size': 1,
+            'download-queue-enabled': True, 'download-queue-size': min(4,s['simultaneous_downloads']),
             'seed-queue-enabled': True, 'seed-queue-size': 1, 'queue-stalled-enabled': False,
             'speed-limit-down-enabled': bool(s['torrent_down_kib']), 'speed-limit-down': s['torrent_down_kib'],
             'speed-limit-up-enabled': True, 'speed-limit-up': max(1, s['torrent_up_kib']),
             'seedRatioLimited': True, 'seedRatioLimit': s['seed_ratio'],
             'peer-limit-global': 40, 'peer-limit-per-torrent': 20,
-            'cache-size-mb': 16, 'port-forwarding-enabled': False,
+            'cache-size-mb': 16, 'port-forwarding-enabled': False, 'preallocation': 0,
         })
 
     def owned_torrent(self, torrent):
@@ -673,7 +729,7 @@ class Desk:
             self.stop.wait(4)
 
     def start(self):
-        for function in (self.media_loop, self.torrent_loop):
+        for function in (self.media_loop, self.torrent_loop,self.notification_loop):
             thread = threading.Thread(target=function, daemon=True)
             thread.start()
             self.threads.append(thread)
@@ -684,6 +740,8 @@ class Desk:
         for thread in self.threads:
             thread.join(timeout=12)
         self.stop_process()
+        for thread in list(self.workers.values()):thread.join(timeout=15)
+        self.flush_usage(force=True)
         self.db.close()
 
     def snapshot(self):
@@ -692,10 +750,69 @@ class Desk:
             job.update(self.live.get(job['id'], {}))
             job.pop('last_error', None)
         return {'storage': self.storage(), 'jobs': jobs, 'torrents': self.torrents,
-                'torrent_error': self.torrent_error, 'settings': self.settings(), 'speedtest': self.speedtest.snapshot(),
+                'torrent_error': self.torrent_error, 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '1.4.0', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.0.0', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+
+    def add_stories(self,data):
+        from instagram_story import target
+        if not self.platform_settings()['instagram']['enabled']:raise APIError('Enable Instagram in Settings first')
+        mode=data.get('mode','stories');owner,url=target(data.get('profile',''),mode)
+        if not platforms.cookie_status(self.state,'instagram')['usable']:raise APIError('Add a usable Instagram session in Settings first')
+        folder=safe_relative(data.get('folder',''))
+        with self.lock:
+            if self.rows("SELECT id FROM jobs WHERE url=? AND status IN ('queued','running','paused','retry','blocked')",(url,)):raise APIError('This story/highlight collection is already queued')
+            if len(self.rows('SELECT id FROM jobs'))>=1000:raise APIError('History is full; clear finished history')
+            jid=secrets.token_hex(6);subdir='' if folder else ('Instagram/'+owner if owner else 'Instagram')
+            self.db.execute("""INSERT INTO jobs(id,url,kind,folder,name,subdir,quality,playlist,subtitles,cookie_profile,status,created,updated,position,layout,profile_mode,profile_username)
+                VALUES(?,?,?,?,?,?,'best',0,0,'instagram','queued',?,?,?,2,?,?)""",(jid,url,'instagram',folder,'Instagram '+mode,subdir,now(),now(),now(),mode,owner));self.db.commit()
+        return {'id':jid,'destination':'Zedair/'+(folder or ('Instagram/'+(owner or '<resolved owner>')))}
+
+    def record_usage(self,jid,count):
+        if count<=0:return
+        try:domain=urllib.parse.urlsplit(self.job(jid)['url']).hostname or 'unknown'
+        except APIError:return
+        day=datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+        with self.lock:
+            key=(day,domain);self.usage_pending[key]=self.usage_pending.get(key,0)+count
+        self.flush_usage()
+
+    def flush_usage(self,force=False):
+        with self.lock:
+            if not force and now()-self.usage_flushed<10:return
+            for (day,domain),count in self.usage_pending.items():
+                self.db.execute('INSERT INTO usage VALUES(?,?,?) ON CONFLICT(day,domain) DO UPDATE SET bytes=bytes+excluded.bytes',(day,domain,count))
+            self.db.commit();self.usage_pending.clear();self.usage_flushed=now()
+
+    def usage_summary(self,period):
+        today=datetime.datetime.now(datetime.timezone.utc).date()
+        starts={'day':today,'week':today-datetime.timedelta(days=today.weekday()),'month':today.replace(day=1),'year':today.replace(month=1,day=1)}
+        if period not in starts:raise APIError('Choose day, week, month or year')
+        self.flush_usage(force=True)
+        return {'period':period,'timezone':'UTC','since':starts[period].isoformat(),'domains':self.rows('SELECT domain,sum(bytes) AS bytes FROM usage WHERE day>=? GROUP BY domain ORDER BY bytes DESC',(starts[period].isoformat(),)),
+            'note':'Recorded website transfer payload, grouped by submitted site. Engine progress may include resumed bytes; browser traffic, protocol overhead, torrents and transfers without byte progress are excluded.'}
+
+    def queue_notice(self,job,error):
+        settings=self.settings()
+        if not settings.get('telegram_errors') and not settings.get('telegram_snapshots'):return
+        photo=None;path=self.root/'.incomplete'/job['id']/'.browser-error.jpg'
+        if settings.get('telegram_snapshots') and path.is_file() and not path.is_symlink():
+            if path.stat().st_size<=1024*1024:photo=path.read_bytes()
+            path.unlink(missing_ok=True)
+        if not settings.get('telegram_errors') and not photo:return
+        from notifications import sanitized
+        message='Download failed: '+job['name']+'\n'+sanitized(job['url'])+'\n'+sanitized(error)
+        try:self.notices.put_nowait((message,photo))
+        except queue.Full:pass
+
+    def notification_loop(self):
+        from notifications import send
+        while not self.stop.is_set():
+            try:message,photo=self.notices.get(timeout=1)
+            except queue.Empty:continue
+            result=send(self.settings(),message,photo)
+            self.set_setting('telegram_last_result',result)
 
     def get_session(self, raw):
         jar = http.cookies.SimpleCookie()
@@ -823,6 +940,16 @@ class Handler(BaseHTTPRequestHandler):
         self.require_session()
         if p.path == '/api/state':
             self.reply(d.snapshot())
+        elif p.path == '/api/usage':
+            self.reply(d.usage_summary(query.get('period',['day'])[0]))
+        elif p.path == '/api/engines':
+            from maintenance import inventory
+            self.reply(inventory(d))
+        elif p.path == '/api/favicon':
+            from maintenance import favicon
+            raw,mime=favicon(d,query.get('id',[''])[0])
+            self.send_response(200);self.headers_common();self.send_header('Content-Type',mime);self.send_header('Content-Length',str(len(raw)));self.end_headers()
+            if self.command!='HEAD':self.wfile.write(raw)
         elif p.path == '/api/system':
             storage=d.storage(reserve=False)
             self.reply(d.systemstats.snapshot(d.root if storage['ready'] else None))
@@ -996,8 +1123,11 @@ class Handler(BaseHTTPRequestHandler):
             d.job_action(data.get('id'), data.get('action'))
         elif path == '/api/history/clear':
             with d.lock:
-                d.db.execute("DELETE FROM published WHERE job IN (SELECT id FROM jobs WHERE status IN ('done','cancelled') AND id!=?)",(d.current or '',))
-                d.db.execute("DELETE FROM jobs WHERE status IN ('done','cancelled') AND id!=?",(d.current or '',));d.db.commit()
+                for row in d.rows("SELECT id FROM jobs WHERE status IN ('done','cancelled')"):
+                    if row['id'] in d.workers or row['id'] in d.processes:continue
+                    d.db.execute('DELETE FROM published WHERE job=?',(row['id'],))
+                    d.db.execute('DELETE FROM jobs WHERE id=?',(row['id'],))
+                d.db.commit()
         elif path == '/api/files/manage':
             from fileops import manage_batch
             self.reply(manage_batch(d,data));return
@@ -1015,20 +1145,34 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/hold':
             d.set_setting('hold', bool(data.get('hold')))
         elif path == '/api/settings':
-            values = {}
-            for key, lo, hi in [('media_kib',0,100000), ('torrent_down_kib',0,100000),
-                                ('torrent_up_kib',1,100000), ('reserve_gib',1,100),
-                                ('playlist_limit',1,500), ('retry_count',0,8), ('seed_ratio',0,10)]:
-                value = float(data[key]) if key == 'seed_ratio' else int(data[key])
-                if not lo <= value <= hi:
-                    raise APIError(f'{key} must be between {lo} and {hi}')
-                values[key] = value
-            for key, value in values.items():
-                d.set_setting(key, value)
-            try:
-                d.apply_torrent_settings()
-            except APIError:
-                pass  # Saved settings are applied when the daemon returns.
+            values=engine_settings.checked(data)
+            for key,lo,hi in [('media_kib',0,100000),('torrent_down_kib',0,100000),('torrent_up_kib',1,100000),('reserve_gib',1,100),('playlist_limit',1,500),('retry_count',0,8),('seed_ratio',0,10)]:
+                if key not in data:continue
+                value=float(data[key]) if key=='seed_ratio' else int(data[key])
+                if isinstance(data[key],bool) or not lo<=value<=hi:raise APIError(f'{key} must be between {lo} and {hi}')
+                values[key]=value
+            # Blank masked token means preserve; explicit clear is a separate flag.
+            if values.get('telegram_bot_token')=='':values.pop('telegram_bot_token')
+            if data.get('clear_telegram_token') is True:values['telegram_bot_token']=''
+            for key,value in values.items():d.set_setting(key,value)
+            try:d.apply_torrent_settings()
+            except APIError:pass
+        elif path == '/api/jobs/retry-all':
+            with d.lock:
+                for row in d.rows("SELECT id FROM jobs WHERE status='error'"):
+                    if row['id'] not in d.workers:d.job_action(row['id'],'retry')
+        elif path == '/api/instagram/stories':
+            self.reply(d.add_stories(data));return
+        elif path == '/api/telegram/test':
+            if not d.get_setting('telegram_errors',False) and not d.get_setting('telegram_snapshots',False):raise APIError('Enable Telegram notifications first')
+            try:d.notices.put_nowait(('Zedair test notification',None))
+            except queue.Full:raise APIError('Notification queue is full; try later')
+        elif path == '/api/cache/clear':
+            from maintenance import clear_cache
+            self.reply(clear_cache(d,data));return
+        elif path == '/api/engines/update':
+            from maintenance import request_update
+            self.reply(request_update(d,data.get('package')));return
         elif path == '/api/speedtest':
             if data.get('action')=='start':
                 d.speedtest.start(accept_terms=data.get('accept_terms',False))
@@ -1047,6 +1191,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/cookies':
             with d.lock:
                 platforms.save_cookies(d.state,data.get('slot'),data)
+                if data.get('delete') is True:
+                    from web_session import forget
+                    forget(d.state,data.get('slot'))
         elif path == '/api/torrents':
             if d.get_setting('hold', False):
                 raise APIError('Resume the queue before adding a torrent', 409)

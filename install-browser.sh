@@ -7,7 +7,9 @@ import shutil
 if shutil.disk_usage('/opt/zedair').free < 1536*1024**2:
     raise SystemExit('Keep at least 1.5 GiB free on the internal drive before installing the optional browser.')
 PY
-/opt/zedair/venv/bin/python -m pip install --no-cache-dir 'playwright==1.64.1'
+if [ "${1:-}" != '--installed' ]; then
+  /opt/zedair/venv/bin/python -m pip install --no-cache-dir 'playwright==1.65.1'
+fi
 PLAYWRIGHT_BROWSERS_PATH=/opt/zedair/browsers /opt/zedair/venv/bin/python -m playwright install --with-deps --only-shell chromium
 chmod -R a+rX /opt/zedair/browsers
 # Allow only the installed browser executable to create its sandbox namespaces.

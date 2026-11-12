@@ -1,0 +1,29 @@
+name: Verify downloader
+on:
+  push:
+    branches: [main, 'improve/**']
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: python -m pip install -r requirements.txt 'playwright==1.65.1'
+      - run: python -m playwright install --with-deps --only-shell chromium
+      - run: python -m unittest discover -s tests
+      - name: Real engine integrations and sandboxed browser fixture
+        env:
+          ZEDAIR_REQUIRE_BROWSER: '1'
+        run: |
+          for test in tests/integration_*.py; do
+            python "$test" || exit $?
+          done
+      - run: node --check static/app.js
+      - run: sha256sum -c MANIFEST.sha256

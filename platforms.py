@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 COOKIE_LOCK = threading.RLock()
 
-QUALITY = ('best', '2160', '1080', '720', '480', 'audio')
+QUALITY = ('best', '4320', '2160', '1080', '720', '480', 'audio')
 DEFAULTS = {
     'youtube': {'enabled': True, 'folder': 'YouTube', 'quality': 'best', 'container': 'auto', 'subtitles': False, 'playlist': False, 'playlist_limit': 100},
     'instagram': {'enabled': True, 'folder': 'Instagram', 'require_cookies': True, 'warn_images': True, 'videos': 'dash', 'sleep_request': 8},
@@ -24,9 +24,9 @@ DEFAULTS = {
     'threads': {'enabled': True, 'folder': 'Threads'},
     'other': {'enabled': True, 'folder': '', 'quality': 'best', 'container': 'auto', 'subtitles': False},
 }
-DOMAINS = {'facebook': ('facebook.com',), 'reddit': ('reddit.com',), 'instagram': ('instagram.com',), 'youtube': ('youtube.com', 'google.com'),
+DOMAINS = {'facebook': ('facebook.com',), 'reddit': ('reddit.com', 'redd.it'), 'instagram': ('instagram.com',), 'youtube': ('youtube.com', 'google.com'),
            'x': ('x.com', 'twitter.com'), 'threads': ('threads.com', 'threads.net', 'instagram.com')}
-RAW_FIELDS = {'facebook': ('c_user','xs','datr','fr'), 'instagram': ('sessionid', 'csrftoken', 'ds_user_id'), 'x': ('auth_token', 'ct0')}
+RAW_FIELDS = {'facebook': ('c_user','xs','datr','fr'), 'instagram': ('sessionid', 'csrftoken', 'ds_user_id'), 'x': ('auth_token', 'ct0'), 'reddit': ('reddit_session','token_v2')}
 
 
 def platform_for(url):
@@ -147,7 +147,8 @@ def _save_cookies(state, slot, data):
                 raise ValueError('Paste only the cookie value, without spaces, line breaks or semicolons')
             if value:
                 fields[name] = value
-        required = {'instagram':('sessionid',),'facebook':('c_user','xs'),'x':('auth_token','ct0')}[slot]
+        required = {'instagram':('sessionid',),'facebook':('c_user','xs'),'x':('auth_token','ct0'),'reddit':()}[slot]
+        if slot=='reddit' and not any(fields.get(k) for k in ('reddit_session','token_v2')):raise ValueError('Enter reddit_session or token_v2')
         if any(not fields.get(k) for k in required):
             raise ValueError('Required session fields: '+', '.join(required))
         # Empty expiry is the Netscape representation of a session cookie (not an expired epoch-zero cookie).
@@ -289,4 +290,4 @@ def failure_kind(message):
     if any(s in low for s in ('403 forbidden','http error 403','no downloadable media','threads did not expose media','reserved output file changed','published output file is missing',
                               'configured scroll limit','no accessible media found')):
         return 'access', 'Website access or output needs attention. Check the error details before retrying.'
-    return 'transient', 'Automatic retry scheduled'
+    return 'transient', 'Transfer/extraction failed; see the stage-specific Details log'

@@ -97,3 +97,11 @@ button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(-
  .file-toolbar .file-sort{display:block;order:0;margin:0;width:100%;min-width:0}.file-toolbar .file-sort:nth-of-type(1){grid-column:1;grid-row:2}.file-toolbar .file-sort:nth-of-type(2){grid-column:2;grid-row:2}.file-toolbar .file-sort select{display:block;width:100%;min-width:0;max-width:100%;margin-top:6px;padding:8px;font-size:11px}
  .file-grid .file-tile{min-width:0}.file-grid .file-card .file-actions .compact{font-size:9px;padding:6px 5px}
 }
+
+/* Engine controls keep long diagnostic and package names readable on phones. */
+.queue-favicon{width:18px;height:18px;object-fit:contain;margin-right:4px}
+#aggregateSpeed{font-size:.85rem;font-variant-numeric:tabular-nums;margin-right:16px;color:var(--accent)}
+#packageInventory{overflow-x:auto} #packageInventory table,#usageReport table{width:100%;text-align:left;border-collapse:collapse}
+#packageInventory td,#packageInventory th,#usageReport td,#usageReport th{padding:8px;border-bottom:1px solid #8883}
+#settingsForm details{margin:20px 0;padding:14px;border:1px solid #8884;border-radius:12px}#settingsForm summary{font-weight:600;cursor:pointer;margin-bottom:14px}
+#storiesForm{margin-bottom:20px}#storiesForm label{display:block;margin:12px 0}.board-foot{flex-wrap:wrap;gap:10px}

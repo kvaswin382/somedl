@@ -131,8 +131,9 @@ def delete_folder(desk,data):
         if data.get('stamp')!=inventory['stamp']:raise ValueError('Folder changed. Review its contents and confirm deletion again.')
         for j in desk.rows("SELECT * FROM jobs WHERE status IN ('running','queued','retry','paused','blocked')"):
             if (desk.root/j['folder']/j['subdir']).is_relative_to(path):raise ValueError('A queued download uses this folder. Remove or cancel it first.')
-        if desk.current:
-            active=desk.rows('SELECT folder,subdir FROM jobs WHERE id=?',(desk.current,))
+        running=set(desk.workers)|set(desk.processes)|({desk.current} if desk.current else set())
+        if running:
+            active=[desk.job(jid) for jid in running]
             if any((desk.root/j['folder']/j['subdir']).is_relative_to(path) for j in active):raise ValueError('Wait for the current download to stop')
         for r in desk.rows('SELECT p.target,j.folder,j.subdir FROM published p JOIN jobs j ON p.job=j.id WHERE p.complete=0'):
             if (desk.root/r['folder']/r['subdir']/r['target']).is_relative_to(path):raise ValueError('A file in this folder is still being saved')
