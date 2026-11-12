@@ -5,6 +5,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from playwright.sync_api import sync_playwright,expect
 from server import Desk,Server,Handler,digest
 import platforms
+import maintenance
 
 ARTIFACTS=Path('test-artifacts')
 def screenshot(page,name):
@@ -24,6 +25,8 @@ with sync_playwright() as pw:
         root=Path(tmp);(root/'ssd/Zedair').mkdir(parents=True)
         desk=Desk({'state':str(root/'state'),'mount':str(root/'ssd'),'require_mount':False,'setup_key_hash':digest('fixture-setup')})
         desk.rpc.call=lambda *a,**k:{'torrents':[]}
+        maintenance.UPDATE_STATE=root/'updater';maintenance.UPDATE_STATE.mkdir()
+        (maintenance.UPDATE_STATE/'integration.json').write_text('{}')
         # Fixed metadata avoids external release checks in this UI fixture.
         desk.release_cache={'checked_at':time.time(),'packages':{'yt-dlp':{'latest_version':'2099.01.01'},'gallery-dl':{'latest_version':'1.32.19'},'playwright':{'latest_version':'1.65.1'}}};desk.release_checking=False
         platforms.save_cookies(desk.state,'instagram',{'fields':{'sessionid':'fixture-not-a-login'}})
@@ -31,9 +34,11 @@ with sync_playwright() as pw:
         thread=threading.Thread(target=site.serve_forever,daemon=True);thread.start()
         try:
             page=browser.new_page(viewport={'width':1360,'height':940});errors=[];page.on('pageerror',lambda e:errors.append(str(e)))
-            icon_requests=[]
+            icon_requests=[];failed_icons=set()
             def favicon(route):
                 icon_requests.append(route.request.url)
+                if route.request.url.split('id=')[-1] in failed_icons:
+                    route.fulfill(status=404,body='');return
                 route.fulfill(content_type='image/png',body=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aA9sAAAAASUVORK5CYII='))
             page.route('**/api/favicon?*',favicon)
             page.goto(f'http://127.0.0.1:{site.server_port}')
@@ -63,10 +68,19 @@ with sync_playwright() as pw:
             with __import__('unittest.mock').mock.patch('server.validate_url'):
                 ids=desk.add_jobs({'urls':['https://video.example.org/watch/42','https://gallery.example.org/post/2'],'quality':'best'})['ids']
             desk.update_job(ids[0],name='Weekend trail · 1080p video',status='running',progress=62)
+            failed_icons.add(ids[1])
             desk.update_job(ids[1],name='Architecture collection',status='error',detail='HTTP 403: the website rejected the saved session.')
             desk.live[ids[0]]={'speed':2457600,'eta':32,'progress':62}
             desk.record_usage(jobs[0]['id'],83*1024**2);desk.record_usage(ids[0],914*1024**2)
-            page.evaluate('() => refresh()');no_overflow(page);screenshot(page,'queue-desktop')
+            page.evaluate('() => refresh()')
+            expect(page.locator('#aggregateSpeed')).to_be_hidden()
+            expect(page.locator('[data-progress-job="'+ids[1]+'"] .source-fallback')).to_be_visible()
+            desk.update_job(jobs[0]['id'],status='running',progress=24)
+            desk.live[jobs[0]['id']]={'speed':524288,'eta':60,'progress':24}
+            page.evaluate('() => refresh()')
+            expect(page.locator('#aggregateSpeed')).to_be_visible()
+            expect(page.locator('#aggregateSpeed')).to_contain_text('2.8 MiB/s')
+            no_overflow(page);screenshot(page,'queue-desktop')
             page.locator('[data-page=settings]').click()
             slider=page.locator('#settingsForm [name=simultaneous_downloads]')
             expect(slider).to_have_attribute('min','1');expect(slider).to_have_attribute('max','20');expect(slider).to_have_attribute('step','1')
@@ -74,6 +88,9 @@ with sync_playwright() as pw:
             expect(page.locator('#settingsSaveStatus')).to_have_text('Saved automatically')
             assert desk.get_setting('simultaneous_downloads')==3
             screenshot(page,'settings-desktop')
+            page.reload();expect(page.locator('#shell')).to_be_visible()
+            page.locator('[data-page=settings]').click()
+            expect(page.locator('#settingsForm [name=simultaneous_downloads]')).to_have_value('3')
             page.get_by_text('Telegram connection & diagnostics',exact=True).click()
             page.locator('#settingsForm [name=telegram_bot_token]').fill('123:fixture')
             page.locator('#settingsForm button.primary').click()
@@ -83,8 +100,9 @@ with sync_playwright() as pw:
             page.locator('[data-settings-tab=engines]').click()
             expect(page.locator('#packageInventory')).to_contain_text('yt-dlp')
             expect(page.locator('#packageInventory')).to_contain_text('New release available')
-            # No service integration installed here: zero actionable update buttons.
-            expect(page.locator('[data-update-package]')).to_have_count(0)
+            expect(page.locator('[data-update-package]')).to_have_count(1)
+            expect(page.locator('[data-update-package]')).to_have_attribute('data-update-package','yt-dlp')
+            expect(page.locator('#packageInventory')).not_to_contain_text('Not installed · Latest 1.32.19')
             screenshot(page,'engines-desktop')
             page.locator('[data-settings-tab=usage]').click()
             expect(page.locator('#usageReport svg')).to_be_visible()
@@ -102,13 +120,24 @@ with sync_playwright() as pw:
             page.locator('[data-open=downloadDialog]').first.click()
             page.locator('#downloadForm h2').click();expect(page.locator('#downloadDialog')).to_be_visible()
             page.mouse.click(5,5);expect(page.locator('#downloadDialog')).not_to_be_visible()
-            page.locator('[data-theme]').first.click()
+            page.locator('#themeBtn').click()
             page.set_viewport_size({'width':390,'height':844});page.evaluate('() => scrollTo(0,0)')
             no_overflow(page);screenshot(page,'queue-mobile-dark')
             page.locator('[data-open=downloadDialog]').first.click();screenshot(page,'download-mobile-dark')
             no_overflow(page);page.mouse.click(2,2);expect(page.locator('#downloadDialog')).not_to_be_visible()
             page.locator('[data-page=settings]').click();page.locator('[data-settings-tab=general]').click()
             page.evaluate('() => scrollTo(0,0)');no_overflow(page);screenshot(page,'settings-mobile-dark')
+            page.route('**/api/system',lambda r:r.fulfill(json={'cpu_percent':95,'cores':4,'memory':{'total':2147483648,'used':1610612736,'available':536870912,'percent':75},'swap':{'total':0,'used':0,'percent':0},'system_disk':{'total':32000000000,'used':6400000000,'percent':20},'ssd':None,'temperature_c':83,'uptime_seconds':3600,'load':[1,1,1],'sampled_at':time.time()}))
+            page.locator('[data-settings-tab=system]').click()
+            expect(page.locator('.usage-ring[data-level=critical]')).to_have_count(1)
+            expect(page.locator('.usage-ring[data-level=warning]')).to_have_count(1)
+            page.evaluate('() => scrollTo(0,0)');no_overflow(page);screenshot(page,'system-mobile-dark')
+            page.route('**/api/state',lambda r:r.abort())
+            page.evaluate('() => refresh()');expect(page.locator('#connection')).to_have_class(__import__('re').compile('offline'))
+            assert page.locator('#connection').evaluate('(el) => getComputedStyle(el).color')=='rgb(255, 143, 167)'
+            page.unroute('**/api/state');page.evaluate('() => refresh()')
+            expect(page.locator('#connection')).not_to_have_class(__import__('re').compile('offline'))
+            assert page.locator('#connection').evaluate('(el) => getComputedStyle(el).color')=='rgb(105, 215, 165)'
             assert not errors,errors
             print('PASS: real UI verified default MP4, live link count, stable single favicon, range autosave 1–20 step 1, masked token, release-aware engine cards, usage chart, exact highlight share, backdrop dismissal and mobile/dark layouts without overflow.')
         finally:

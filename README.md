@@ -281,7 +281,7 @@ That key works only before an administrator exists. Browser logins last **35 day
 1. Open **Downloads → Add downloads**.
 2. Paste one webpage or direct file URL per line, up to 100. For X, use `https://x.com/USERNAME/status/POST_ID`; old `twitter.com` links also work. Instagram uses a `/p/`, `/reel/` or `/tv/` link.
 3. Leave the destination empty for an automatic platform folder, or click **Browse** to choose/create an exact destination. To use the root itself, select it in Browse or check **Use Zedair root directly**.
-4. Choose **Best available** for the highest available quality without a resolution cap, or an explicit ceiling such as 1080p. Keep **Original format** for the best available source; select **MP4 · video only** for lossless container conversion where supported. A source may not offer your preferred format/resolution.
+4. Choose **Best available** for the highest available quality without a resolution cap, or an explicit ceiling such as 1080p. Use **MP4** for lossless container conversion where supported, or **Keep source container** to retain the original video container. Neither choice imposes a resolution limit. A source may not offer your preferred format/resolution.
 5. Optionally enter a **Filename**. Leave it empty to use the source title. The separate display label only labels the queue job.
 6. Leave **Website cookies** on automatic selection unless you deliberately need another profile.
 7. Add to the queue. You may close the browser.
@@ -291,7 +291,7 @@ With destination `Travel`, a YouTube download lands directly in `Zedair/Travel`.
 
 ### Video format and highest quality
 
-Use **Highest quality + MP4** by default. MP4 is an optional video container request, not an image extension or a lower-quality format filter. Original codecs are copied without re-encoding. If MP4 cannot hold those codecs, select Original format. Audio-only preserves the source audio codec. A direct file has no alternative quality variants to select; use its original webpage for that.
+Use **Highest quality + MP4** by default. MP4 is an optional video container request, not an image extension or a lower-quality format filter. Original codecs are copied without re-encoding. If MP4 cannot hold those codecs, select Keep source container. Audio-only preserves the source audio codec. A direct file has no alternative quality variants to select; use its original webpage for that.
 
 ### Filenames and duplicates
 

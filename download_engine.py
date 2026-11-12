@@ -133,7 +133,7 @@ def finish_media(path,spec):
                             '-map','0:a:0' if audio else '0','-c','copy','-threads','1',str(temp)],capture_output=True,text=True)
     if process.returncode:
         temp.unlink(missing_ok=True)
-        raise ValueError('Source codecs could not be copied into the selected container. Try Original format. '+process.stderr[-1200:])
+        raise ValueError('Source codecs could not be copied into the selected container. Try Keep source container. '+process.stderr[-1200:])
     os.replace(temp,target);path.unlink();http.output_register(path.parent,target.name)
 
 

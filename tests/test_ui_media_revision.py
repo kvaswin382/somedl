@@ -48,7 +48,7 @@ class SettingsTests(unittest.TestCase):
 class AlertsTests(unittest.TestCase):
     def setUp(self):
         self.monitor=Monitor();self.settings={**DEFAULTS,'telegram_bot_token':'123:fake'}
-        self.readings={'cpu_percent':95,'memory':{'percent':20},'temperature_c':60,'system_disk':{'percent':20},'ssd':{'free':100*1024**3}}
+        self.readings={'cpu_percent':95,'memory':{'percent':20},'temperature_c':60,'system_disk':{'percent':20},'ssd':{'available':100*1024**3}}
     def test_sustained_cpu_and_per_metric_cooldown(self):
         self.assertEqual(self.monitor.sample(self.readings,self.settings,0),[])
         self.assertEqual(self.monitor.sample(self.readings,self.settings,59),[])
@@ -67,8 +67,15 @@ class AlertsTests(unittest.TestCase):
         self.assertEqual(self.monitor.sample(self.readings,self.settings,70),[])
         self.assertIn('RAM usage',self.monitor.sample(self.readings,self.settings,130)[0])
     def test_ssd_alert_identifies_free_space(self):
-        self.readings['ssd']['free']=2*1024**3
+        self.readings['ssd']['available']=2*1024**3
         self.assertIn('External SSD free space: 2.0 GiB',self.monitor.sample(self.readings,self.settings,0)[0])
+    def test_actual_disk_snapshot_does_not_report_zero_free_space(self):
+        from systemstats import disk_stats
+        from collections import namedtuple
+        usage=namedtuple('usage','total used free')(200*1024**3,100*1024**3,100*1024**3)
+        with patch('systemstats.shutil.disk_usage',return_value=usage):self.readings['ssd']=disk_stats('/')
+        self.assertEqual(self.monitor.sample(self.readings,self.settings,0),[])
+
     def test_disabled_monitor_is_silent(self):
         self.settings['health_alerts']=False;self.readings['temperature_c']=99
         self.assertEqual(self.monitor.sample(self.readings,self.settings,0),[])
@@ -107,6 +114,18 @@ class ReleaseTests(unittest.TestCase):
     def test_compare_stable_versions(self):
         for latest,current in [('1.10.0','1.9.9'),('2026.11.01','2026.10.26')]:self.assertTrue(maintenance.newer(latest,current))
         for latest,current in [('1.9.9','1.10.0'),('1.2.0','1.2'),('2.0rc1','1.0'),('2.0','Not installed'),(None,'1.0')]:self.assertFalse(maintenance.newer(latest,current))
+    def test_gallery_distribution_name_is_normalized(self):
+        from types import SimpleNamespace
+        import tempfile,threading
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            desk=SimpleNamespace(get_setting=lambda *a:{})
+            dist=SimpleNamespace(metadata={'Name':'gallery_dl'},version='1.32.19')
+            with patch('maintenance.check_releases',return_value={}),patch('maintenance.importlib.metadata.distributions',return_value=[dist]),patch('maintenance.shutil.which',return_value=None),patch('maintenance.UPDATE_STATE',Path(tmp)):
+                packages=maintenance.inventory(desk)['packages']
+            gallery=[p for p in packages if p['name']=='gallery-dl']
+            self.assertEqual(len(gallery),1);self.assertEqual(gallery[0]['version'],'1.32.19')
+
     def test_only_fixed_pypi_packages_queried(self):
         with patch('maintenance.urllib.request.urlopen',side_effect=lambda *a,**k:io.BytesIO(b'{"info":{"version":"2.0.0"}}')) as request:
             releases=maintenance.fetch_releases()
@@ -122,5 +141,34 @@ class DataTests(Fixture):
     def test_default_format_is_mp4_with_unrestricted_quality(self):
         jid=self.create_job();job=self.desk.job(jid)
         self.assertEqual(job['container'],'mp4');self.assertEqual(job['quality'],'best')
+
+class BrowserSlotTests(unittest.TestCase):
+    def test_browser_slot_covers_capture_and_transfer(self):
+        import tempfile,threading,time,contextlib
+        from pathlib import Path
+        import download_engine
+        operations=[];errors=[]
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp)
+            specs=[]
+            for n in range(2):
+                dest=root/str(n);dest.mkdir()
+                specs.append({'url':'https://example.com/watch/'+str(n),'dest':str(dest),'state':str(root),
+                    'settings':{'refresh_attempts':0},'force':True,'container':'mp4','quality':'best','args':[]})
+            def capture(url,jar,*args):
+                operations.append('capture');time.sleep(.03)
+                return {'kind':'video','url':'https://cdn.example.com/video.mp4','prefix':b''},'Video',jar
+            def transfer(client,info,dest,*args,**kwargs):
+                operations.append('transfer');time.sleep(.03)
+                return dest/'video.mp4'
+            def worker(spec):
+                try:download_engine.run(spec)
+                except Exception as exc:errors.append(str(exc))
+            with patch('download_http.inspect',return_value={'kind':'page','html':''}),patch('browser_capture.capture',side_effect=capture),patch('download_http.transfer',side_effect=transfer),contextlib.redirect_stdout(io.StringIO()):
+                threads=[threading.Thread(target=worker,args=(spec,),daemon=True) for spec in specs]
+                for thread in threads:thread.start()
+                for thread in threads:thread.join(3)
+            self.assertFalse(any(t.is_alive() for t in threads));self.assertFalse(errors,errors)
+            self.assertEqual(operations,['capture','transfer','capture','transfer'])
 
 if __name__=='__main__':unittest.main()

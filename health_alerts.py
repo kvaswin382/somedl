@@ -18,7 +18,7 @@ class Monitor:
             ('ram','RAM usage',(snapshot.get('memory') or {}).get('percent'),settings['alert_ram_percent'],'%',sustain,False),
             ('disk','System disk usage',(snapshot.get('system_disk') or {}).get('percent'),settings['alert_disk_percent'],'%',sustain,False),
             ('temperature','CPU temperature',snapshot.get('temperature_c'),settings['alert_temperature_c'],'°C',0,False),
-            ('ssd','External SSD free space',((snapshot.get('ssd') or {}).get('free',0)/1024**3) if snapshot.get('ssd') else None,settings['reserve_gib'],'GiB',0,True),
+            ('ssd','External SSD free space',(snapshot['ssd']['available']/1024**3) if (snapshot.get('ssd') or {}).get('available') is not None else None,settings['reserve_gib'],'GiB',0,True),
         ]
         messages=[]
         for key,label,value,limit,unit,delay,low in conditions:

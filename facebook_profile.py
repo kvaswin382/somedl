@@ -209,6 +209,14 @@ def collect(config, db):
 
 
 def run(config):
+    from web_session import lock
+    state=Path(config.get('state',str(Path(config['cookie']).parent)))
+    say('Waiting for the single browser-download slot…')
+    with lock(state/'browser-download.lock'):
+        return run_collection(config)
+
+
+def run_collection(config):
     dest=Path(config['dest']);db=sqlite3.connect(dest/'.facebook-profile.sqlite3')
     db.execute('CREATE TABLE IF NOT EXISTS media(key TEXT PRIMARY KEY,kind TEXT,url TEXT,done INTEGER)')
     try:

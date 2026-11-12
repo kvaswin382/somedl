@@ -20,7 +20,7 @@ UPDATE_RULE=Path('/etc/polkit-1/rules.d/49-zedair-updates.rules')
 
 def inventory(desk,check=False):
     releases=check_releases(desk,force=check)
-    packages=sorted([{'name':d.metadata.get('Name','unknown'),'version':d.version} for d in importlib.metadata.distributions()],key=lambda d:d['name'].lower())
+    packages=sorted([{'name':re.sub(r'[-_.]+','-',d.metadata.get('Name','unknown').lower()),'version':d.version} for d in importlib.metadata.distributions()],key=lambda d:d['name'].lower())
     for name in sorted(UPDATES):
         if not any(p['name'].lower()==name for p in packages):packages.append({'name':name,'version':'Not installed'})
     binaries=[]

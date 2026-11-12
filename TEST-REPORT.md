@@ -2,11 +2,11 @@
 
 Built from the user's installed `873313e` revision. No live account credentials, Telegram messages, or laptop service changes were used during development.
 
-Local verification: **160 unit tests passed**, JavaScript syntax and Python compilation passed, and **12 non-browser integration scripts passed**. The additional real HLS/GIF test verifies H.264/AAC codecs and source dimensions, MP4 output, odd-dimension GIF padding, and exact unchanged JPEG bytes despite MP4 being selected.
+Local verification: **163 unit tests passed**, JavaScript syntax and Python compilation passed, and **12 non-browser integration scripts passed**. The additional real HLS/GIF test verifies H.264/AAC codecs and source dimensions, MP4 output, odd-dimension GIF padding, and exact unchanged JPEG bytes despite MP4 being selected.
 
 New regressions cover the supplied Instagram highlight share through actual gallery-dl extractor construction, concurrency 1–20 step 1, nonzero alert bounds, sustained usage/cooldown, missing sensors, low SSD space, group-only diagnostics, critical group/admin routing and group-only pinning, stable release comparisons, and hourly/daily usage totals.
 
-The release workflow runs all integration scripts, including real sandboxed Chromium extraction and UI tests. UI checks cover a single persistent favicon, live link counts, default MP4, slider autosave, masked tokens, release-aware engine cards, charts, highlight submission, backdrop close, and mobile/dark layout overflow. Screenshots are attached as CI artifacts. CI results are recorded after the candidate run completes.
+The release workflow runs all integration scripts, including real sandboxed Chromium extraction and UI tests. UI checks cover a single persistent favicon, live link counts, default MP4, slider autosave, masked tokens, release-aware engine cards, charts, highlight submission, backdrop close, and mobile/dark layout overflow. Screenshots are attached as CI artifacts. The first candidate passed all backend, real browser extraction and desktop UI checks. Its UI test then stopped on a test locator aimed at the hidden account-theme button; the test now uses the visible theme control. Mobile and final CI results follow the corrected run.
 
 Live Instagram availability still depends on the account/session and Instagram's response; the exact base64 exception is reproduced and fixed without claiming a live account download. Hardware load on the Atom laptop, Telegram delivery/pinning permissions, real systemd upgrades and physical SSD behavior require checking on the laptop. See the prior report for the inherited engine/security fixture scope.
 
