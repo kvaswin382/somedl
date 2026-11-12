@@ -90,6 +90,7 @@ def cookie_path(state, slot):
 
 def load_jar(path):
     jar = http.cookiejar.MozillaCookieJar(str(path))
+    jar.set_policy(http.cookiejar.DefaultCookiePolicy(strict_ns_domain=http.cookiejar.DefaultCookiePolicy.DomainStrictNonDomain))
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         jar.load(ignore_discard=True, ignore_expires=True)

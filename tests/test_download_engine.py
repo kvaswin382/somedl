@@ -133,6 +133,14 @@ class Selection(unittest.TestCase):
         import urllib.request
         with self.assertRaises(ValueError):
             transfer.Redirect().redirect_request(urllib.request.Request('https://example.com'),None,302,'',{},'http://127.0.0.1/private')
+    def test_host_only_cookie_cannot_leak_to_subdomain(self):
+        import urllib.request
+        jar=http.cookiejar.CookieJar()
+        jar.set_cookie(http.cookiejar.Cookie(0,'session','private',None,False,'source.example',False,False,'/',True,True,None,True,None,None,{},False))
+        transfer.opener(jar)
+        same=urllib.request.Request('https://source.example/file');other=urllib.request.Request('https://sub.source.example/file')
+        jar.add_cookie_header(same);jar.add_cookie_header(other)
+        self.assertEqual(same.get_header('Cookie'),'session=private');self.assertFalse(other.has_header('Cookie'))
 
 class SettingsAndTools(Fixture):
     def test_story_targets(self):

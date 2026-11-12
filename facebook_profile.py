@@ -68,7 +68,7 @@ def photo_source(documents, photo_id):
 
 def browser_cookies(jar):
     return [dict(name=c.name,value=c.value,domain=c.domain,path=c.path or '/',secure=bool(c.secure),
-                 httpOnly=c.has_nonstandard_attr('HttpOnly'),expires=c.expires if c.expires else -1)
+                 httpOnly=c.has_nonstandard_attr('HTTPOnly') or c.has_nonstandard_attr('HttpOnly'),expires=c.expires if c.expires else -1)
             for c in jar if c.value and (c.expires is None or c.expires>time.time()) and
             (c.domain.lstrip('.')=='facebook.com' or c.domain.endswith('.facebook.com'))]
 
@@ -80,7 +80,7 @@ def save_browser_cookies(path, cookies):
         expires=c.get('expires',-1)
         jar.set_cookie(http.cookiejar.Cookie(0,c['name'],c['value'],None,False,c['domain'],c['domain'].startswith('.'),
             c['domain'].startswith('.'),c.get('path','/'),True,c.get('secure',False),int(expires) if expires>0 else None,
-            expires<=0,None,None,{'HttpOnly':None} if c.get('httpOnly') else {}))
+            expires<=0,None,None,{'HTTPOnly':None} if c.get('httpOnly') else {}))
     jar.save(ignore_discard=True,ignore_expires=True);Path(path).chmod(0o600)
 
 

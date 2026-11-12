@@ -121,7 +121,7 @@ def capture(url,jar,state,quality='best',settings=None,dest=None):
                 try:
                     context=browser.new_context(accept_downloads=False,service_workers='block',viewport={'width':1100,'height':720})
                     context.set_default_timeout(1200)
-                    context.add_cookies([{'name':c.name,'value':c.value,'domain':c.domain,'path':c.path or '/','secure':c.secure,**({'expires':c.expires} if c.expires else {})} for c in jar if not c.is_expired()])
+                    context.add_cookies([{'name':c.name,'value':c.value,'domain':c.domain,'path':c.path or '/','secure':c.secure,'httpOnly':c.has_nonstandard_attr('HTTPOnly') or c.has_nonstandard_attr('HttpOnly'),**({'expires':c.expires} if c.expires else {})} for c in jar if not c.is_expired()])
                     candidates={};active=set();errors=[];last=[time.monotonic()];validated=set()
                     trackers=[v.strip().lower() for v in settings['tracker_domains'].split(',') if v.strip()]
                     def add(value,headers=None):
@@ -209,7 +209,7 @@ def capture(url,jar,state,quality='best',settings=None,dest=None):
                                 except ValueError:pass
                             page.wait_for_timeout(500);iteration+=1
                         for c in context.cookies():
-                            jar.set_cookie(http.cookiejar.Cookie(0,c['name'],c['value'],None,False,c['domain'],c['domain'].startswith('.'),c['domain'].startswith('.'),c['path'],True,c['secure'],int(c['expires']) if c.get('expires',-1)>0 else None,c.get('expires',-1)<=0,None,None,{},False))
+                            jar.set_cookie(http.cookiejar.Cookie(0,c['name'],c['value'],None,False,c['domain'],c['domain'].startswith('.'),c['domain'].startswith('.'),c['path'],True,c['secure'],int(c['expires']) if c.get('expires',-1)>0 else None,c.get('expires',-1)<=0,None,None,{'HTTPOnly':''} if c.get('httpOnly') else {},False))
                         probe_manifests(list(candidates.values()),jar,time.monotonic()+10)
                         result=select(list(candidates.values()),active,quality)
                         # Preserve the exact browser identity used for the request.
@@ -223,6 +223,6 @@ def capture(url,jar,state,quality='best',settings=None,dest=None):
                         raise ValueError(f'{exc}. Observed {len(candidates)} candidates across {len(page.frames)} frames. {detail}') from exc
                     finally:
                         for c in context.cookies():
-                            jar.set_cookie(http.cookiejar.Cookie(0,c['name'],c['value'],None,False,c['domain'],c['domain'].startswith('.'),c['domain'].startswith('.'),c['path'],True,c['secure'],int(c['expires']) if c.get('expires',-1)>0 else None,c.get('expires',-1)<=0,None,None,{},False))
+                            jar.set_cookie(http.cookiejar.Cookie(0,c['name'],c['value'],None,False,c['domain'],c['domain'].startswith('.'),c['domain'].startswith('.'),c['path'],True,c['secure'],int(c['expires']) if c.get('expires',-1)>0 else None,c.get('expires',-1)<=0,None,None,{'HTTPOnly':''} if c.get('httpOnly') else {},False))
                 finally:browser.close()
         finally:timer.cancel()

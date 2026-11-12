@@ -8,13 +8,13 @@ Implemented independently from main `3a0dd2e954a3f37ecdbdb670363585686b28e7d2`, 
 
 ## Automated coverage
 
-The complete unit suite includes the previous 101 tests plus new regressions for:
+**143 automated tests passed locally**. The release workflow also requires all **13 integration scripts**, including actual sandboxed Chromium and browser UI checks. The unit suite includes the previous 101 tests plus new regressions for:
 
 - Actual image bytes overriding MP4 filenames/settings; direct non-media file publication.
 - Renewed URL resume with matching strong ETag/range/length; changed entities and weak validators restart; error HTML never becomes a downloaded file.
 - Adaptive master selection, quality ceilings, ambiguous-player rejection and matching the playing rendition to higher JSON variants.
 - Cross-origin credential stripping, private redirect rejection and canonical Reddit/Threads share resolution.
-- Private scoped cookie persistence, concurrent merges and masked Telegram tokens.
+- Private scoped cookie persistence, host-only domain boundaries, deletion/revocation, concurrent merges and masked Telegram tokens. Browser fixtures also check that HttpOnly cookies remain inaccessible to page scripts and survive persistence.
 - Instagram story/highlight targets, owner folders and platform enable switches.
 - Concurrent worker cancellation, cache preservation, usage accounting and fixed update allowlists.
 - Authentication/CSRF on new APIs, Retry All behavior and masked-token preservation/clearing.
@@ -26,12 +26,12 @@ The latest complete checks run through [GitHub Actions](https://github.com/kvasw
 
 The eight pre-existing integration scripts passed using actual yt-dlp/gallery-dl/FFmpeg and local HTTP fixtures. `integration_profiles_formats.py` now verifies selection of 4320p WebM plus audio ahead of 2160p MP4, and respects an explicit 1080p ceiling.
 
-Two new integration scripts passed:
+The new pipeline and story integrations passed:
 
 - `integration_automatic_engine.py`: the production orchestration follows a nested player, selects the highest labelled rendition, keeps title and exact bytes, carries browser cookies and Referer to a protected fixture CDN, and inspects a bounded HLS master. **Browser discovery is substituted in its handoff scenario.**
 - `integration_instagram_stories.py`: actual gallery-dl child jobs follow two highlight collections, fetch exact image bytes, emit owner/completion metadata and skip archived IDs on retry. **Instagram responses are fixtures.**
 
-`integration_browser_capture.py` separately launches actual sandboxed Chromium, clicks a player inside an iframe, matches JSON variants to playback and resolves a lengthless HLS master. It exits 77 when Chromium is unavailable, and fails instead when `ZEDAIR_REQUIRE_BROWSER=1` (CI). It does not weaken the Chromium sandbox. Its result must not be conflated with mocked browser handoff tests.
+`integration_browser_capture.py` separately launches actual sandboxed Chromium, clicks a player inside an iframe, matches JSON variants to playback resolves a lengthless HLS master, preserves request-specific authorization without copying API tokens to discovered URLs, and preserves HttpOnly cookie flags. It exits 77 when Chromium is unavailable, and fails instead when `ZEDAIR_REQUIRE_BROWSER=1` (CI). It does not weaken the Chromium sandbox. Its result must not be conflated with mocked browser handoff tests.
 
 ## Environment limits
 
@@ -39,6 +39,6 @@ This workspace could not install the matching Playwright headless shell; the dow
 
 The supplied Threads share and canonical post were inaccessible to the research tool. No end-to-end success is claimed for that live post, Reddit mobile links, live Instagram stories/highlights, expiring bigcdn URLs or arbitrary public websites. Cookies, player structure and source availability can differ on the laptop.
 
-Additional tests exercise lossless MP4/audio conversion with identical encoded-packet hashes, updater rollback and recovery after interruption. The browser UI fixture exercises setup, queuing, settings and Instagram Tools with fake credentials; it does not start download workers.
+Additional tests exercise lossless MP4/audio conversion with identical encoded-packet hashes, updater rollback and recovery after interruption. The browser UI fixture passed setup, queuing, settings, package inventory and Instagram Tools using fake credentials; it does not start download workers.
 
 No physical Atom/2 GB performance, exFAT unplug, live torrent swarm, Telegram delivery or full systemd/polkit installation was exercised. Unit/fixture tests cover their application interfaces, not actual hardware deployment. Installed dependency interfaces used for testing: Python 3.12, yt-dlp 2026.10.26, gallery-dl 1.32.19 and Playwright 1.65.1.

@@ -43,8 +43,12 @@ class Redirect(urllib.request.HTTPRedirectHandler):
 
 def opener(jar=None):
     # Ignore host proxy environment for local destination validation consistency.
+    if jar is None:jar=http.cookiejar.MozillaCookieJar()
+    # Match browser host-only semantics. Python's legacy default otherwise sends
+    # a host-only session cookie to subdomains as well.
+    jar.set_policy(http.cookiejar.DefaultCookiePolicy(strict_ns_domain=http.cookiejar.DefaultCookiePolicy.DomainStrictNonDomain))
     return urllib.request.build_opener(urllib.request.ProxyHandler({}), Redirect(),
-        urllib.request.HTTPCookieProcessor(jar if jar is not None else http.cookiejar.MozillaCookieJar()))
+        urllib.request.HTTPCookieProcessor(jar))
 
 
 def request(client, url, headers=None, timeout=25):
