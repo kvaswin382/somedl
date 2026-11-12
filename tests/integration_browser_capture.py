@@ -28,7 +28,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         elif self.path=='/embed':body=b'''<button aria-label="Play video" onclick="start()">Play</button><video id="main" style="width:400px;height:240px"></video>
 <script>async function start(){await fetch('/sources.json',{headers:{Authorization:'Bearer fixture-api'}});document.querySelector('video').src='/low.mp4';}</script>'''
         elif self.path=='/sources.json':
-            mime='application/json';body=json.dumps({'sources':[{'file':base+'/low.mp4','height':360},{'file':base+'/high.mp4','height':2160}]}).encode()
+            mime='application/json';body=json.dumps({'sources':[{'file':'/low.mp4','height':360},{'file':'/high.mp4','height':2160}]}).encode()
         elif self.path=='/adaptive':body=b'''<title>Adaptive player</title><button aria-label="Play video" onclick="fetch('/master.m3u8');fetch('/variant.m3u8')">Play</button>'''
         elif self.path=='/authorized':body=b'''<button aria-label="Play video" onclick="fetch('/auth.mp4',{headers:{Authorization:'Bearer fixture-media'}}).then(()=>document.querySelector('video').src='/auth.mp4')">Play</button><video style="width:400px;height:240px"></video>'''
         elif self.path=='/master.m3u8':mime='application/vnd.apple.mpegurl';chunked=True;body=b'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1920x1080\nvariant.m3u8\n'

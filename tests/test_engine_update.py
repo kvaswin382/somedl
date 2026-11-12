@@ -30,5 +30,5 @@ class EngineUpdateTests(unittest.TestCase):
             lock=Path(tmp)/'lock'
             with lock.open('a') as guard:
                 fcntl.flock(guard,fcntl.LOCK_EX)
-                with patch.object(engine_update,'UPDATE_LOCK',lock),patch.object(engine_update.os,'geteuid',return_value=0),patch.object(engine_update.subprocess,'run') as run:
+                with patch.object(engine_update,'status_path',return_value=Path(tmp)/'status.json'),patch.object(engine_update,'UPDATE_LOCK',lock),patch.object(engine_update.os,'geteuid',return_value=0),patch.object(engine_update.subprocess,'run') as run:
                     engine_update.recover('gallery-dl');run.assert_not_called()

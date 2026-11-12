@@ -32,8 +32,12 @@ def inventory(desk):
         path=UPDATE_STATE/('update-'+name+'.json')
         try:status[name]=json.loads(path.read_text())
         except (OSError,ValueError):pass
+    # Ubuntu's polkit rules directory is intentionally inaccessible to the web
+    # user. Read the root-owned public installation marker instead.
+    try:update_available=(UPDATE_STATE/'integration.json').is_file()
+    except OSError:update_available=False
     return {'python':sys.version.split()[0],'packages':packages,'system_tools':binaries,'updates':status,
-            'update_available':UPDATE_RULE.is_file(),
+            'update_available':update_available,
             'telegram':desk.get_setting('telegram_last_result',{})}
 
 
@@ -115,3 +119,5 @@ UMask=0077
     UPDATE_STATE.mkdir(mode=0o755,exist_ok=True)
     os.chown(UPDATE_STATE,0,0);UPDATE_STATE.chmod(0o755)
     subprocess.run(['/usr/bin/systemctl','daemon-reload'],check=True)
+    marker=UPDATE_STATE/'integration.json'
+    marker.write_text(json.dumps({'version':1,'packages':sorted(UPDATES)}));marker.chmod(0o644)

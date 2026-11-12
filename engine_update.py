@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 ALLOWED={'yt-dlp':'yt-dlp[default]','gallery-dl':'gallery-dl','playwright':'playwright'}
-UPDATE_LOCK=Path('/run/lock/zedair-update.lock')
+UPDATE_LOCK=Path('/var/lib/zedair-updates/.update.lock')
 
 
 def status_path(name):
@@ -28,11 +28,12 @@ def report(status,value,detail):
 def recover(name):
     """systemd invokes this even if the updater was killed or timed out."""
     if os.geteuid()!=0 or name not in ALLOWED:raise ValueError('Unsupported recovery request')
+    status=status_path(name)
     with UPDATE_LOCK.open('a') as guard:
+        UPDATE_LOCK.chmod(0o600)
         try:fcntl.flock(guard,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:return  # Another engine update still owns the environment.
         try:
-            status=status_path(name)
             if status.exists() and json.loads(status.read_text()).get('status')=='running':
                 report(status,'error','Update was interrupted. Service restarted; inspect the system journal and engine versions.')
         finally:subprocess.run(['systemctl','start','zedair'],check=True)
@@ -42,6 +43,7 @@ def update(name):
     status=status_path(name)
     def progress(value,detail):report(status,value,detail)
     with UPDATE_LOCK.open('a') as guard:
+        UPDATE_LOCK.chmod(0o600)
         fcntl.flock(guard,fcntl.LOCK_EX)
         try:old=importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:old=None

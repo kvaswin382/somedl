@@ -15,7 +15,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch,MagicMock
 from test_desk import Fixture
 from server import APIError
 import browser_capture
@@ -117,6 +117,9 @@ class Selection(unittest.TestCase):
     def test_json_quality_is_kept(self):
         values=browser_capture.json_sources({'sources':[{'file':'https://cdn.test/v.mp4','height':2160}]},'player')
         self.assertEqual(values[0]['height'],2160)
+    def test_relative_player_json_urls_resolve_against_response(self):
+        values=browser_capture.json_sources({'file':'/high.mp4','height':2160},'https://cdn.test/config/player.json')
+        self.assertEqual(values[0]['url'],'https://cdn.test/high.mp4')
     def test_authorization_is_not_a_global_ytdlp_header(self):
         args=download_engine.media_args({'args':['yt-dlp','-o','test.%(ext)s','--','https://source.test']},'https://cdn.test','cookies',{'authorization':'secret','referer':'https://source.test'})
         self.assertNotIn('authorization:secret',args);self.assertIn('referer:https://source.test',args)
@@ -193,6 +196,12 @@ class SettingsAndTools(Fixture):
         with patch('maintenance.subprocess.run',return_value=subprocess.CompletedProcess([],0)) as run:
             maintenance.request_update(self.desk,'yt-dlp')
         self.assertEqual(run.call_args.args[0],['/usr/bin/systemctl','--no-ask-password','start','--no-block','zedair-update@yt-dlp.service'])
+    def test_inventory_survives_inaccessible_optional_integration(self):
+        blocked=MagicMock();blocked.__truediv__.return_value.read_text.side_effect=PermissionError('private')
+        blocked.__truediv__.return_value.is_file.side_effect=PermissionError('private')
+        with patch.object(maintenance,'UPDATE_STATE',blocked),patch.object(maintenance.shutil,'which',return_value=None):
+            result=maintenance.inventory(self.desk)
+        self.assertFalse(result['update_available']);self.assertTrue(result['packages'])
     def test_cleanup_keeps_resumable_partials_and_active_stage(self):
         jid=self.create_job();stage=self.desk.staging(jid);(stage/'movie.part').write_bytes(b'partial');(stage/'.browser-error.jpg').write_bytes(b'private')
         maintenance.clear_cache(self.desk,{})

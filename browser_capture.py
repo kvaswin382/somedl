@@ -11,7 +11,7 @@ import signal
 import threading
 import time
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit,urljoin
 import profiles
 from media import validate_url
 from download_http import UA
@@ -51,7 +51,7 @@ def json_sources(value,base='',depth=0):
     if isinstance(value,dict):
         for key,v in value.items():
             if isinstance(v,str) and key.lower() in ('file','src','url','video_url','contenturl','playbackhlsurl','playbackdashurl','hls','dash') and kind(v):
-                found.append({'url':v,'height':value.get('height') or value.get('quality') or 0,'group':base})
+                found.append({'url':urljoin(base,v),'height':value.get('height') or value.get('quality') or 0,'group':base})
             elif isinstance(v,(dict,list)):found.extend(json_sources(v,base,depth+1))
     elif isinstance(value,list):
         for v in value[:500]:found.extend(json_sources(v,base,depth+1))
