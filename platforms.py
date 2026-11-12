@@ -284,7 +284,9 @@ def failure_kind(message):
                               'cookie has expired','cookies have expired','login_required','invalid session','sessionid is required',
                               'http error 401','401 unauthorized')):
         return 'auth', 'Authentication was not accepted. Check Details and Settings → Platforms. A rejected request does not prove the browser session expired; replace cookies only if the session is missing, expired or revoked.'
-    if any(s in low for s in ('requested format is not available','unsupported url','no video could be found','no video formats found',
+    if any(s in low for s in ('http error 503','http 503','http error 502','http 502','connection reset','peer connection','timed out','jsondecodeerror')):
+        return 'transient', 'Temporary network or response failure; see Details for the failed extraction stage'
+    if any(s in low for s in ('requested format is not available','unsupported url','no playable media request','unrelated or unranked media','no video could be found','no video formats found',
                               'does not contain a video','this tweet is unavailable','404 not found')):
         return 'unsupported', 'No accessible supported media. Check the link and platform availability.'
     if any(s in low for s in ('403 forbidden','http error 403','no downloadable media','threads did not expose media','reserved output file changed','published output file is missing',

@@ -17,6 +17,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: python -m pip install -r requirements.txt 'playwright==1.65.1'
       - run: python -m playwright install --with-deps --only-shell chromium
+      - name: Permit the installed Chromium sandbox on Ubuntu
+        run: sudo python3 tests/configure_browser_ci.py "$HOME/.cache/ms-playwright"
       - run: python -m unittest discover -s tests
       - name: Real engine integrations and sandboxed browser fixture
         env:

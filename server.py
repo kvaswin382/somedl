@@ -221,7 +221,9 @@ class Desk:
         self.write('INSERT OR REPLACE INTO settings VALUES (?,?)', (key, json.dumps(value)))
 
     def settings(self):
-        return {k: self.get_setting(k, v) for k, v in DEFAULTS.items()}
+        values={k: self.get_setting(k, v) for k, v in DEFAULTS.items()}
+        values['simultaneous_downloads']=max(1,min(4,int(values['simultaneous_downloads'])))
+        return values
 
     def platform_settings(self):
         return platforms.preferences(self.get_setting('platforms', {}))

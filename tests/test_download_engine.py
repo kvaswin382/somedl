@@ -167,6 +167,16 @@ class SettingsAndTools(Fixture):
         for session,name in ((a,'one'),(b,'two')):
             session.jar.set_cookie(http.cookiejar.Cookie(0,name,name,None,False,'a.test',False,False,'/',True,True,None,True,None,None,{},False));session.save()
         self.assertEqual({c.name for c in Session(self.desk.state,'https://a.test').jar},{'one','two'})
+    def test_cookie_deletion_wins_over_old_worker(self):
+        from web_session import forget
+        session=Session(self.desk.state,'https://www.reddit.com')
+        session.jar.set_cookie(http.cookiejar.Cookie(0,'reddit_session','private',None,False,'.reddit.com',True,True,'/',True,True,None,True,None,None,{},False))
+        session.save();forget(self.desk.state,'reddit');session.save()
+        self.assertFalse(list(Session(self.desk.state,'https://www.reddit.com').jar))
+    def test_disabled_session_does_not_load_saved_cookies(self):
+        session=Session(self.desk.state,'https://a.test')
+        session.jar.set_cookie(http.cookiejar.Cookie(0,'session','private',None,False,'a.test',False,False,'/',True,True,None,True,None,None,{},False));session.save()
+        self.assertFalse(list(Session(self.desk.state,'https://a.test',enabled=False).jar))
     def test_update_rejects_arbitrary_package_before_command(self):
         with patch('maintenance.subprocess.run') as run:
             for package in ('requests','yt-dlp;reboot','https://evil.test/pkg','--upgrade'):

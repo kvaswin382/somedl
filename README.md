@@ -612,7 +612,7 @@ df -h /srv/zedair-ssd
 | Instagram pagination loop | Progress is retained; the server repeated a completed page/cursor. Review Details/update engines before retrying. |
 | Instagram fails | Read Details; renew cookies, finish a browser challenge, wait for a rate limit or update engines as appropriate. |
 | Facebook profile stops | Inspect the experimental collector log; check session, scroll limit, layout changes and browser installation. A finished job is not proof of a complete archive. |
-| MP4-only format unavailable | The source offers no matching MP4/M4A combination at the selected ceiling. Try Automatic if another format is acceptable. |
+| MP4 container conversion failed | The source codec cannot be copied into MP4. Select Original format; no lower-quality version is silently substituted. |
 | Reddit video fails | Use a direct Reddit post/video link, update engines, and import Reddit cookies if that content needs login. |
 | X video fails | Confirm it is a video status URL; check your session and update engines. Private/deleted/restricted posts can remain unavailable. |
 | YouTube fails | Update engines, check Deno, inspect Details, and add YouTube cookies when required. |
