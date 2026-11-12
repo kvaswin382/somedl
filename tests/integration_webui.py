@@ -39,7 +39,7 @@ with sync_playwright() as pw:
             page.get_by_text('Telegram diagnostics',exact=True).click()
             page.locator('#settingsForm [name=telegram_bot_token]').fill('123:fixture')
             page.locator('#settingsForm button.primary').click()
-            page.wait_for_function("document.querySelector('#toast').textContent.includes('saved')")
+            expect(page.locator('#toast')).to_contain_text('Settings saved')
             assert desk.get_setting('simultaneous_downloads')==3
             assert desk.get_setting('telegram_bot_token')=='123:fixture'
             page.locator('[data-settings-tab=engines]').click()

@@ -181,6 +181,11 @@ class Desk:
         self.db.execute('DELETE FROM jobs WHERE remove_requested=1')
         self.db.execute('CREATE TABLE IF NOT EXISTS usage(day TEXT,domain TEXT,bytes INTEGER DEFAULT 0,PRIMARY KEY(day,domain))')
         self.db.commit()
+        if self.get_setting('telegram_errors') is None:
+            # Claude enabled error notices through a configured token/recipient;
+            # retain that choice while giving new installations an explicit switch.
+            enabled=bool(self.get_setting('telegram_bot_token','') and (self.get_setting('telegram_chat_id','') or self.get_setting('telegram_admin_id','')))
+            self.set_setting('telegram_errors',enabled)
         self.engine_versions={}
         for package in ('yt-dlp','gallery-dl','playwright'):
             try:self.engine_versions[package]=importlib.metadata.version(package)

@@ -20,7 +20,7 @@ The complete unit suite includes the previous 101 tests plus new regressions for
 - Authentication/CSRF on new APIs, Retry All behavior and masked-token preservation/clearing.
 - Existing installer upgrade/rollback fixtures preserve private state and environment.
 
-Exact final test counts and CI status are recorded with the completed revision.
+The latest complete checks run through [GitHub Actions](https://github.com/kvaswin382/somedl/actions/workflows/verify.yml). Release requires every stage to pass, including actual browser execution.
 
 ## Real-engine local integrations
 
@@ -35,8 +35,10 @@ Two new integration scripts passed:
 
 ## Environment limits
 
-This workspace could not install the matching Playwright headless shell; the download failed. The available system Chromium also failed to launch under workspace IPC restrictions. Consequently actual Chromium discovery has not passed locally. GitHub CI is configured to require the real browser fixture rather than silently skip it.
+This workspace could not install the matching Playwright headless shell; the download failed. The available system Chromium also failed to launch under workspace IPC restrictions. Actual Chromium discovery could not run locally. It **passed on Ubuntu 24.04 in GitHub Actions** after applying the same per-executable AppArmor namespace permission as the installer. Chromium sandboxing and the global Ubuntu restriction remained enabled. The workflow requires this test rather than silently skipping it.
 
 The supplied Threads share and canonical post were inaccessible to the research tool. No end-to-end success is claimed for that live post, Reddit mobile links, live Instagram stories/highlights, expiring bigcdn URLs or arbitrary public websites. Cookies, player structure and source availability can differ on the laptop.
 
-No physical Atom/2 GB performance, exFAT unplug, live torrent swarm, Telegram delivery or systemd/polkit installation was exercised. Unit/fixture tests cover their application interfaces, not actual hardware deployment. Installed dependency interfaces used for testing: Python 3.12, yt-dlp 2026.10.26, gallery-dl 1.32.19 and Playwright 1.65.1.
+Additional tests exercise lossless MP4/audio conversion with identical encoded-packet hashes, updater rollback and recovery after interruption. The browser UI fixture exercises setup, queuing, settings and Instagram Tools with fake credentials; it does not start download workers.
+
+No physical Atom/2 GB performance, exFAT unplug, live torrent swarm, Telegram delivery or full systemd/polkit installation was exercised. Unit/fixture tests cover their application interfaces, not actual hardware deployment. Installed dependency interfaces used for testing: Python 3.12, yt-dlp 2026.10.26, gallery-dl 1.32.19 and Playwright 1.65.1.

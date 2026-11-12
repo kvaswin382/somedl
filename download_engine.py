@@ -222,7 +222,7 @@ def run(spec):
                 problems.append('browser: '+diagnostic(exc));say(problems[-1])
                 if any(s in str(exc).lower() for s in ('insufficient','executable doesn\'t exist','no playable media','unrelated or unranked')):break
             if attempt<settings['refresh_attempts']:time.sleep(min(10,2**attempt))
-        raise ValueError('All applicable extraction stages failed.\n'+'\n'.join(problems[-8:]))
+        raise ValueError('All applicable extraction stages failed.\n'+'\n'.join(p[:180]+' … '+p[-320:] if len(p)>520 else p for p in problems[-5:]))
     finally:
         try:session.save()
         except OSError as exc:say('Could not persist website session: '+type(exc).__name__)

@@ -151,6 +151,13 @@ class SettingsAndTools(Fixture):
         self.desk.set_setting('telegram_bot_token','123:private')
         settings=self.desk.snapshot()['settings']
         self.assertEqual(settings['telegram_bot_token'],'');self.assertTrue(settings['telegram_token_set'])
+    def test_claude_telegram_settings_migrate_without_losing_opt_in(self):
+        self.desk.set_setting('telegram_bot_token','123:fixture');self.desk.set_setting('telegram_chat_id','-123')
+        self.desk.write("DELETE FROM settings WHERE key='telegram_errors'")
+        self.desk.close();self.desk=_desk_tests.Desk(self.config)
+        self.assertTrue(self.desk.get_setting('telegram_errors'))
+        self.desk.set_setting('telegram_errors',False);self.desk.close();self.desk=_desk_tests.Desk(self.config)
+        self.assertFalse(self.desk.get_setting('telegram_errors'))
     def test_settings_bounds_and_strict_booleans(self):
         self.assertEqual(engine_settings.checked({'browser_timeout':'120'})['browser_timeout'],120)
         for data in ({'simultaneous_downloads':5},{'auto_cookies':'false'},{'telegram_chat_id':'a;command'},{'browser_timeout':True}):

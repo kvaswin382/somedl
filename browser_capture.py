@@ -132,6 +132,7 @@ def capture(url,jar,state,quality='best',settings=None,dest=None):
                         height=re.search(r'(\d{3,4})',str(value.get('height',0)))
                         item={'url':u,'kind':k,'headers':headers or {'referer':url},'height':int(height[1]) if height else 0,**value}
                         item['height']=int(height[1]) if height else 0
+                        item['headers']={**candidates.get(u,{}).get('headers',{}),**item['headers']}
                         item['groups']=list(set(candidates.get(u,{}).get('groups',[]))|({value['group']} if value.get('group') else set()))
                         if value.get('active'):active.add(u)
                         if u not in candidates and len(candidates)<limit:last[0]=time.monotonic();candidates[u]=item
@@ -164,7 +165,10 @@ def capture(url,jar,state,quality='best',settings=None,dest=None):
                                     body=res.text();item['master']='#EXT-X-STREAM-INF' in body or '<MPD' in body
                                 add(item,headers)
                             elif 'json' in mime and 0<length<1024*1024:
-                                for item in json_sources(res.json(),res.url):add(item,headers)
+                                # An API bearer token is not authorization to send
+                                # that credential to URLs listed in its JSON.
+                                discovered_headers={k:v for k,v in headers.items() if k!='authorization'}
+                                for item in json_sources(res.json(),res.url):add(item,discovered_headers)
                         except Exception as exc:errors.append('response: '+type(exc).__name__)
                     context.on('response',response)
                     page=context.new_page();context.on('page',lambda p:p.close() if p!=page else None)

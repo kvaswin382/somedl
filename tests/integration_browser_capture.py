@@ -26,10 +26,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         mime='text/html';chunked=False
         if self.path=='/watch':body=b'<title>Nested player</title><iframe width="500" height="400" src="/embed"></iframe>'
         elif self.path=='/embed':body=b'''<button aria-label="Play video" onclick="start()">Play</button><video id="main" style="width:400px;height:240px"></video>
-<script>async function start(){await fetch('/sources.json');document.querySelector('video').src='/low.mp4';}</script>'''
+<script>async function start(){await fetch('/sources.json',{headers:{Authorization:'Bearer fixture-api'}});document.querySelector('video').src='/low.mp4';}</script>'''
         elif self.path=='/sources.json':
             mime='application/json';body=json.dumps({'sources':[{'file':base+'/low.mp4','height':360},{'file':base+'/high.mp4','height':2160}]}).encode()
         elif self.path=='/adaptive':body=b'''<title>Adaptive player</title><button aria-label="Play video" onclick="fetch('/master.m3u8');fetch('/variant.m3u8')">Play</button>'''
+        elif self.path=='/authorized':body=b'''<button aria-label="Play video" onclick="fetch('/auth.mp4',{headers:{Authorization:'Bearer fixture-media'}}).then(()=>document.querySelector('video').src='/auth.mp4')">Play</button><video style="width:400px;height:240px"></video>'''
         elif self.path=='/master.m3u8':mime='application/vnd.apple.mpegurl';chunked=True;body=b'#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000000,RESOLUTION=1920x1080\nvariant.m3u8\n'
         elif self.path=='/variant.m3u8':mime='application/vnd.apple.mpegurl';chunked=True;body=b'#EXTM3U\n#EXTINF:4.0,\nsegment.ts\n#EXT-X-ENDLIST\n'
         else:mime='video/mp4';body=b'\0\0\0\x18ftypmp42'+b'fixture'
@@ -47,8 +48,10 @@ def validate(url):
     return original(url)
 try:
     with tempfile.TemporaryDirectory() as state,patch('browser_capture.validate_url',side_effect=validate),patch('download_http.validate_url',side_effect=validate),patch('browser_capture.available_memory',return_value=1024**3):
-        for path,expected in (('/watch','/high.mp4'),('/adaptive','/master.m3u8')):
+        for path,expected in (('/watch','/high.mp4'),('/adaptive','/master.m3u8'),('/authorized','/auth.mp4')):
             found,title,jar=browser_capture.capture(base+path,http.cookiejar.MozillaCookieJar(),state,settings={'browser_timeout':25,'browser_settle':2})
             assert found['url']==base+expected,found
+            if path=='/watch':assert 'authorization' not in found['headers'],found
+            if path=='/authorized':assert found['headers']['authorization']=='Bearer fixture-media',found
     print('PASS: actual sandboxed Chromium clicked nested player, matched JSON variants to playback, selected higher quality, and distinguished a lengthless HLS master from its playback variant.')
 finally:site.shutdown();site.server_close();thread.join()
