@@ -34,7 +34,7 @@ Package updates are separate from application upgrades. Settings → Engines lis
 ## Download engine
 
 1. Resolve supported Reddit mobile-share and Threads share links to canonical post URLs, with bounded redirects restricted to that platform.
-2. Inspect actual response bytes and content type. Direct images and files use a bounded streaming HTTP downloader. **Video format settings never rename or convert images.** A JPEG stays `.jpg`, even if MP4 and a custom filename were selected.
+2. Inspect actual response bytes and content type. Direct images and files use a bounded streaming HTTP downloader. **Video format settings never rename photos to video extensions.** A JPEG stays `.jpg`, even if MP4 and a custom filename were selected. GIF animation conversion is a separate explicit behavior.
 3. Try maintained site extractors: yt-dlp and supported gallery-dl extractors, including image hosts. Threads also reads structured data for the exact requested post and selects its largest exposed rendition, without substituting recommendations or preview thumbnails.
 4. Parse static player sources, video metadata and nested iframe pages. Explicit download links and supported image-host pages can also lead to file downloads.
 5. When needed, launch one sandboxed Chromium instance. Observe network responses, rendered players, shadow roots and bounded embedded frames; try visible play controls and collect variants before selection. Link a playing low-quality URL to higher variants advertised by its player data. Inspect bounded HLS/DASH manifests instead of assuming the first playing URL is the best quality. Close Chromium before the file transfer.

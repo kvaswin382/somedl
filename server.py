@@ -1198,8 +1198,9 @@ class Handler(BaseHTTPRequestHandler):
             if values.get('telegram_bot_token')=='':values.pop('telegram_bot_token')
             if data.get('clear_telegram_token') is True:values['telegram_bot_token']=''
             for key,value in values.items():d.set_setting(key,value)
-            try:d.apply_torrent_settings()
-            except APIError:pass
+            if values.keys() & {'torrent_down_kib','torrent_up_kib','seed_ratio','simultaneous_downloads'}:
+                try:d.apply_torrent_settings()
+                except APIError:pass
         elif path == '/api/jobs/retry-all':
             with d.lock:
                 for row in d.rows("SELECT id FROM jobs WHERE status='error'"):

@@ -11,7 +11,8 @@ ARTIFACTS=Path('test-artifacts')
 def screenshot(page,name):
     if os.getenv('ZEDAIR_REQUIRE_BROWSER')!='1':return
     ARTIFACTS.mkdir(exist_ok=True)
-    raw=page.screenshot(path=str(ARTIFACTS/(name+'.jpg')),type='jpeg',quality=55,full_page=False)
+    page.locator('#toast').evaluate('(el) => { el.hidden=true; }')
+    raw=page.screenshot(path=str(ARTIFACTS/(name+'.jpg')),type='jpeg',quality=55,full_page=False,animations='disabled')
     if os.getenv('ZEDAIR_SCREENSHOT_LOGS')=='1':print('ZEDSCREEN '+name+' '+base64.b64encode(raw).decode(),flush=True)
 def no_overflow(page):
     assert page.evaluate('() => document.documentElement.scrollWidth <= innerWidth'), 'Horizontal page overflow'
@@ -123,6 +124,7 @@ with sync_playwright() as pw:
             page.locator('#themeBtn').click()
             page.set_viewport_size({'width':390,'height':844});page.evaluate('() => scrollTo(0,0)')
             no_overflow(page);screenshot(page,'queue-mobile-dark')
+            assert page.locator('#jobs .job').first.bounding_box()['y']<800, 'Queue is pushed below the mobile viewport'
             page.locator('[data-open=downloadDialog]').first.click();screenshot(page,'download-mobile-dark')
             no_overflow(page);page.mouse.click(2,2);expect(page.locator('#downloadDialog')).not_to_be_visible()
             page.locator('[data-page=settings]').click();page.locator('[data-settings-tab=general]').click()
