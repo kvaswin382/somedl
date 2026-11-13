@@ -65,6 +65,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
+            expect(page.locator('#appVersion')).to_have_text('v2.1.2')
             original_theme(page)
             page.locator('[data-open=downloadDialog]').first.click()
             expect(page.locator('#downloadForm [name=container]')).to_have_value('mp4')
@@ -190,7 +191,12 @@ with sync_playwright() as pw:
             # Actual file toolbar and destructive dialog, desktop/mobile and light/dark.
             for width,dark in [(1360,False),(1360,True),(390,False),(390,True)]:
                 page.set_viewport_size({'width':width,'height':940 if width>760 else 844})
-                if page.locator('body').evaluate('(el)=>el.classList.contains("dark")')!=dark:page.locator('#themeBtn').click()
+                if page.locator('body').evaluate('(el)=>el.classList.contains("dark")')!=dark:
+                    if width>760:page.locator('#themeBtn').click()
+                    else:
+                        page.locator('[data-page=settings]').click()
+                        page.locator('[data-settings-tab=account]').click()
+                        page.locator('[data-theme]').click()
                 page.locator('[data-page=files]').click()
                 page.locator('[data-file-view=list]').click()
                 folder=page.locator('#fileList [data-file-folder="Travel photos"]')

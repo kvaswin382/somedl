@@ -75,6 +75,7 @@ async function refresh(tick=false){
 }
 function renderOverview(){
   const s=state, jobs=s.jobs;
+  $('#appVersion').textContent='v'+s.version;
   renderTelegramStatus(s.telegram_result||{});
   const running=jobs.filter(j=>j.status==='running'), torrents=s.torrents.filter(t=>t.status===4);const total=$('#aggregateSpeed');if(total){total.hidden=running.length+torrents.length<2;total.textContent='↓ '+bytes(running.reduce((n,j)=>n+(Number(j.speed)||0),0)+torrents.reduce((n,t)=>n+(Number(t.rateDownload)||0),0))+'/s total';}
   $('#navCount').textContent=jobs.filter(j=>['queued','running','retry','blocked'].includes(j.status)).length;
