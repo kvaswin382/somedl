@@ -116,6 +116,8 @@ with sync_playwright() as pw:
             page.set_viewport_size({'width':1680,'height':1000});centered_settings(page)
             screenshot(page,'settings-desktop')
             page.locator('#themeBtn').click();original_theme(page,True)
+            assert page.locator('#value-simultaneous_downloads').evaluate('(el) => getComputedStyle(el).color')=='rgb(242, 243, 245)'
+            assert page.locator('[data-settings-tab=general]').evaluate('(el) => getComputedStyle(el).color')=='rgb(32, 33, 37)'
             screenshot(page,'settings-desktop-dark')
             page.locator('#themeBtn').click()
             # Deliberately open Settings before the initial state arrives.
