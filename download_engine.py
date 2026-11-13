@@ -248,9 +248,8 @@ def run(spec):
             print('ZEDENGINE browser',flush=True)
             try:
                 if not browser_slot:
-                    from web_session import lock
-                    say('Waiting for the single browser-download slot…')
-                    browser_job.enter_context(lock(state/'browser-download.lock'));browser_slot=True
+                    from web_session import browser_download_lease
+                    browser_job.enter_context(browser_download_lease(state));browser_slot=True
                 from browser_capture import capture
                 found,page_title,jar=capture(source,session.jar,state,spec.get('quality','best'),settings,dest)
                 if download(found,spec.get('filename') or page_title or title)==0:return completed()

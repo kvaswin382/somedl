@@ -143,6 +143,26 @@ class DataTests(Fixture):
         self.assertEqual(job['container'],'mp4');self.assertEqual(job['quality'],'best')
 
 class BrowserSlotTests(unittest.TestCase):
+    def test_waiting_worker_reports_activity_until_lease_is_released(self):
+        import tempfile,threading,time,contextlib,fcntl
+        from pathlib import Path
+        from web_session import waiting_lock
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'browser.lock';entered=threading.Event();output=io.StringIO()
+            with path.open('a') as held:
+                fcntl.flock(held,fcntl.LOCK_EX)
+                def worker():
+                    with waiting_lock(path,'Waiting for browser',heartbeat=.03):entered.set()
+                with contextlib.redirect_stdout(output):
+                    thread=threading.Thread(target=worker,daemon=True);thread.start()
+                    try:
+                        deadline=time.monotonic()+2
+                        while output.getvalue().count('ZEDPROFILE')<2 and time.monotonic()<deadline:time.sleep(.01)
+                        self.assertFalse(entered.is_set());self.assertGreaterEqual(output.getvalue().count('ZEDPROFILE'),2)
+                    finally:
+                        fcntl.flock(held,fcntl.LOCK_UN);thread.join(2)
+                self.assertTrue(entered.is_set());self.assertFalse(thread.is_alive())
+
     def test_browser_slot_covers_capture_and_transfer(self):
         import tempfile,threading,time,contextlib
         from pathlib import Path

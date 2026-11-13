@@ -81,6 +81,31 @@ def available_memory():
 
 
 @contextlib.contextmanager
+def waiting_lock(path,message,heartbeat=30):
+    """Wait without spinning and keep the worker watchdog informed.
+    The kernel releases the lease if the worker is cancelled or crashes.
+    """
+    with Path(path).open('a') as stream:
+        os.chmod(path,0o600)
+        last=float('-inf')
+        while True:
+            try:
+                fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                now=time.monotonic()
+                if now-last>=heartbeat:
+                    print('ZEDPROFILE '+message,flush=True);last=now
+                time.sleep(min(1,heartbeat))
+        try:yield
+        finally:fcntl.flock(stream,fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def browser_download_lease(state):
+    with waiting_lock(Path(state)/'browser-download.lock','Waiting for the single browser-download slot…'):yield
+
+
+@contextlib.contextmanager
 def browser_lease(state):
-    print('ZEDPROFILE Waiting for the single browser slot…',flush=True)
-    with lock(Path(state)/'browser.lock'):yield
+    with waiting_lock(Path(state)/'browser.lock','Waiting for the single browser slot…'):yield

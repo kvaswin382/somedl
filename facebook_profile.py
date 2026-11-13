@@ -209,10 +209,9 @@ def collect(config, db):
 
 
 def run(config):
-    from web_session import lock
+    from web_session import browser_download_lease
     state=Path(config.get('state',str(Path(config['cookie']).parent)))
-    say('Waiting for the single browser-download slot…')
-    with lock(state/'browser-download.lock'):
+    with browser_download_lease(state):
         return run_collection(config)
 
 
