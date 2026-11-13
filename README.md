@@ -1,7 +1,11 @@
-# Zedair Download Desk — v2.1.0
+# Zedair Download Desk — v2.1.1
 
 A private, headless downloader for Ubuntu 24.04, Python 3.12 and a 2 GB x86_64 laptop with an external SSD. Submit original webpage links from the web interface; the laptop resolves and downloads their media in the background. Existing SSD files, accounts, cookies and queue history are preserved by the application upgrader.
 
+
+## v2.1.1 theme correction
+
+The original blue (`#425eac`) and neutral light/dark surface palette from `873313e` is restored. The violet palette is removed. Settings now center their full container, sliders show keyboard focus on the thumb instead of outlining the track, and download engines use compact version rows. Download behavior and saved settings are unchanged.
 
 ## v2.1 stability and interface update
 
@@ -9,7 +13,7 @@ A private, headless downloader for Ubuntu 24.04, Python 3.12 and a 2 GB x86_64 l
 - Instagram `/s/<token>/` highlight shares are decoded into `/stories/highlights/<id>/`, including old queued jobs on retry.
 - MP4 is the default **video** container; quality is independent. Photos keep their actual format. GIF animations are encoded to MP4 using one CPU thread; HLS/M3U8 streams are remuxed with their original codecs into MP4. GIF encoding uses CRF 18; it is not a lossless byte copy.
 - General settings use server-described slider bounds and autosave. The download dialog has a live link count, compact primary controls and collapsed advanced options. All modal backdrops close the modal.
-- Engine cards check stable PyPI releases in the background, cache results for one hour, and only offer an update when a newer release is known and the managed updater is installed.
+- The engine inventory checks stable PyPI releases in the background, cache results for one hour, and only offer an update when a newer release is known and the managed updater is installed.
 - Data usage shows an activity chart and domain totals. Hourly data starts with this upgrade; existing daily history remains. These are partial payload estimates, not total network billing figures.
 - GitHub Actions runs on `main`, `fix/**`, `improve/**` and pull requests, with real browser regressions and desktop/mobile screenshots.
 
@@ -27,7 +31,7 @@ sudo bash /opt/zedair/install-browser.sh
 sudo systemctl restart zedair
 ```
 
-If Git reports local edits or a diverged branch, keep those edits and resolve that state before switching; do not force-reset the checkout. `upgrade.sh` creates a private backup in `/var/backups/zedair`, installs application files, checks startup and restores the previous app/state if the health check fails. It does not format, relocate or wipe the SSD. The browser installer installs a matched Playwright/Chromium pair and tests its sandbox as the service user. Refresh the web interface with **Ctrl+F5**; the footer should show **v2.1.0**.
+If Git reports local edits or a diverged branch, keep those edits and resolve that state before switching; do not force-reset the checkout. `upgrade.sh` creates a private backup in `/var/backups/zedair`, installs application files, checks startup and restores the previous app/state if the health check fails. It does not format, relocate or wipe the SSD. The browser installer installs a matched Playwright/Chromium pair and tests its sandbox as the service user. Refresh the web interface with **Ctrl+F5**; the footer should show **v2.1.1**.
 
 Package updates are separate from application upgrades. Settings → Engines lists the application's Python packages and key system tools. Its Update buttons manage yt-dlp, gallery-dl and Playwright through a root-owned service with a fixed allowlist. Downloads pause during an engine update and recover when the app restarts. System tools remain Ubuntu-managed. A failed engine update attempts to restore the previous engine version; this is not a full dependency-environment rollback. The web process retains `NoNewPrivileges=true` and cannot submit arbitrary commands or package names.
 
@@ -102,7 +106,7 @@ The v1.3.1 fix used `--Print` (print **and download**); the v1.4 profile worker 
 
 1. Put this updated source into your GitHub repository, commit and push it.
 2. On Ubuntu, use the Git pull + `upgrade.sh` steps below. No new package or browser installation is required for this fix.
-3. Reload the webpage and check the footer says **v2.1.0**.
+3. Reload the webpage and check the footer says **v2.1.1**.
 4. Open **Tools → Profile jobs**, find the failed Instagram profile, and click **Resume / retry**. You can reuse the same job and saved cookies; do not delete SSD folders or replace a working session just for this bug.
 5. Watch the media count and open its destination after the attempt finishes. Completed files are published under `Instagram/<username>`.
 
@@ -156,7 +160,7 @@ After success:
 systemctl status zedair zedair-transmission --no-pager
 ```
 
-Refresh the page with **Ctrl+F5** on Windows. On your phone, reload the page. The footer should show **v2.1.0**. Existing jobs keep their old folders so they can resume; newly added jobs use your explicit destination directly or an automatic platform folder when none is selected. For a legacy individual-download job that uses an old folder layout, cancel it and add the URL again only if you want to change that layout. For the Instagram profile bug fixed in v1.3.1, retry the existing job as described above. Existing files are not relocated automatically.
+Refresh the page with **Ctrl+F5** on Windows. On your phone, reload the page. The footer should show **v2.1.1**. Existing jobs keep their old folders so they can resume; newly added jobs use your explicit destination directly or an automatic platform folder when none is selected. For a legacy individual-download job that uses an old folder layout, cancel it and add the URL again only if you want to change that layout. For the Instagram profile bug fixed in v1.3.1, retry the existing job as described above. Existing files are not relocated automatically.
 
 ### First time using Git on this laptop
 
@@ -617,7 +621,7 @@ df -h /srv/zedair-ssd
 | Webpage cannot connect | Laptop IP, port 8787, service status, firewall and guest-network isolation. |
 | SSD offline | USB power/cable, mount UUID and `findmnt`. Reconnect with the Windows/SSD steps. Never disable `require_mount` to hide the error. |
 | Free-space reserve reached | Delete unwanted files through SSD files, or free space in Windows. Browsing/deletion work below the reserve. |
-| Instagram profile shows a count but no files | Upgrade to v2.1.0, then retry the same profile job; see the recovery section at the top. Existing working cookies need no replacement for this bug. |
+| Instagram profile shows a count but no files | Upgrade to v2.1.1, then retry the same profile job; see the recovery section at the top. Existing working cookies need no replacement for this bug. |
 | Website DNS lookup fails | Run the hostname checks near the top on the laptop; other sites working does not establish that this domain resolves. |
 | Browser engine unavailable | Rerun `install-browser.sh`, check its sandbox test, restart the app. |
 | Instagram pagination loop | Progress is retained; the server repeated a completed page/cursor. Review Details/update engines before retrying. |

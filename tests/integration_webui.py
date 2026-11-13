@@ -17,6 +17,24 @@ def screenshot(page,name):
 def no_overflow(page):
     assert page.evaluate('() => document.documentElement.scrollWidth <= innerWidth'), 'Horizontal page overflow'
 
+def original_theme(page,dark=False):
+    expected={'--blue':'#425eac','--paper':'#17181b' if dark else '#f3f4f6',
+              '--surface':'#202125' if dark else '#fff','--soft':'#292b30' if dark else '#eaecf0',
+              '--line':'#383b43' if dark else '#dadde3','--ink':'#f2f3f5' if dark else '#16201e',
+              '--muted':'#a5a9b4' if dark else '#6c726c'}
+    actual=page.evaluate('(keys) => Object.fromEntries(keys.map(k => [k,getComputedStyle(document.body).getPropertyValue(k).trim().toLowerCase()]))',list(expected))
+    assert actual==expected,(actual,expected)
+
+def centered_settings(page):
+    geometry=page.evaluate("""() => {
+        const area=document.querySelector('.workspace').getBoundingClientRect();
+        const panel=document.querySelector('#settingsPage').getBoundingClientRect();
+        return {center:Math.abs((area.left+area.right)-(panel.left+panel.right)),
+            panels:[...document.querySelectorAll('[data-settings-panel]:not([hidden])')].map(el=>{
+                const r=el.getBoundingClientRect();return Math.abs((r.left+r.right)-(panel.left+panel.right));})};
+    }""")
+    assert geometry['center']<2 and all(n<2 for n in geometry['panels']),geometry
+
 with sync_playwright() as pw:
     try:browser=pw.chromium.launch(headless=True,chromium_sandbox=True,timeout=15000)
     except Exception as exc:
@@ -47,6 +65,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
+            original_theme(page)
             page.locator('[data-open=downloadDialog]').first.click()
             expect(page.locator('#downloadForm [name=container]')).to_have_value('mp4')
             page.locator('#downloadForm [name=urls]').fill('https://files.example.com/photo.jpg\nhttps://example.net/master.m3u8')
@@ -88,7 +107,17 @@ with sync_playwright() as pw:
             slider.focus();slider.press('Home');slider.press('ArrowRight');slider.press('ArrowRight')
             expect(page.locator('#settingsSaveStatus')).to_have_text('Saved automatically')
             assert desk.get_setting('simultaneous_downloads')==3
+            assert slider.evaluate('(el) => getComputedStyle(el).outlineStyle')=='none'
+            # Pointer use must not add the old input-focus rectangle either.
+            slider.click();expect(page.locator('#settingsSaveStatus')).to_have_text('Saved automatically')
+            assert slider.evaluate('(el) => getComputedStyle(el).outlineStyle')=='none'
+            slider.press('Home');slider.press('ArrowRight');slider.press('ArrowRight')
+            expect(page.locator('#settingsSaveStatus')).to_have_text('Saved automatically')
+            page.set_viewport_size({'width':1680,'height':1000});centered_settings(page)
             screenshot(page,'settings-desktop')
+            page.locator('#themeBtn').click();original_theme(page,True)
+            screenshot(page,'settings-desktop-dark')
+            page.locator('#themeBtn').click()
             # Deliberately open Settings before the initial state arrives.
             pending=[];page.route('**/api/state',lambda route:pending.append(route))
             page.reload();expect(page.locator('#shell')).to_be_visible()
@@ -108,7 +137,12 @@ with sync_playwright() as pw:
             expect(page.locator('[data-update-package]')).to_have_count(1)
             expect(page.locator('[data-update-package]')).to_have_attribute('data-update-package','yt-dlp')
             expect(page.locator('#packageInventory')).not_to_contain_text('Not installed · Latest 1.32.19')
+            centered_settings(page)
+            expect(page.locator('.engine-table tbody tr')).to_have_count(3)
+            assert all(row.bounding_box()['height']<90 for row in page.locator('.engine-table tbody tr').all())
             screenshot(page,'engines-desktop')
+            page.locator('#themeBtn').click();original_theme(page,True);screenshot(page,'engines-desktop-dark')
+            page.locator('#themeBtn').click()
             page.locator('[data-settings-tab=usage]').click()
             expect(page.locator('#usageReport svg')).to_be_visible()
             expect(page.locator('#usageReport')).to_contain_text('files.example.com')
@@ -132,7 +166,10 @@ with sync_playwright() as pw:
             page.locator('[data-open=downloadDialog]').first.click();screenshot(page,'download-mobile-dark')
             no_overflow(page);page.mouse.click(2,2);expect(page.locator('#downloadDialog')).not_to_be_visible()
             page.locator('[data-page=settings]').click();page.locator('[data-settings-tab=general]').click()
-            page.evaluate('() => scrollTo(0,0)');no_overflow(page);screenshot(page,'settings-mobile-dark')
+            page.evaluate('() => scrollTo(0,0)');no_overflow(page);centered_settings(page);original_theme(page,True);screenshot(page,'settings-mobile-dark')
+            page.locator('[data-settings-tab=engines]').click()
+            expect(page.locator('.engine-table tbody tr')).to_have_count(3)
+            page.evaluate('() => scrollTo(0,0)');no_overflow(page);centered_settings(page);screenshot(page,'engines-mobile-dark')
             page.route('**/api/system',lambda r:r.fulfill(json={'cpu_percent':95,'cores':4,'memory':{'total':2147483648,'used':1610612736,'available':536870912,'percent':75},'swap':{'total':0,'used':0,'percent':0},'system_disk':{'total':32000000000,'used':6400000000,'percent':20},'ssd':None,'temperature_c':83,'uptime_seconds':3600,'load':[1,1,1],'sampled_at':time.time()}))
             page.locator('[data-settings-tab=system]').click()
             expect(page.locator('.usage-ring[data-level=critical]')).to_have_count(1)
@@ -140,11 +177,11 @@ with sync_playwright() as pw:
             page.evaluate('() => scrollTo(0,0)');no_overflow(page);screenshot(page,'system-mobile-dark')
             page.route('**/api/state',lambda r:r.abort())
             page.evaluate('() => refresh()');expect(page.locator('#connection')).to_have_class(__import__('re').compile('offline'))
-            assert page.locator('#connection').evaluate('(el) => getComputedStyle(el).color')=='rgb(255, 143, 167)'
+            assert page.locator('#connection').evaluate('(el) => getComputedStyle(el).color')=='rgb(255, 148, 117)'
             page.unroute('**/api/state');page.evaluate('() => refresh()')
             expect(page.locator('#connection')).not_to_have_class(__import__('re').compile('offline'))
             assert page.locator('#connection').evaluate('(el) => getComputedStyle(el).color')=='rgb(105, 215, 165)'
             assert not errors,errors
-            print('PASS: real UI verified default MP4, live link count, stable single favicon, range autosave 1–20 step 1, masked token, release-aware engine cards, usage chart, exact highlight share, backdrop dismissal and mobile/dark layouts without overflow.')
+            print('PASS: original blue/neutral light and dark palettes, centered settings, border-free slider tracks and compact engine rows verified; real UI verified default MP4, live link count, stable single favicon, range autosave 1–20 step 1, masked token, release-aware engine cards, usage chart, exact highlight share, backdrop dismissal and mobile/dark layouts without overflow.')
         finally:
             browser.close();site.shutdown();site.server_close();thread.join();desk.close()

@@ -1,3 +1,7 @@
+# v2.1.1 interface verification
+
+Changes are limited to restoring the `873313e` blue/neutral palette, centering Settings, correcting slider focus decoration and compacting the engine inventory. The existing real-browser regression now asserts the original light/dark color values, equal settings margins on wide and mobile screens, no track outline for pointer/keyboard range use, and compact engine rows. CI captures light/dark desktop and mobile screenshots for review. Existing extraction, queue, alert and media tests remain enabled.
+
 # Verification report — Zedair 2.1.0
 
 Built from the user's installed `873313e` revision. No live account credentials, Telegram messages, or laptop service changes were used during development.
