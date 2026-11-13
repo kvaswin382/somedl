@@ -56,7 +56,7 @@ Duplicate URLs are skipped within the batch and against non-cancelled queue/hist
 
 Individual-download temporary failures use bounded retries: one initial attempt plus three retries by default, waiting 1, 2, 4… minutes, capped at 30 minutes. Recognized authentication, rate-limit, unsupported-media and access failures go directly to **Attention**. Fix the cause, then retry manually. A generic 403 does not prove the cookies are wrong. Instagram whole-profile jobs use the [long-collection cooldown policy](#long-instagram-collections-and-recovery).
 
-Video progress usually measures the current stream, not a whole playlist. Merging can continue after 100%. Instagram shows engine activity, but not every gallery exposes a dependable percentage or ETA. Downloading the best quality does not involve video re-encoding; FFmpeg can merge separate audio/video streams.
+Video progress and ETA describe the current file/stream, not a whole playlist or the final merge. ETA is remaining bytes divided by the displayed speed; estimated stream sizes can change it. Direct transfers use a recent speed window. Unknown sizes, zero speed and stale progress show no ETA; merging is shown separately. Instagram shows engine activity, but not every gallery exposes a dependable percentage or ETA. Downloading the best quality does not involve video re-encoding; FFmpeg can merge separate audio/video streams.
 
 
 ## Tools: collect profiles

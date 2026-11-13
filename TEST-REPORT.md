@@ -1,3 +1,7 @@
+# v2.1.3 ETA verification
+
+Ten new regressions cover inconsistent engine ETAs, speed changes, resumed offsets, stream/counter resets, unknown and invalid rates, estimated sizes, completion, stale snapshot values, fallback/conversion, and a real direct-transfer loop with deterministic slowing response data. The UI integration checks full-state and fast-poll consistency, stale/finishing text, and seconds/minutes/hours/days formatting. ETA is current-file remaining bytes divided by the displayed rate; merging and whole-playlist duration are not predicted. Live site transfer speed can still fluctuate.
+
 # v2.1.2 UI and Telegram verification
 
 The local suite passes 174 unit tests, including Telegram HTTP error parsing/redaction, non-JSON errors, rate limits, timeout handling, bounded group migration, and rejected-photo fallback. All Telegram transport tests are mocked; no real messages or private tokens were used. The real-browser regression also checks white destructive-button text on normal/hover states, gray folder icons, select text/arrow spacing, desktop/mobile light/dark layouts, and saving the visible Telegram fields before a group-only test with routine notifications disabled. The push workflow runs these alongside the existing 14 integration scripts, syntax and checksum checks.

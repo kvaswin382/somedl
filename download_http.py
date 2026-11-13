@@ -5,6 +5,7 @@ strong entity validator and matching length; otherwise retain the old partial an
 restart. Cookies are supplied by CookieJar, never by a global Cookie header.
 """
 import hashlib
+import collections
 import http.cookiejar
 import json
 import mimetypes
@@ -171,6 +172,7 @@ def transfer(client, candidate, dest, name='Download', rate_kib=0, timeout=30, i
         atomic_json(meta_path,{'etag':etag,'total':total,'kind':kind,'ext':ext})
         target=dest/(filename(Path(name).stem if Path(name).suffix else name)+ext)
         done=offset;received=0;tick=time.monotonic();start=tick;reported=0
+        samples=collections.deque([(start,0)],maxlen=16)
         with partial.open('ab' if offset else 'wb') as out:
             block=first
             while True:
@@ -179,7 +181,10 @@ def transfer(client, candidate, dest, name='Download', rate_kib=0, timeout=30, i
                     if rate_kib:time.sleep(max(0,received/(rate_kib*1024)-(time.monotonic()-start)))
                     if time.monotonic()-tick>=1:
                         print('ZEDBYTES '+str(received-reported),flush=True);reported=received
-                        speed=received/max(.001,time.monotonic()-start)
+                        stamp=time.monotonic()
+                        samples.append((stamp,received))
+                        while len(samples)>2 and samples[1][0]<=stamp-5:samples.popleft()
+                        speed=(received-samples[0][1])/max(.001,stamp-samples[0][0])
                         print('ZEDPROG '+json.dumps({'downloaded_bytes':done,'total_bytes':total,'speed':speed,
                               'eta':max(0,(total-done)/speed) if total else None,'filename':target.name}),flush=True)
                         tick=time.monotonic()
@@ -188,6 +193,8 @@ def transfer(client, candidate, dest, name='Download', rate_kib=0, timeout=30, i
             out.flush();os.fsync(out.fileno())
         print('ZEDBYTES '+str(received-reported),flush=True)
         if not done or (total and done!=total):raise ValueError(f'Incomplete transfer: received {done} of {total or "unknown"} bytes; partial retained')
+        print('ZEDPROG '+json.dumps({'downloaded_bytes':done,'total_bytes':total or done,
+              'speed':0,'eta':None,'status':'finished','filename':target.name}),flush=True)
         os.replace(partial,target);meta_path.unlink(missing_ok=True)
         output_register(dest,target.name)
         print('ZEDPROFILE Saved '+kind+' as '+target.name,flush=True)

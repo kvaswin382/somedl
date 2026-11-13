@@ -11,6 +11,7 @@ import http.cookies
 import logging
 import json
 import mimetypes
+import math
 import os
 import re
 import secrets
@@ -53,6 +54,35 @@ PREVIEW_MIME={'.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp
     '.mp4':'video/mp4','.m4v':'video/mp4','.webm':'video/webm','.ogv':'video/ogg',
     '.mov':'video/quicktime','.mkv':'video/x-matroska',
     '.mp3':'audio/mpeg','.m4a':'audio/mp4','.ogg':'audio/ogg','.opus':'audio/ogg','.wav':'audio/wav','.flac':'audio/flac'}
+
+def progress_number(value):
+    """Only finite, nonnegative numeric counters/rates can support an ETA."""
+    if isinstance(value,bool) or not isinstance(value,(int,float)) or value<0:return None
+    try:return value if math.isfinite(value) else None
+    except OverflowError:return None
+
+
+def update_transfer_progress(live,info,stamp):
+    done=progress_number(info.get('downloaded_bytes'))
+    if done is None:return
+    exact=progress_number(info.get('total_bytes')) or 0
+    total=exact or progress_number(info.get('total_bytes_estimate')) or 0
+    speed=progress_number(info.get('speed')) or 0
+    # Some engines emit bytes but no rate. Derive it only between samples of
+    # this same file; never count an existing resumed partial as newly received.
+    previous=live.get('bytes',0);elapsed=stamp-live.get('progress_at',stamp)
+    if info.get('speed') is None and live.get('progress_file')==info.get('filename') and 'progress_at' in live and elapsed>=.25 and done>=previous:
+        speed=(done-previous)/elapsed
+    finished=info.get('status')=='finished' or bool(exact and done>=exact)
+    remaining=total-done
+    seconds=remaining/speed if total and remaining>0 and speed>0 and not finished else None
+    if seconds is not None and not math.isfinite(seconds):seconds=None
+    live.update(progress=99.9 if finished else min(99.9,done/total*100) if total else 0,
+                bytes=done,total_bytes=total,speed=0 if finished else speed,eta=seconds,
+                eta_estimated=not bool(exact),progress_at=stamp,progress_file=info.get('filename'),
+                transfer_state='finishing' if finished else 'downloading',
+                detail='Merging / finishing' if finished else 'Downloading')
+
 
 def preview_type(suffix):
     mime=PREVIEW_MIME.get(suffix.lower(),'')
@@ -488,7 +518,7 @@ class Desk:
             if line.startswith('ZEDENGINE '):
                 engine=line[10:].strip()
                 if engine in ('video','page','browser','direct','gallery'):
-                    live['engine']=engine;self.update_job(jid,engine=engine)
+                    live.update(engine=engine,speed=0,eta=None,transfer_state='connecting');live.pop('progress_at',None);self.update_job(jid,engine=engine)
             elif line.startswith('ZEDOWNER '):
                 owner=line[9:].strip()
                 if re.fullmatch(r'[A-Za-z0-9_.]{1,30}',owner):live['owner']=owner
@@ -501,22 +531,25 @@ class Desk:
                 live['detail']='Profile media saved to staging; continuing…'
             elif line.startswith('ZEDPROFILE '):
                 live['detail']=line[11:][:250]
+                if live['detail'].startswith(('Copying original codecs','Converting GIF','Saved ')):
+                    live.update(speed=0,eta=None,transfer_state='finishing')
+                elif live['detail'].startswith(('Refreshing the original page','Server provided no strong resume','File identity or range changed')):
+                    live.update(speed=0,eta=None,transfer_state='connecting');live.pop('progress_at',None)
                 tail.append(live['detail']);live['log']='\n'.join(tail)[-8000:]
             elif line.startswith('ZEDPROG '):
                 try:
                     info = json.loads(line[8:])
-                    done = info.get('downloaded_bytes') or 0
-                    total = info.get('total_bytes') or info.get('total_bytes_estimate') or 0
+                    if not isinstance(info,dict):continue
+                    done = progress_number(info.get('downloaded_bytes'))
+                    if done is None:continue
                     if not live.get('exact_bytes'):
                         old=live.get('counted_bytes',0) if live.get('counted_file')==info.get('filename') else 0
                         self.record_usage(jid,max(0,done-old));live['counted_bytes']=done;live['counted_file']=info.get('filename')
-                    live.update(progress=min(99.9, done / total * 100) if total else 0,
-                                speed=info.get('speed') or 0, eta=info.get('eta'), bytes=done,
-                                detail='Merging / finishing' if info.get('status') == 'finished' else 'Downloading')
+                    update_transfer_progress(live,info,time.monotonic())
                 except (ValueError, TypeError):
                     pass
             elif line.startswith('ZEDTITLE '):
-                live['name'] = line[9:][:240]
+                live.update(name=line[9:][:240],speed=0,eta=None,transfer_state='connecting');live.pop('progress_at',None)
             else:
                 tail.append(line)
                 live['log'] = '\n'.join(tail)[-8000:]
@@ -754,16 +787,23 @@ class Desk:
         self.flush_usage(force=True)
         self.db.close()
 
+    def live_progress(self,jid):
+        live=dict(self.live.get(jid,{}))
+        stamp=live.get('progress_at')
+        if stamp is not None and live.get('transfer_state')=='downloading' and time.monotonic()-stamp>10:
+            live.update(speed=0,eta=None,transfer_state='waiting')
+        return live
+
     def snapshot(self):
         jobs = self.rows("SELECT * FROM jobs WHERE remove_requested=0 ORDER BY CASE WHEN status='running' THEN 0 WHEN status IN ('queued','retry','blocked','paused') THEN 1 ELSE 2 END, CASE WHEN status IN ('queued','retry','blocked','paused') THEN position ELSE -created END LIMIT 1000")
         for job in jobs:
-            job.update(self.live.get(job['id'], {}))
+            job.update(self.live_progress(job['id']))
             job.pop('last_error', None)
         return {'storage': self.storage(), 'jobs': jobs, 'torrents': self.torrents,
                 'torrent_error': self.torrent_error, 'telegram_result':self.get_setting('telegram_last_result',{}), 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.1.2', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.1.3', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def add_stories(self,data):
         from instagram_story import target
@@ -1006,7 +1046,7 @@ class Handler(BaseHTTPRequestHandler):
         elif p.path == '/api/progress':
             jobs=d.rows("SELECT id,status,name,progress,items,engine FROM jobs WHERE status='running' AND remove_requested=0")
             for job in jobs:
-                job.update({k:v for k,v in d.live.get(job['id'],{}).items() if k in ('progress','name','speed','eta','detail','engine')})
+                job.update({k:v for k,v in d.live_progress(job['id']).items() if k in ('progress','name','speed','eta','eta_estimated','transfer_state','detail','engine')})
             self.reply({'jobs':jobs})
         elif p.path == '/api/folders':
             relative = query.get('path', [''])[0]
@@ -1093,7 +1133,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.wfile.write(block);remaining-=len(block)
         elif p.path == '/api/job':
             job = d.job(query.get('id', [''])[0])
-            job.update(d.live.get(job['id'], {}))
+            job.update(d.live_progress(job['id']))
             self.reply(job)
         elif p.path == '/api/torrent':
             tid = query.get('id', [''])[0]

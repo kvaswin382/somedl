@@ -16,7 +16,18 @@ let previewPath='',previewKind='',previewRequest=0,previewBusy=false;
 let fileView=localStorage.getItem('zedair-file-view')==='grid'?'grid':'list',fileOffset=0,fileEntries=[],fileTotal=0,fileRequest=0,loadedFilePath=null;
 let csrf = '', state = null, page = 'queue', filter = 'all', filePath = '', folderPath = '', folderTarget = '', cookieSlot = '', timer, toastTimer, busy = false;
 const bytes = n => { n=Number(n)||0; const units=['B','KiB','MiB','GiB','TiB']; let i=0; while(n>=1024&&i<4){n/=1024;i++;} return `${n.toFixed(i>1?1:0)} ${units[i]}`; };
-const eta = n => !n || n<0 ? '—' : n<60 ? `${Math.ceil(n)}s` : n<3600 ? `${Math.ceil(n/60)}m` : `${(n/3600).toFixed(1)}h`;
+const eta = n => {
+  if(typeof n!=='number'||!Number.isFinite(n)||n<0)return '—';
+  const s=Math.ceil(n),d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);
+  return d?`${d}d ${h}h`:h?`${h}h ${m}m`:m?`${m}m ${s%60}s`:`${s}s`;
+};
+function transferInfo(j){
+  if(j.transfer_state==='finishing')return 'Merging / finishing · ETA —';
+  if(j.transfer_state==='waiting')return 'Waiting for data · ETA —';
+  if(j.transfer_state==='connecting')return 'Connecting · ETA —';
+  const known=Number.isFinite(j.eta)&&j.eta>=0&&Number.isFinite(j.speed)&&j.speed>0;
+  return `${bytes(j.speed)}/s · ETA ${known?'≈ '+eta(j.eta)+' · current file':'—'}`;
+}
 const labels = {running:'Downloading',queued:'Queued',retry:'Retry waiting',blocked:'Waiting for SSD',paused:'Paused',done:'Finished',error:'Needs attention',cancelled:'Cancelled'};
 const symbols = {video:'↙',instagram:'▦',threads:'@'};
 function toast(text){ $('#toast').textContent=text; $('#toast').hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('#toast').hidden=true,7000); }
@@ -91,7 +102,7 @@ function renderOverview(){
   $('#holdBtn').textContent=s.settings.hold?'▶ Resume queue':'Ⅱ Hold queue';
 }
 function renderJobs(fast=false){
-  if(fast){for(const j of state.jobs.filter(j=>j.status==='running')){const node=$('[data-progress-job="'+j.id+'"]');if(!node)continue;const percent=Math.max(0,Math.min(100,Number(j.progress)||0));$('.job-title',node).textContent=j.name;$('.engine-badge',node).textContent=engineName(j);$('.job-state span:last-child',node).textContent=j.profile_mode?'Working…':percent.toFixed(1)+'%';$('.progress i',node).style.width=percent+'%';$('.job-speed',node).textContent=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · total unknown`:`${bytes(j.speed)}/s · ETA ${eta(j.eta)}`;}return;}
+  if(fast){for(const j of state.jobs.filter(j=>j.status==='running')){const node=$('[data-progress-job="'+j.id+'"]');if(!node)continue;const percent=Math.max(0,Math.min(100,Number(j.progress)||0));$('.job-title',node).textContent=j.name;$('.engine-badge',node).textContent=engineName(j);$('.job-state span:last-child',node).textContent=j.profile_mode?'Working…':percent.toFixed(1)+'%';$('.progress i',node).style.width=percent+'%';$('.job-speed',node).textContent=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · total unknown`:transferInfo(j);}return;}
 
   const query=$('#searchJobs').value.trim().toLowerCase();
   for(const b of $$('[data-filter]')){const count=state.jobs.filter(j=>jobMatches(j,b.dataset.filter)).length;const label={all:'All',active:'Active',waiting:'Waiting',error:'Attention',done:'Finished'}[b.dataset.filter];b.innerHTML=label+(count?`<span class="tab-count">${count}</span>`:'');}
@@ -101,7 +112,7 @@ function renderJobs(fast=false){
   $('#queuePrev').disabled=queueOffset===0;$('#queueNext').disabled=queueOffset+queuePageSize>=jobs.length;$('#queuePageSize').value=queuePageSize;$('#queuePageLabel').textContent=`${queueOffset+1}–${Math.min(queueOffset+queuePageSize,jobs.length)} of ${jobs.length}`;
   const rowsHTML=jobs.slice(queueOffset,queueOffset+queuePageSize).map(j=>{
     const active=['queued','running','retry','blocked'].includes(j.status);
-    const info=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · ${j.status==='running'?'total unknown':labels[j.status]||j.status}`:j.status==='running'?`${bytes(j.speed)}/s · ETA ${eta(j.eta)}`:j.status==='retry'?`Retry in ${eta(Math.max(1,j.next_try-Date.now()/1000))}`:j.status==='done'?'On the SSD':`Attempt ${j.attempts} · ${engineName(j)}`;
+    const info=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · ${j.status==='running'?'total unknown':labels[j.status]||j.status}`:j.status==='running'?transferInfo(j):j.status==='retry'?`Retry in ${eta(Math.max(1,j.next_try-Date.now()/1000))}`:j.status==='done'?'On the SSD':`Attempt ${j.attempts} · ${engineName(j)}`;
     const percent=Math.max(0,Math.min(100,Number(j.progress)||0));
     return `<article class="job" data-progress-job="${j.id}"><div class="source-icon ${E(j.kind)}"><img class="queue-favicon" src="/api/favicon?id=${j.id}" alt=""><span class="source-fallback" aria-hidden="true">${symbols[j.kind]||'↙'}</span></div><div class="job-info"><span class="job-title" title="${E(j.name)}">${E(j.name)}</span><div class="job-meta" title="${E(shortFolder(j))}">${E(shortFolder(j))}</div><span class="engine-badge">${E(engineName(j))}</span>${j.status==='error'?`<span class="attention-note">${E(j.detail)}</span>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><span>${j.status==='running'?(j.profile_mode?'Working…':percent.toFixed(1)+'%'):''}</span></div><div class="progress"><i style="width:${percent}%"></i></div><div class="job-speed">${E(info)}</div></div><div class="job-controls">${active?button('Ⅱ','Pause',`data-job="${j.id}" data-action="pause"`):j.status!=='done'?button('▶','Resume / retry',`data-job="${j.id}" data-action="retry"`):button('▤','Open destination',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Details and log',`data-detail="${j.id}"`)}${button('×','Remove from queue',`data-job="${j.id}" data-action="remove"`)}</div></article>`;
   }).join('');

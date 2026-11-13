@@ -65,7 +65,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.1.2')
+            expect(page.locator('#appVersion')).to_have_text('v2.1.3')
             original_theme(page)
             page.locator('[data-open=downloadDialog]').first.click()
             expect(page.locator('#downloadForm [name=container]')).to_have_value('mp4')
@@ -101,6 +101,26 @@ with sync_playwright() as pw:
             page.evaluate('() => refresh()')
             expect(page.locator('#aggregateSpeed')).to_be_visible()
             expect(page.locator('#aggregateSpeed')).to_contain_text('2.8 MiB/s')
+            # Full state and fast polling must show the same byte/rate ETA.
+            import io,json
+            jid=ids[0];saved=dict(desk.live[jid])
+            desk.consume(io.BytesIO(('ZEDPROG '+json.dumps({'downloaded_bytes':40*1024**2,'total_bytes':100*1024**2,'speed':1024**2,'eta':9000,'filename':'fixture.mp4'})+'\n').encode()),jid)
+            page.evaluate('() => refresh()')
+            expect(page.locator('[data-progress-job="'+jid+'"] .job-speed')).to_contain_text('1.0 MiB/s · ETA ≈ 1m 0s · current file')
+            fast=page.evaluate('() => api("progress")')
+            row=next(j for j in fast['jobs'] if j['id']==jid)
+            assert row['eta']==60 and row['speed']==1024**2
+            desk.live[jid]['progress_at']-=11
+            fast=page.evaluate('() => api("progress")')
+            row=next(j for j in fast['jobs'] if j['id']==jid)
+            assert row['eta'] is None and row['speed']==0 and row['transfer_state']=='waiting'
+            page.evaluate('(j)=>{Object.assign(state.jobs.find(x=>x.id===j.id),j);renderJobs(true);}',row)
+            expect(page.locator('[data-progress-job="'+jid+'"] .job-speed')).to_have_text('Waiting for data · ETA —')
+            desk.consume(io.BytesIO(b'ZEDPROG {"downloaded_bytes":104857600,"total_bytes":104857600,"speed":999999,"eta":999,"status":"finished"}\n'),jid)
+            page.evaluate('() => refresh()')
+            expect(page.locator('[data-progress-job="'+jid+'"] .job-speed')).to_have_text('Merging / finishing · ETA —')
+            assert page.evaluate('() => [eta(0),eta(61),eta(3661),eta(90000),eta(null),eta(Infinity)]')==['0s','1m 1s','1h 1m','1d 1h','—','—']
+            desk.live[jid]=saved;page.evaluate('() => refresh()')
             no_overflow(page);screenshot(page,'queue-desktop')
             page.locator('[data-page=settings]').click()
             slider=page.locator('#settingsForm [name=simultaneous_downloads]')
