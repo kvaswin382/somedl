@@ -214,9 +214,13 @@ async function saveConnectionSettings({telegramOnly=false}={}){
   const form=$('#settingsForm'),data={},names=['telegram_bot_token','telegram_chat_id','telegram_admin_id'];
   if(!telegramOnly)names.push('tracker_domains');
   for(const name of names)data[name]=form.elements[name].value;
-  await api('settings',data);form.elements.telegram_bot_token.value='';
+  await api('settings',data);
+  // A completed save must not erase edits made while its request was in flight.
+  if(form.elements.telegram_bot_token.value===data.telegram_bot_token)form.elements.telegram_bot_token.value='';
+  if(data.telegram_bot_token.trim())state.settings.telegram_token_set=true;
+  $('#telegramTokenStatus').textContent=state.settings.telegram_token_set?'Token saved · hidden':'No token saved';
 }
-$('#settingsForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{await saveConnectionSettings();toast('Connection settings saved.');await refresh();renderSettings();});});
+$('#settingsForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{await saveConnectionSettings();toast('Connection settings saved.');await refresh();});});
 $('#passwordForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{await api('password',Object.fromEntries(new FormData(event.target)));event.target.reset();toast('Password changed. Sign in again on each device.');await showAuth();});});
 $('#folderCreate').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const path=join(folderPath,event.target.elements.name.value.trim());await api('folders',{path});event.target.reset();folderPath=path;await loadFolders();});});
 $('#folderUp').onclick=()=>action(async()=>{folderPath=parent(folderPath);await loadFolders();});
