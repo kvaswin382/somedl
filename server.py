@@ -763,7 +763,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'telegram_result':self.get_setting('telegram_last_result',{}), 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.1.1', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.1.2', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def add_stories(self,data):
         from instagram_story import target
@@ -854,7 +854,13 @@ class Desk:
                 critical=False
                 try:message,photo=self.notices.get(timeout=1)
                 except queue.Empty:continue
-            result=send(self.settings(),message,photo,critical=critical)
+            settings=self.settings()
+            result=send(settings,message,photo,critical=critical)
+            # Persist only Telegram-confirmed group migrations; never overwrite a newer edit.
+            with self.lock:
+                for old,new in result.get('migrations',{}).items():
+                    if str(self.get_setting('telegram_chat_id','')).strip()==old and self.get_setting('telegram_bot_token','')==settings.get('telegram_bot_token',''):
+                        self.set_setting('telegram_chat_id',new)
             result['sent_at']=now()
             if not self.stop.is_set():self.set_setting('telegram_last_result',result)
 
@@ -1209,7 +1215,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/instagram/stories':
             self.reply(d.add_stories(data));return
         elif path == '/api/telegram/test':
-            if not d.get_setting('telegram_errors',False) and not d.get_setting('telegram_snapshots',False):raise APIError('Enable Telegram notifications first')
+            if not d.get_setting('telegram_bot_token','') or not d.get_setting('telegram_chat_id',''):raise APIError('Save a Telegram bot token and group chat ID first')
             try:
                 with d.lock:
                     d.notices.put_nowait(('Zedair test notification',None))

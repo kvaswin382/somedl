@@ -41,7 +41,7 @@ with sync_playwright() as pw:
         print('UNAVAILABLE: sandboxed UI browser: '+str(exc)[:1200])
         raise SystemExit(1 if os.getenv('ZEDAIR_REQUIRE_BROWSER')=='1' else 77)
     with tempfile.TemporaryDirectory() as tmp:
-        root=Path(tmp);(root/'ssd/Zedair').mkdir(parents=True)
+        root=Path(tmp);(root/'ssd/Zedair/Travel photos').mkdir(parents=True)
         desk=Desk({'state':str(root/'state'),'mount':str(root/'ssd'),'require_mount':False,'setup_key_hash':digest('fixture-setup')})
         desk.rpc.call=lambda *a,**k:{'torrents':[]}
         maintenance.UPDATE_STATE=root/'updater';maintenance.UPDATE_STATE.mkdir()
@@ -133,6 +133,16 @@ with sync_playwright() as pw:
             expect(page.locator('#toast')).to_contain_text('Connection settings saved')
             assert desk.get_setting('telegram_bot_token')=='123:fixture'
             expect(page.locator('#settingsForm [name=telegram_bot_token]')).to_have_value('')
+            # Test uses the fields currently visible, even without a separate Save click.
+            page.locator('#settingsForm [name=telegram_bot_token]').fill('456:new_fixture')
+            page.locator('#settingsForm [name=telegram_chat_id]').fill('-1001234')
+            page.locator('#telegramTest').click()
+            expect(page.locator('#toast')).to_contain_text('Connection saved; test queued')
+            assert desk.get_setting('telegram_bot_token')=='456:new_fixture'
+            assert desk.get_setting('telegram_chat_id')=='-1001234'
+            assert not desk.get_setting('telegram_errors') and not desk.get_setting('telegram_snapshots')
+            assert desk.notices.get_nowait()==('Zedair test notification',None)
+            assert desk.critical_notices.empty(), 'General test must not send to admin'
             page.locator('[data-settings-tab=engines]').click()
             expect(page.locator('#packageInventory')).to_contain_text('yt-dlp')
             expect(page.locator('#packageInventory')).to_contain_text('New release available')
@@ -177,6 +187,37 @@ with sync_playwright() as pw:
             expect(page.locator('.usage-ring[data-level=critical]')).to_have_count(1)
             expect(page.locator('.usage-ring[data-level=warning]')).to_have_count(1)
             page.evaluate('() => scrollTo(0,0)');no_overflow(page);screenshot(page,'system-mobile-dark')
+            # Actual file toolbar and destructive dialog, desktop/mobile and light/dark.
+            for width,dark in [(1360,False),(1360,True),(390,False),(390,True)]:
+                page.set_viewport_size({'width':width,'height':940 if width>760 else 844})
+                if page.locator('body').evaluate('(el)=>el.classList.contains("dark")')!=dark:page.locator('#themeBtn').click()
+                page.locator('[data-page=files]').click()
+                page.locator('[data-file-view=list]').click()
+                folder=page.locator('#fileList [data-file-folder="Travel photos"]')
+                expect(folder).to_be_visible()
+                muted='rgb(165, 169, 180)' if dark else 'rgb(108, 114, 108)'
+                assert folder.locator('span').first.evaluate('(el)=>getComputedStyle(el).color')==muted
+                page.locator('#fileSort').select_option('name-asc')
+                for selector in ['#fileSort','#filePageSize']:
+                    select=page.locator(selector)
+                    style=select.evaluate('(el)=>{const s=getComputedStyle(el);return [s.appearance,s.textAlign,s.paddingLeft,s.paddingRight,s.textIndent];}')
+                    assert style==['none','left','10px','30px','0px'],style
+                page.locator('[data-file-view=grid]').click()
+                expect(page.locator('.file-thumb.placeholder>span')).to_have_count(1)
+                assert page.locator('.file-thumb.placeholder>span').evaluate('(el)=>getComputedStyle(el).color')==muted
+                no_overflow(page);page.evaluate('() => scrollTo(0,0)')
+                screenshot(page,'files-'+str(width)+('-dark' if dark else '-light'))
+                page.locator('#fileList [data-file-folder="Travel photos"]').click()
+                page.locator('#deleteFolder').click();expect(page.locator('#messageDialog')).to_be_visible()
+                button=page.locator('#messageAccept')
+                expect(button).to_have_class(__import__('re').compile('danger'))
+                assert button.evaluate('(el)=>getComputedStyle(el).color')=='rgb(255, 255, 255)'
+                assert button.evaluate('(el)=>getComputedStyle(el).backgroundColor')=='rgb(181, 61, 69)'
+                button.hover();page.wait_for_timeout(200)
+                assert button.evaluate('(el)=>getComputedStyle(el).color')=='rgb(255, 255, 255)'
+                screenshot(page,'confirm-'+str(width)+('-dark' if dark else '-light'))
+                page.locator('#messageCancel').click();page.locator('#filesUp').click()
+            page.locator('[data-page=settings]').click()
             page.route('**/api/state',lambda r:r.abort())
             page.evaluate('() => refresh()');expect(page.locator('#connection')).to_have_class(__import__('re').compile('offline'))
             assert page.locator('#connection').evaluate('(el) => getComputedStyle(el).color')=='rgb(255, 148, 117)'

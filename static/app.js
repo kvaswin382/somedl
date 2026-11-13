@@ -210,7 +210,13 @@ async function showTorrentFiles(id){
 $('#authForm').addEventListener('submit',async event=>{event.preventDefault();const form=event.target;const button=$('button[type=submit]',form);button.disabled=true;$('#authError').textContent='';try{const data=Object.fromEntries(new FormData(form));await api(form.dataset.setup==='true'?'setup':'login',data);form.reset();await showAuth();}catch(error){$('#authError').textContent=error.message;}finally{button.disabled=false;}});
 $('#downloadForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target,data=Object.fromEntries(new FormData(form));data.urls=data.urls.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);data.filename=form.filename.value.trim();data.folder_selected=form.folder_selected.checked;data.browser_fallback=form.browser_fallback.checked;data.playlist=form.playlist.checked;data.subtitles=form.subtitles.checked;const result=await api('jobs',data);closeDialog($('#downloadDialog'));form.urls.value='';updateLinkCount();toast(`${result.ids.length} download(s) queued${result.skipped?`; ${result.skipped} duplicate(s) skipped`:''}.`);await refresh();});});
 $('#torrentForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target;const data={folder:form.folder.value,magnet:form.magnet.value.trim(),paused:form.paused.checked};if(!data.magnet){const file=form.torrent.files[0];if(!file)throw Error('Paste a magnet link or choose a .torrent file.');if(file.size>8*1024*1024)throw Error('Torrent file must be smaller than 8 MiB.');const array=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<array.length;i+=8192)binary+=String.fromCharCode(...array.subarray(i,i+8192));data.metainfo=btoa(binary);}await api('torrents',data);closeDialog($('#torrentDialog'));form.reset();toast('Torrent added.');await setPage('torrents');await refresh();});});
-$('#settingsForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const data={};for(const name of ['telegram_bot_token','telegram_chat_id','telegram_admin_id','tracker_domains'])data[name]=event.target.elements[name].value;await api('settings',data);event.target.elements.telegram_bot_token.value='';toast('Connection settings saved.');await refresh();renderSettings();});});
+async function saveConnectionSettings({telegramOnly=false}={}){
+  const form=$('#settingsForm'),data={},names=['telegram_bot_token','telegram_chat_id','telegram_admin_id'];
+  if(!telegramOnly)names.push('tracker_domains');
+  for(const name of names)data[name]=form.elements[name].value;
+  await api('settings',data);form.elements.telegram_bot_token.value='';
+}
+$('#settingsForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{await saveConnectionSettings();toast('Connection settings saved.');await refresh();renderSettings();});});
 $('#passwordForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{await api('password',Object.fromEntries(new FormData(event.target)));event.target.reset();toast('Password changed. Sign in again on each device.');await showAuth();});});
 $('#folderCreate').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const path=join(folderPath,event.target.elements.name.value.trim());await api('folders',{path});event.target.reset();folderPath=path;await loadFolders();});});
 $('#folderUp').onclick=()=>action(async()=>{folderPath=parent(folderPath);await loadFolders();});
@@ -415,7 +421,11 @@ $('#queuePageSize').onchange=e=>{queuePageSize=Number(e.target.value);queueOffse
 document.addEventListener('load',e=>{if(e.target.matches?.('.queue-favicon'))e.target.parentElement.classList.add('favicon-loaded');},true);
 document.addEventListener('error',e=>{if(e.target.matches?.('.queue-favicon')){e.target.hidden=true;e.target.parentElement.classList.remove('favicon-loaded');}},true);
 $('#storiesForm').onsubmit=e=>{e.preventDefault();action(async()=>{const r=await api('instagram/stories',Object.fromEntries(new FormData(e.target)));toast('Collection queued → '+r.destination);await refresh();renderProfileJobs();});};
-$('#telegramTest').onclick=()=>action(async()=>{await api('telegram/test',{});$('#telegramResult').textContent='Test queued…';toast('Test queued. Delivery status will appear here.');});
+$('#telegramTest').onclick=()=>action(async()=>{
+  const button=$('#telegramTest');button.disabled=true;
+  try{await settingsSaveChain;await saveConnectionSettings({telegramOnly:true});await api('telegram/test',{});$('#telegramResult').textContent='Test queued…';toast('Connection saved; test queued. Delivery status will appear here.');await refresh();}
+  finally{button.disabled=false;}
+});
 $('#telegramClear').onclick=()=>action(async()=>{await api('settings',{clear_telegram_token:true});await refresh();renderSettings();});
 $('#clearCache').onclick=()=>action(async()=>{const abandon=$('#removeAbandoned').checked;if(abandon&&!await uiMessage('Permanently remove cancelled and orphan partial downloads? Finished files and active jobs are kept.',{danger:true}))return;const r=await api('cache/clear',{remove_abandoned:abandon,confirm:abandon});$('#cacheResult').textContent=`Removed ${r.removed} cached items/folders · ${bytes(r.bytes)} freed`;});
 async function loadUsage(){

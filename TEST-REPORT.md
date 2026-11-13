@@ -1,3 +1,9 @@
+# v2.1.2 UI and Telegram verification
+
+The local suite passes 174 unit tests, including Telegram HTTP error parsing/redaction, non-JSON errors, rate limits, timeout handling, bounded group migration, and rejected-photo fallback. All Telegram transport tests are mocked; no real messages or private tokens were used. The real-browser regression also checks white destructive-button text on normal/hover states, gray folder icons, select text/arrow spacing, desktop/mobile light/dark layouts, and saving the visible Telegram fields before a group-only test with routine notifications disabled. The push workflow runs these alongside the existing 14 integration scripts, syntax and checksum checks.
+
+The reported `HTTP 400` alone does not identify the user's live Telegram failure. This release exposes Telegram's actual description, fixes stale test settings, and handles confirmed group migrations/image rejection. Live group delivery and bot permissions still require the laptop's Test button. README now links separate setup, usage, maintenance and development guides; installation, rollback, SSD, cookies, network and recovery instructions are retained.
+
 # v2.1.1 interface verification
 
 Changes are limited to restoring the `873313e` blue/neutral palette, centering Settings, correcting slider focus decoration and compacting the engine inventory. The existing real-browser regression now asserts the original light/dark color values, equal settings margins on wide and mobile screens, no track outline for pointer/keyboard range use, and compact engine rows. CI captures light/dark desktop and mobile screenshots for review. Existing extraction, queue, alert and media tests remain enabled.
