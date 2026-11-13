@@ -68,13 +68,14 @@ async function refresh(tick=false){
       const old=state.jobs.filter(j=>j.status==='running').map(j=>j.id).sort().join(',');
       if(progress.jobs.map(j=>j.id).sort().join(',')===old){for(const live of progress.jobs)Object.assign(state.jobs.find(j=>j.id===live.id),live);renderJobs(true);renderOverview();return;}
     }
-    state=await api('state');lastFullRefresh=Date.now(); $('#connection').textContent='● Connected';$('#connection').classList.remove('offline');
-    renderOverview(); if(page==='queue')renderJobs(); if(page==='torrents')renderTorrents(); if(page==='speed')renderSpeed(); if(page==='tools')renderProfileJobs(); if(page==='settings'&&settingsTab==='system'&&!document.hidden)await renderSystem();
+    const initial=!state;state=await api('state');lastFullRefresh=Date.now(); $('#connection').textContent='● Connected';$('#connection').classList.remove('offline');
+    renderOverview(); if(initial&&page!=='queue')await setPage(page); if(page==='queue')renderJobs(); if(page==='torrents')renderTorrents(); if(page==='speed')renderSpeed(); if(page==='tools')renderProfileJobs(); if(page==='settings'&&settingsTab==='system'&&!document.hidden)await renderSystem();
   }catch(error){$('#connection').textContent='● Reconnecting';$('#connection').classList.add('offline');}
   finally{busy=false;if(!$('#shell').hidden)timer=setTimeout(()=>refresh(true),document.hidden?15000:page==='queue'&&state?.jobs.some(j=>j.status==='running')?1000:4000);}
 }
 function renderOverview(){
   const s=state, jobs=s.jobs;
+  renderTelegramStatus(s.telegram_result||{});
   const running=jobs.filter(j=>j.status==='running'), torrents=s.torrents.filter(t=>t.status===4);const total=$('#aggregateSpeed');if(total){total.hidden=running.length+torrents.length<2;total.textContent='↓ '+bytes(running.reduce((n,j)=>n+(Number(j.speed)||0),0)+torrents.reduce((n,t)=>n+(Number(t.rateDownload)||0),0))+'/s total';}
   $('#navCount').textContent=jobs.filter(j=>['queued','running','retry','blocked'].includes(j.status)).length;
   $('#torrentCount').textContent=s.torrents.length;
@@ -414,7 +415,7 @@ $('#queuePageSize').onchange=e=>{queuePageSize=Number(e.target.value);queueOffse
 document.addEventListener('load',e=>{if(e.target.matches?.('.queue-favicon'))e.target.parentElement.classList.add('favicon-loaded');},true);
 document.addEventListener('error',e=>{if(e.target.matches?.('.queue-favicon')){e.target.hidden=true;e.target.parentElement.classList.remove('favicon-loaded');}},true);
 $('#storiesForm').onsubmit=e=>{e.preventDefault();action(async()=>{const r=await api('instagram/stories',Object.fromEntries(new FormData(e.target)));toast('Collection queued → '+r.destination);await refresh();renderProfileJobs();});};
-$('#telegramTest').onclick=()=>action(async()=>{await api('telegram/test',{});toast('Test queued. Check the result in Download engines after a few seconds.');});
+$('#telegramTest').onclick=()=>action(async()=>{await api('telegram/test',{});$('#telegramResult').textContent='Test queued…';toast('Test queued. Delivery status will appear here.');});
 $('#telegramClear').onclick=()=>action(async()=>{await api('settings',{clear_telegram_token:true});await refresh();renderSettings();});
 $('#clearCache').onclick=()=>action(async()=>{const abandon=$('#removeAbandoned').checked;if(abandon&&!await uiMessage('Permanently remove cancelled and orphan partial downloads? Finished files and active jobs are kept.',{danger:true}))return;const r=await api('cache/clear',{remove_abandoned:abandon,confirm:abandon});$('#cacheResult').textContent=`Removed ${r.removed} cached items/folders · ${bytes(r.bytes)} freed`;});
 async function loadUsage(){
@@ -432,7 +433,7 @@ async function loadPackages(check=false){
   const order=['yt-dlp','gallery-dl','playwright'],managed=r.packages.filter(p=>order.includes(p.name.toLowerCase())).sort((a,b)=>order.indexOf(a.name)-order.indexOf(b.name));
   const descriptions={'yt-dlp':'Site-specific video & audio extraction','gallery-dl':'Images, galleries & Instagram collections','playwright':'Rendered playback detection with Chromium'};
   $('#packageInventory').innerHTML=`<p class="hint">Python ${E(r.python)} · ${r.checking?'Checking stable releases…':r.checked_at?'Checked '+new Date(r.checked_at*1000).toLocaleString():'Release check unavailable'}</p><div class="engine-cards">`+managed.map(p=>`<article class="engine-card"><span class="engine-mark">${p.name==='playwright'?'◈':p.name==='gallery-dl'?'▦':'↙'}</span><div><h3>${E(p.name)}</h3><p>${E(descriptions[p.name])}</p><div class="engine-version">Installed <strong>${E(p.version)}</strong>${p.latest_version?` · Latest <strong>${E(p.latest_version)}</strong>`:''}</div><span class="engine-status ${p.has_update?'available':''}">${p.has_update?'New release available':p.version==='Not installed'?'Not installed':p.latest_version?'Up to date':p.check_error?'Could not check · try again':'Waiting for release check'}</span></div>${p.has_update&&r.update_available?`<button type="button" class="primary compact" data-update-package="${E(p.name)}">Update</button>`:''}</article>`).join('')+`</div>${managed.some(p=>p.has_update)&&!r.update_available?'<p class="notice">Run upgrade.sh on the laptop to enable the managed updater.</p>':''}<details class="package-details"><summary>All Python packages (${r.packages.length})</summary><table><thead><tr><th>Package</th><th>Installed version</th></tr></thead><tbody>${r.packages.map(p=>`<tr><td>${E(p.name)}</td><td>${E(p.version)}</td></tr>`).join('')}</tbody></table></details><h3 class="tools-heading">Ubuntu-managed tools</h3><div class="system-tools">${r.system_tools.map(p=>`<div><strong>${E(p.name)}</strong><span>${E(p.version)}</span></div>`).join('')}</div>`+Object.entries(r.updates).map(([k,v])=>`<p class="hint">${E(k)}: ${E(v.status)} — ${E(v.detail)}</p>`).join('');
-  $('#telegramResult').textContent=(r.telegram.ok?'Last Telegram delivery succeeded. ':'')+(r.telegram.errors||[]).concat(r.telegram.warnings||[]).join('; ');
+  renderTelegramStatus(r.telegram);
   if(r.checking&&page==='settings'&&settingsTab==='engines')packageTimer=setTimeout(()=>action(()=>loadPackages()),2000);
 }
 $('#loadPackages').onclick=()=>action(()=>loadPackages(true));
@@ -510,3 +511,9 @@ $('#settingsForm').addEventListener('change',e=>{
     finally{if(savingSettings.get(name)===ticket)savingSettings.delete(name);if(!savingSettings.size)$('#settingsSaveStatus').textContent=$('#settingsSaveStatus').classList.contains('save-error')?'Save failed · try again':'Saved automatically';}
   });
 });
+
+function renderTelegramStatus(result){
+  const status=$('#telegramResult');
+  status.textContent=result.pending?'Test queued…':(result.ok?'Last delivery succeeded. ':'')+(result.errors||[]).concat(result.warnings||[]).join('; ')+(result.sent_at?' · '+new Date(result.sent_at*1000).toLocaleTimeString():'');
+  status.classList.toggle('form-error',result.ok===false);
+}

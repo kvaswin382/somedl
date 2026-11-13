@@ -89,8 +89,12 @@ with sync_playwright() as pw:
             expect(page.locator('#settingsSaveStatus')).to_have_text('Saved automatically')
             assert desk.get_setting('simultaneous_downloads')==3
             screenshot(page,'settings-desktop')
+            # Deliberately open Settings before the initial state arrives.
+            pending=[];page.route('**/api/state',lambda route:pending.append(route))
             page.reload();expect(page.locator('#shell')).to_be_visible()
             page.locator('[data-page=settings]').click()
+            assert pending, 'Initial status request was not intercepted'
+            pending[-1].fulfill(json=desk.snapshot());page.unroute('**/api/state')
             expect(page.locator('#settingsForm [name=simultaneous_downloads]')).to_have_value('3')
             page.get_by_text('Telegram connection & diagnostics',exact=True).click()
             page.locator('#settingsForm [name=telegram_bot_token]').fill('123:fixture')

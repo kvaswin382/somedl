@@ -760,7 +760,7 @@ class Desk:
             job.update(self.live.get(job['id'], {}))
             job.pop('last_error', None)
         return {'storage': self.storage(), 'jobs': jobs, 'torrents': self.torrents,
-                'torrent_error': self.torrent_error, 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
+                'torrent_error': self.torrent_error, 'telegram_result':self.get_setting('telegram_last_result',{}), 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
                 'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.1.0', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
@@ -855,6 +855,7 @@ class Desk:
                 try:message,photo=self.notices.get(timeout=1)
                 except queue.Empty:continue
             result=send(self.settings(),message,photo,critical=critical)
+            result['sent_at']=now()
             if not self.stop.is_set():self.set_setting('telegram_last_result',result)
 
     def get_session(self, raw):
@@ -1209,7 +1210,10 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(d.add_stories(data));return
         elif path == '/api/telegram/test':
             if not d.get_setting('telegram_errors',False) and not d.get_setting('telegram_snapshots',False):raise APIError('Enable Telegram notifications first')
-            try:d.notices.put_nowait(('Zedair test notification',None))
+            try:
+                with d.lock:
+                    d.notices.put_nowait(('Zedair test notification',None))
+                    d.set_setting('telegram_last_result',{'pending':True})
             except queue.Full:raise APIError('Notification queue is full; try later')
         elif path == '/api/cache/clear':
             from maintenance import clear_cache
