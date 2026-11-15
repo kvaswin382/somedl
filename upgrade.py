@@ -17,18 +17,34 @@ APP=Path('/opt/zedair')
 STATE=Path('/var/lib/zedair')
 CONFIG=Path('/etc/zedair')
 BACKUPS=Path('/var/backups/zedair')
-FILES=('download_http.py','engine_settings.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-browser.sh','install-speedtest.py','install-speedtest.sh','README.md','TEST-REPORT.md','LICENSE','requirements.txt','update.sh','upgrade.sh','upgrade.py')
+FILES=('download_http.py','engine_settings.py','torrent_engine.py','torrent_migrate.py','torrent_service.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-browser.sh','install-speedtest.py','install-speedtest.sh','README.md','TEST-REPORT.md','LICENSE','requirements.txt','update.sh','upgrade.sh','upgrade.py')
 
 def run(*args):
     subprocess.run([str(x) for x in args],check=True)
 
+ENGINE_UNITS=('zedair-qbittorrent','zedair-transmission')
+
+def engine_unit():
+    # The installed application decides which torrent engine is current.
+    return ENGINE_UNITS[0 if (APP/'torrent_engine.py').exists() else 1]
+
 def stop():
-    run('systemctl','stop','zedair','zedair-transmission')
+    run('systemctl','stop','zedair')
+    for unit in ENGINE_UNITS:  # one of them may not exist; that is fine
+        subprocess.run(['systemctl','stop',unit],check=False)
 
 def start():
-    # Web UI still starts if the SSD is absent and Transmission cannot start.
-    subprocess.run(['systemctl','start','zedair-transmission'],check=False)
+    # Web UI still starts if the SSD is absent and the torrent engine cannot start.
+    subprocess.run(['systemctl','start',engine_unit()],check=False)
     run('systemctl','start','zedair')
+
+def switch_engine(config):
+    """Make systemd match the installed application (also used by rollback)."""
+    import torrent_service
+    if (APP/'torrent_engine.py').exists():
+        torrent_service.install_services(config,APP,STATE,CONFIG/'config.json')
+    else:
+        torrent_service.select_engine('transmission')
 
 def backup():
     stamp=datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
@@ -98,12 +114,15 @@ def main():
         for name in FILES:
             if not (BASE/name).is_file():raise SystemExit('Missing package file: '+name)
         with tempfile.TemporaryDirectory() as temp:
-            for name in ('download_http.py','engine_settings.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py','profiles.py','facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py','setup-local.py','install-speedtest.py','upgrade.py'):
+            for name in ('download_http.py','engine_settings.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py','profiles.py','facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py','setup-local.py','install-speedtest.py','upgrade.py','torrent_engine.py','torrent_migrate.py','torrent_service.py'):
                 import py_compile
                 py_compile.compile(str(BASE/name),cfile=str(Path(temp)/(name+'c')),doraise=True)
         run(APP/'venv/bin/python','-c','import yt_dlp, gallery_dl')
     elif not (args.rollback/'backup.json').is_file():
         raise SystemExit('Backup not found')
+    if not args.rollback and APP==Path('/opt/zedair'):
+        # Fetch the torrent engine first: a failure here changes nothing.
+        run('apt-get','install','-y','qbittorrent-nox')
     required=sum(p.stat().st_size for p in STATE.rglob('*') if p.is_file())+256*1024**2
     if shutil.disk_usage('/var').free<required:
         raise SystemExit('Not enough internal disk space for a safe backup. Free space before updating.')
@@ -127,12 +146,14 @@ def main():
         if APP==Path('/opt/zedair'):
             from maintenance import install_update_service
             install_update_service()
+            switch_engine(json.loads((CONFIG/'config.json').read_text()))
         start()
         healthy()
     except Exception:
         if saved:
             stop()
             restore(saved)
+            if APP==Path('/opt/zedair'):switch_engine(json.loads((CONFIG/'config.json').read_text()))
             start()
             print('Update failed. Previous application and private state restored.',file=sys.stderr)
         else:

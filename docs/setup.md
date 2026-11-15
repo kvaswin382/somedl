@@ -59,7 +59,7 @@ For speed testing, also follow **Test the laptop’s internet speed → One-time
 ### 3. Check the installation
 
 ```bash
-systemctl status zedair zedair-transmission --no-pager
+systemctl status zedair zedair-qbittorrent --no-pager
 findmnt /srv/zedair-ssd
 hostname -I
 ```
@@ -133,7 +133,7 @@ Keep ventilation clear and the charger connected. A desktop environment is unnec
 
 ## Network access and HTTPS
 
-Reserve the laptop’s IP in your router’s DHCP settings so its URL stays stable. Phone/computer and laptop must be on the same LAN; guest Wi-Fi isolation can block access. Do not forward web ports **80 / 8787** or torrent RPC port **9092** to the internet.
+Reserve the laptop’s IP in your router’s DHCP settings so its URL stays stable. Phone/computer and laptop must be on the same LAN; guest Wi-Fi isolation can block access. Do not forward web ports **80 / 8787** or torrent engine port **9092** (and the BitTorrent port 51413, unless you want inbound peers) to the internet.
 
 The default webpage uses HTTP. For a trusted home LAN this keeps setup simple; HTTP does not encrypt credentials. If you need encrypted access, supply a certificate/key trusted by your devices, with the laptop’s hostname/IP in its SAN. Store them in `/etc/zedair`, readable by the zedair group, and add `tls_cert` and `tls_key` to the existing JSON using `sudoedit /etc/zedair/config.json`:
 

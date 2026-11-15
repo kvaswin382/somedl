@@ -24,7 +24,7 @@ def inventory(desk,check=False):
     for name in sorted(UPDATES):
         if not any(p['name'].lower()==name for p in packages):packages.append({'name':name,'version':'Not installed'})
     binaries=[]
-    for name,args in [('ffmpeg',['-version']),('deno',['--version']),('transmission-daemon',['--version'])]:
+    for name,args in [('ffmpeg',['-version']),('deno',['--version']),('qbittorrent-nox',['--version'])]:
         path=shutil.which(name)
         try:
             result=subprocess.run([path,*args],capture_output=True,text=True,timeout=3) if path else None

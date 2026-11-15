@@ -43,7 +43,7 @@ with sync_playwright() as pw:
     with tempfile.TemporaryDirectory() as tmp:
         root=Path(tmp);(root/'ssd/Zedair/Travel photos').mkdir(parents=True)
         desk=Desk({'state':str(root/'state'),'mount':str(root/'ssd'),'require_mount':False,'setup_key_hash':digest('fixture-setup')})
-        desk.rpc.call=lambda *a,**k:{'torrents':[]}
+        desk.bt.list=lambda:[];desk.bt.managed=lambda:[];desk.bt.apply_settings=lambda *a,**k:None
         maintenance.UPDATE_STATE=root/'updater';maintenance.UPDATE_STATE.mkdir()
         (maintenance.UPDATE_STATE/'integration.json').write_text('{}')
         # Fixed metadata avoids external release checks in this UI fixture.

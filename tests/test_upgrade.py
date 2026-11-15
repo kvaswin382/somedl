@@ -40,5 +40,24 @@ class UpgradeTests(unittest.TestCase):
                 self.assertEqual((state/'private.txt').read_text(),'private fixture state')
                 self.assertTrue((app/'venv/bin/python').exists())
                 self.assertEqual(len(list(backups.iterdir())),1)
+    def test_engine_follows_the_installed_application_version(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app=Path(tmp)
+            with patch.object(upgrade,'APP',app):
+                self.assertEqual(upgrade.engine_unit(),'zedair-transmission')   # pre-qBittorrent release
+                (app/'torrent_engine.py').write_text('')
+                self.assertEqual(upgrade.engine_unit(),'zedair-qbittorrent')
+    def test_switch_engine_installs_qbittorrent_or_restores_transmission_for_rollback(self):
+        import torrent_service
+        with tempfile.TemporaryDirectory() as tmp,patch.object(upgrade,'APP',Path(tmp)),patch.object(torrent_service,'install_services') as install,patch.object(torrent_service,'select_engine') as select:
+            upgrade.switch_engine({'mount':'/m'})
+            select.assert_called_once_with('transmission');install.assert_not_called()
+            (Path(tmp)/'torrent_engine.py').write_text('')
+            upgrade.switch_engine({'mount':'/m'})
+            install.assert_called_once()
+    def test_new_modules_are_part_of_every_install_and_backup(self):
+        for name in ('torrent_engine.py','torrent_migrate.py','torrent_service.py'):
+            self.assertIn(name,upgrade.FILES)
+            self.assertIn("'"+name+"'",(upgrade.BASE/'install.py').read_text())
     def test_success_preserves_private_state_and_environment(self):self.exercise()
     def test_failed_health_check_restores_old_app_and_state(self):self.exercise(True)

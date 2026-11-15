@@ -277,7 +277,7 @@ class EngineHTTP(Fixture):
         self.assertEqual(self.request('/api/jobs/retry-all',{})[0],200)
         self.assertEqual([self.desk.job(j)['status'] for j in ids],['queued','queued','paused','done'])
     def test_masked_token_preserved_and_explicitly_cleared(self):
-        self.login();self.desk.rpc.call=lambda *a,**k:{}
+        self.login();self.desk.bt.apply_settings=lambda *a,**k:None
         self.assertEqual(self.request('/api/settings',{'telegram_bot_token':'123:secret','browser_timeout':120})[0],200)
         self.assertEqual(self.request('/api/settings',{'telegram_bot_token':''})[0],200)
         self.assertEqual(self.desk.get_setting('telegram_bot_token'),'123:secret')

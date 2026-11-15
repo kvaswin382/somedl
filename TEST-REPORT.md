@@ -70,3 +70,9 @@ The supplied Threads share and canonical post were inaccessible to the research 
 Additional tests exercise lossless MP4/audio conversion with identical encoded-packet hashes, updater rollback and recovery after interruption. The browser UI fixture passed setup, queuing, settings, package inventory and Instagram Tools using fake credentials; it does not start download workers.
 
 No physical Atom/2 GB performance, exFAT unplug, live torrent swarm, Telegram delivery or full systemd/polkit installation was exercised. Unit/fixture tests cover their application interfaces, not actual hardware deployment. Installed dependency interfaces used for testing: Python 3.12, yt-dlp 2026.10.26, gallery-dl 1.32.19 and Playwright 1.65.1.
+
+## Torrent engine change (qBittorrent-nox)
+
+Verified on Ubuntu 24.04 with the distribution's qBittorrent 4.6.3: unit tests against a fake WebUI over real HTTP (login/session expiry, state mapping, identifier safety, pause/stop version handling, file selection, add/duplicate handling, preferences, bencode, service files, Transmission import) and `tests/integration_qbittorrent.py`, which boots a real `qbittorrent-nox` from the installer-generated profile, reads back every enforced preference, and drives add, verify, file selection, magnet metadata, hold/release through the desk loop, deletion protection, removal that keeps data, and the Transmission import. Generated systemd units passed `systemd-analyze verify` apart from units absent in the test container.
+
+Not exercised: a live swarm, the memory benefit under load on the physical 2 GB laptop (idle memory was about 31 MiB with either configuration in a six-torrent, no-peer test), a real systemd install/upgrade/rollback on the laptop, and qBittorrent 5.x (its renamed stop/start endpoints are handled and unit-tested only against the fake).

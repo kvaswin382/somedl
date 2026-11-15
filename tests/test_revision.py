@@ -68,10 +68,10 @@ class RevisionTests(Fixture):
     def test_deletion_protection_and_file_change(self):
         path=self.desk.root/'movie.mp4';path.write_bytes(b'data')
         data={'path':'movie.mp4','confirm':True,'stamp':str(path.stat().st_size)+':'+str(path.stat().st_mtime_ns)}
-        with patch.object(self.desk.rpc,'call',return_value={'torrents':[{'downloadDir':str(self.desk.root),'files':[{'name':'movie.mp4'}]}]}):
+        with patch.object(self.desk.bt,'managed',return_value=[{'downloadDir':str(self.desk.root),'files':[{'name':'movie.mp4'}]}]):
             with self.assertRaisesRegex(Exception,'Remove this torrent'):self.desk.delete_file(data)
         self.assertTrue(path.exists())
-        with patch.object(self.desk.rpc,'call',return_value={'torrents':[]}):self.desk.delete_file(data)
+        with patch.object(self.desk.bt,'managed',return_value=[]):self.desk.delete_file(data)
         self.assertFalse(path.exists())
         path.write_bytes(b'changed')
         with self.assertRaisesRegex(Exception,'changed'):self.desk.delete_file(data)

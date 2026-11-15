@@ -38,6 +38,8 @@ import profiles
 from systemstats import SystemStats
 from publishing import publish, MEDIA
 from speedcheck import SpeedTest, history_csv
+from torrent_engine import QBittorrent
+import torrent_migrate
 
 HERE = Path(__file__).resolve().parent
 DAYS = 35
@@ -142,35 +144,6 @@ def safe_relative(raw):
     return '/'.join(parts)
 
 
-class Transmission:
-    def __init__(self, config):
-        self.url = config.get('rpc_url', 'http://127.0.0.1:9092/transmission/rpc')
-        self.auth = base64.b64encode((config.get('rpc_user', 'zedair') + ':' + config.get('rpc_password', '')).encode()).decode()
-        self.sid = ''
-        self.lock = threading.RLock()
-
-    def call(self, method, arguments=None):
-        with self.lock:
-            for _ in range(2):
-                req = urllib.request.Request(self.url, json.dumps({'method': method, 'arguments': arguments or {}}).encode(),
-                      {'Content-Type': 'application/json', 'Authorization': 'Basic ' + self.auth,
-                       'X-Transmission-Session-Id': self.sid})
-                try:
-                    with urllib.request.urlopen(req, timeout=5) as response:
-                        data = json.load(response)
-                    if data.get('result') != 'success':
-                        raise APIError('Torrent engine: ' + str(data.get('result', 'unknown response')), 502)
-                    return data.get('arguments', {})
-                except urllib.error.HTTPError as exc:
-                    if exc.code == 409:
-                        self.sid = exc.headers.get('X-Transmission-Session-Id', '')
-                        continue
-                    raise APIError('Torrent engine rejected the request. Check its service and credentials.', 503)
-                except (OSError, ValueError):
-                    raise APIError('Torrent engine is offline. Check zedair-transmission on the laptop.', 503)
-            raise APIError('Torrent engine session handshake failed', 503)
-
-
 class Desk:
     def __init__(self, config):
         self.config = config
@@ -237,7 +210,9 @@ class Desk:
         self.torrent_error = 'Connecting to torrent engine…'
         self.started = now()
         self.failures = collections.defaultdict(collections.deque)
-        self.rpc = Transmission(config)
+        self.bt = QBittorrent(config, APIError)
+        self.torrent_wake = threading.Event()
+        self.torrent_import_done = False
         self.threads = []
         self.speedtest = SpeedTest(self)
         self.systemstats = SystemStats()
@@ -295,8 +270,7 @@ class Desk:
             reserved = self.rows('SELECT p.target,j.folder,j.subdir FROM published p JOIN jobs j ON p.job=j.id WHERE p.complete=0')
             if any(path==self.root/r['folder']/r['subdir']/r['target'] for r in reserved):
                 raise APIError('This file is still being saved',409)
-            torrents = self.rpc.call('torrent-get',{'fields':['downloadDir','files']}).get('torrents',[])
-            for torrent in torrents:
+            for torrent in self.bt.managed():
                 if any(path.resolve()==(Path(torrent['downloadDir'])/f['name']).resolve() for f in torrent.get('files',[])):
                     raise APIError('Remove this torrent from the torrent list first, then delete its files here',409)
             path.unlink()
@@ -725,16 +699,7 @@ class Desk:
                 print('Queue monitor:',type(exc).__name__,flush=True)
 
     def apply_torrent_settings(self):
-        s = self.settings()
-        return self.rpc.call('session-set', {
-            'download-queue-enabled': True, 'download-queue-size': min(4,s['simultaneous_downloads']),
-            'seed-queue-enabled': True, 'seed-queue-size': 1, 'queue-stalled-enabled': False,
-            'speed-limit-down-enabled': bool(s['torrent_down_kib']), 'speed-limit-down': s['torrent_down_kib'],
-            'speed-limit-up-enabled': True, 'speed-limit-up': max(1, s['torrent_up_kib']),
-            'seedRatioLimited': True, 'seedRatioLimit': s['seed_ratio'],
-            'peer-limit-global': 40, 'peer-limit-per-torrent': 20,
-            'cache-size-mb': 16, 'port-forwarding-enabled': False, 'preallocation': 0,
-        })
+        return self.bt.apply_settings(self.settings(), self.root/'Torrents')
 
     def owned_torrent(self, torrent):
         try:
@@ -742,34 +707,45 @@ class Desk:
         except (KeyError, OSError):
             return False
 
+    def refresh_torrents(self):
+        items = [t for t in self.bt.list() if self.owned_torrent(t)]
+        with self.lock:
+            self.torrents = items
+            self.torrent_error = ''
+        return items
+
     def torrent_loop(self):
         configured = False
         while not self.stop.is_set():
+            busy = True
             try:
                 if not configured:
                     self.apply_torrent_settings()
                     configured = True
-                result = self.rpc.call('torrent-get', {'fields': ['id','hashString','name','status','percentDone',
-                    'rateDownload','rateUpload','eta','totalSize','errorString','uploadRatio','downloadDir','metadataPercentComplete','queuePosition']})
-                items = [t for t in result.get('torrents', []) if self.owned_torrent(t)]
-                with self.lock:
-                    self.torrents = items
-                    self.torrent_error = ''
+                items = self.refresh_torrents()
+                if not self.torrent_import_done and self.storage()['ready']:
+                    torrent_migrate.import_transmission(self.bt, self.state, self.root)
+                    self.torrent_import_done = True
+                    items = self.refresh_torrents()
                 active = [t['hashString'] for t in items if t['status'] != 0]
                 blocked = self.get_setting('blocked_torrents', [])
                 if self.get_setting('hold', False) or not self.storage()['ready']:
                     if active:
                         self.set_setting('blocked_torrents', list(set(blocked + active)))
-                        self.rpc.call('torrent-stop', {'ids': active})
+                        self.bt.stop(active)
                 elif blocked:
                     ids = [t['hashString'] for t in items if t['hashString'] in blocked]
                     if ids:
-                        self.rpc.call('torrent-start', {'ids': ids})
+                        self.bt.start(ids)
                     self.set_setting('blocked_torrents', [])
+                busy = bool(active or blocked)
             except Exception as exc:
                 self.torrent_error = str(exc)
                 configured = False
-            self.stop.wait(4)
+            # Poll every 4 s while something is moving; an idle engine needs only a slow heartbeat.
+            # Endpoints that change torrents or the hold flag wake this loop immediately.
+            self.torrent_wake.wait(4 if busy else 15)
+            self.torrent_wake.clear()
 
     def start(self):
         for function in (self.media_loop, self.torrent_loop,self.notification_loop,self.health_loop):
@@ -780,6 +756,7 @@ class Desk:
     def close(self):
         self.speedtest.close()
         self.stop.set()
+        self.torrent_wake.set()
         for thread in self.threads:
             thread.join(timeout=12)
         self.stop_process()
@@ -1137,10 +1114,9 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(job)
         elif p.path == '/api/torrent':
             tid = query.get('id', [''])[0]
-            torrents = d.rpc.call('torrent-get', {'ids': [tid], 'fields': ['hashString', 'name', 'files', 'fileStats', 'downloadDir']}).get('torrents', [])
-            if not torrents or not d.owned_torrent(torrents[0]):
+            if not d.owned_torrent(d.bt.get(tid)):
                 raise APIError('Torrent not found', 404)
-            self.reply(torrents[0])
+            self.reply(d.bt.detail(tid))
         else:
             raise APIError('Not found', 404)
 
@@ -1234,6 +1210,7 @@ class Handler(BaseHTTPRequestHandler):
             d.destination(data.get('path', ''), create=True)
         elif path == '/api/hold':
             d.set_setting('hold', bool(data.get('hold')))
+            d.torrent_wake.set()
         elif path == '/api/settings':
             values=engine_settings.checked(data)
             for key,(lo,hi) in engine_settings.TRANSFER_RANGES.items():
@@ -1292,57 +1269,60 @@ class Handler(BaseHTTPRequestHandler):
             if d.get_setting('hold', False):
                 raise APIError('Resume the queue before adding a torrent', 409)
             folder = d.destination(data.get('folder', ''), create=True)
-            arguments = {'download-dir': str(folder), 'paused': bool(data.get('paused')), 'peer-limit': 20}
+            paused = bool(data.get('paused'))
             if data.get('magnet'):
                 magnet = data['magnet']
                 if not isinstance(magnet, str) or len(magnet) > 16000 or not magnet.startswith('magnet:?') or 'xt=urn:btih:' not in magnet:
                     raise APIError('Use a valid BitTorrent v1/hybrid magnet link')
-                arguments['filename'] = magnet
+                ident = d.bt.add(folder, magnet=magnet, paused=paused)
             else:
-                meta = data.get('metainfo', '')
-                decoded = base64.b64decode(meta, validate=True)
+                try:
+                    decoded = base64.b64decode(data.get('metainfo', ''), validate=True)
+                except ValueError:
+                    raise APIError('Invalid or oversized .torrent file')
                 if not 1 <= len(decoded) <= 8*1024*1024 or not decoded.startswith(b'd'):
                     raise APIError('Invalid or oversized .torrent file')
-                arguments['metainfo'] = meta
-            self.reply(d.rpc.call('torrent-add', arguments))
+                try:
+                    ident = d.bt.add(folder, metainfo=decoded, paused=paused)
+                except ValueError as exc:
+                    raise APIError(str(exc))
+            d.torrent_wake.set()
+            try:d.refresh_torrents()
+            except APIError:pass
+            self.reply({'ok': True, 'hash': ident})
             return
         elif path == '/api/torrent/action':
-            tid = data.get('id')
-            items = d.rpc.call('torrent-get', {'ids': [tid], 'fields': ['hashString','downloadDir','files']}).get('torrents', [])
-            if not items or not d.owned_torrent(items[0]):
+            tid = d.bt.valid(data.get('id'))
+            if not d.owned_torrent(d.bt.get(tid)):
                 raise APIError('Torrent not found', 404)
             action = data.get('action')
             if action == 'resume':
                 if d.get_setting('hold', False) or not d.storage()['ready']:
                     raise APIError('Resume the queue and connect the SSD first', 409)
-                d.rpc.call('torrent-start', {'ids': [tid]})
+                d.bt.start([tid])
             elif action == 'pause':
-                d.rpc.call('torrent-stop', {'ids': [tid]})
+                d.bt.stop([tid])
                 d.set_setting('blocked_torrents', [x for x in d.get_setting('blocked_torrents', []) if x != tid])
             elif action == 'remove':
-                d.rpc.call('torrent-remove', {'ids': [tid], 'delete-local-data': False})
+                d.bt.remove(tid)  # never deletes downloaded data
                 d.set_setting('blocked_torrents', [x for x in d.get_setting('blocked_torrents', []) if x != tid])
             elif action == 'files':
-                count = len(items[0].get('files', []))
+                count = len(d.bt.detail(tid).get('files', []))
                 wanted = data.get('wanted', [])
                 if not count:
                     raise APIError('Metadata is not available yet. Start the torrent briefly, then reopen Files.')
                 if not isinstance(wanted, list) or any(type(i) is not int or i < 0 or i >= count for i in wanted):
                     raise APIError('Invalid file selection')
-                unwanted = [i for i in range(count) if i not in wanted]
-                args = {'ids': [tid]}
-                # Empty lists mean ALL in Transmission, so omit them instead.
-                if wanted:
-                    args['files-wanted'] = wanted
-                if unwanted:
-                    args['files-unwanted'] = unwanted
-                d.rpc.call('torrent-set', args)
+                d.bt.set_files(tid, wanted, count)
             elif action == 'verify':
                 if not d.storage()['ready'] or d.get_setting('hold', False):
                     raise APIError('Connect the SSD and resume the queue first', 409)
-                d.rpc.call('torrent-verify', {'ids': [tid]})
+                d.bt.recheck(tid)
             else:
                 raise APIError('Unknown torrent action')
+            d.torrent_wake.set()
+            try:d.refresh_torrents()
+            except APIError:pass
         else:
             raise APIError('Not found', 404)
         self.reply({'ok': True})

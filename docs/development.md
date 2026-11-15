@@ -30,6 +30,8 @@ No extractor can promise every website. Ambiguous unrelated players, protected c
 | Scoped sessions and global browser slot | `web_session.py` |
 | Instagram profile and story/highlight collectors | `instagram_profile.py`, `instagram_story.py`, `profiles.py` |
 | Safe publication and file operations | `publishing.py`, `fileops.py` |
+| Torrent engine: qBittorrent client, tuned preferences, info-hash/bencode helpers | `torrent_engine.py` |
+| Torrent service install, systemd units, rollback engine switch, one-time Transmission import | `torrent_service.py`, `torrent_migrate.py` |
 | Settings, notifications and managed maintenance | `engine_settings.py`, `notifications.py`, `maintenance.py`, `engine_update.py` |
 | Web interface | `static/index.html`, `static/app.js`, `static/style.css` |
 | Installation and recoverable app upgrades | `install.py`, `upgrade.py`, `install-browser.sh` |
@@ -40,7 +42,7 @@ No extractor can promise every website. Ambiguous unrelated players, protected c
 
 ```bash
 python3 -m unittest discover -s tests -v
-python3 -m py_compile server.py media.py platforms.py publishing.py speedcheck.py systemstats.py profiles.py facebook_profile.py setup-local.py install.py upgrade.py install-speedtest.py
+python3 -m py_compile server.py media.py platforms.py publishing.py speedcheck.py systemstats.py torrent_engine.py torrent_service.py torrent_migrate.py profiles.py facebook_profile.py setup-local.py install.py upgrade.py install-speedtest.py
 ```
 
 With FFmpeg and `requirements.txt` installed in your development Python environment:
@@ -71,7 +73,7 @@ See `TEST-REPORT.md` for actual verification and its limits. This release was no
 - [gallery-dl configuration](https://gdl-org.github.io/docs/configuration.html)
 - [Playwright browser installation](https://playwright.dev/python/docs/browsers)
 - [Avahi](https://github.com/avahi/avahi)
-- [Transmission](https://github.com/transmission/transmission)
+- [qBittorrent](https://github.com/qbittorrent/qBittorrent) and its [WebUI API](https://github.com/qbittorrent/qBittorrent/wiki/WebUI-API-(qBittorrent-4.1))
 - [Deno](https://github.com/denoland/deno)
 - [Ookla Speedtest CLI](https://www.speedtest.net/apps/cli)
 - [Official Ookla x86_64 package and checksum](https://packagecloud.io/ookla/speedtest-cli/packages/ubuntu/jammy/speedtest_1.2.0.84-1.ea6b6773cf_amd64.deb)

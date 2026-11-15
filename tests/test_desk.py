@@ -10,7 +10,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from server import APIError, Desk, Handler, Server, digest, safe_relative, password_hash, password_ok, Transmission
+from server import APIError, Desk, Handler, Server, digest, safe_relative, password_hash, password_ok
+from torrent_engine import QBittorrent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from torrent_fixtures import FakeQBittorrent
 from media import build_command, engine_for, threads_media, validate_url
 
 
@@ -259,54 +262,123 @@ class HTTPTests(Fixture):
         status, body, _=self.request('/api/login',{'username':'owner','password':'another-long-password'})
         self.assertEqual(status,200)
 
-    def test_torrent_file_selection_omits_empty_array(self):
-        self.login()
-        calls=[]
-        def call(method,args=None):
-            calls.append((method,args))
-            if method=='torrent-get':return {'torrents':[{'hashString':'test','downloadDir':str(self.desk.root),'files':[{},{}]}]}
-            return {}
-        with patch.object(self.desk.rpc,'call',side_effect=call):
-            self.assertEqual(self.request('/api/torrent/action',{'id':'test','action':'files','wanted':[]})[0],200)
-        args=calls[-1][1]
-        self.assertNotIn('files-wanted',args)
-        self.assertEqual(args['files-unwanted'],[0,1])
+    def engine(self):
+        fake = FakeQBittorrent()
+        self.addCleanup(fake.close)
+        self.desk.bt = QBittorrent(fake.config(), APIError)
+        return fake
+
+    def prio(self, fake):
+        return [(c[1]['id'], c[1]['priority']) for c in fake.calls if c[0] == 'torrents/filePrio']
+
+    def test_torrent_file_selection_never_sends_an_empty_list(self):
+        self.login();fake=self.engine()
+        fake.add_torrent('a'*40,save_path=str(self.desk.root),files=2)
+        self.assertEqual(self.request('/api/torrent/action',{'id':'a'*40,'action':'files','wanted':[]})[0],200)
+        self.assertEqual(self.prio(fake),[('0|1','0')])
+        self.assertEqual(self.request('/api/torrent/action',{'id':'a'*40,'action':'files','wanted':[1]})[0],200)
+        self.assertEqual(self.prio(fake)[1:],[('1','1'),('0','0')])
+
+    def test_torrent_file_selection_validates_indexes(self):
+        self.login();fake=self.engine()
+        fake.add_torrent('a'*40,save_path=str(self.desk.root),files=2)
+        for wanted in ([2],[-1],['0'],[True],'0'):
+            self.assertEqual(self.request('/api/torrent/action',{'id':'a'*40,'action':'files','wanted':wanted})[0],400,wanted)
+        self.assertEqual(self.prio(fake),[])
 
     def test_torrent_cannot_manage_outside_root(self):
-        self.login()
-        with patch.object(self.desk.rpc,'call',return_value={'torrents':[{'downloadDir':'/home/other','files':[]}]}):
-            self.assertEqual(self.request('/api/torrent/action',{'id':'test','action':'remove'})[0],404)
+        self.login();fake=self.engine()
+        fake.add_torrent('a'*40,save_path='/home/other')
+        for action in ('remove','pause','resume','verify','files'):
+            self.assertEqual(self.request('/api/torrent/action',{'id':'a'*40,'action':action,'wanted':[0]})[0],404,action)
+        self.assertEqual(self.request('/api/torrent?id='+'a'*40)[0],404)
+        self.assertEqual([p for p in fake.paths() if p not in ('torrents/info','app/webapiVersion')],[])
+
+    def test_bulk_identifiers_are_refused_before_reaching_the_engine(self):
+        self.login();fake=self.engine()
+        fake.add_torrent('a'*40,save_path=str(self.desk.root))
+        for ident in ('all','a'*40+'|'+'b'*40,'',None):
+            self.assertEqual(self.request('/api/torrent/action',{'id':ident,'action':'remove'})[0],404,ident)
+        self.assertEqual(fake.calls,[])
+
+    def test_remove_keeps_downloaded_files(self):
+        self.login();fake=self.engine()
+        fake.add_torrent('a'*40,save_path=str(self.desk.root))
+        self.assertEqual(self.request('/api/torrent/action',{'id':'a'*40,'action':'remove'})[0],200)
+        self.assertEqual([c[1]['deleteFiles'] for c in fake.calls if c[0]=='torrents/delete'],['false'])
+
+    def test_adding_torrents_validates_input_and_honours_hold(self):
+        self.login();fake=self.engine()
+        good='magnet:?xt=urn:btih:'+'c'*40
+        status,body,_=self.request('/api/torrents',{'magnet':good})
+        self.assertEqual((status,body['hash']),(200,'c'*40))
+        for payload in ({'magnet':'http://example.com'},{'magnet':'magnet:?dn=x'},{'metainfo':'!!!'},{'metainfo':base64.b64encode(b'not bencode').decode()},{}):
+            self.assertEqual(self.request('/api/torrents',payload)[0],400,payload)
+        self.desk.set_setting('hold',True)
+        self.assertEqual(self.request('/api/torrents',{'magnet':good})[0],409)
+        self.assertEqual(fake.paths().count('torrents/add'),1)
+
+    def test_pause_and_resume_work_and_resume_needs_the_queue_released(self):
+        self.login();fake=self.engine()
+        fake.add_torrent('a'*40,save_path=str(self.desk.root))
+        self.assertEqual(self.request('/api/torrent/action',{'id':'a'*40,'action':'resume'})[0],200)
+        self.assertEqual(self.request('/api/torrent/action',{'id':'a'*40,'action':'pause'})[0],200)
+        self.desk.set_setting('hold',True)
+        self.assertEqual(self.request('/api/torrent/action',{'id':'a'*40,'action':'resume'})[0],409)
+
+    def test_hold_stops_active_torrents_and_release_restarts_only_those(self):
+        fake=self.engine()
+        fake.add_torrent('a'*40,save_path=str(self.desk.root),state='downloading')
+        fake.add_torrent('b'*40,save_path=str(self.desk.root),state='pausedUP')
+        self.desk.set_setting('hold',True)
+        thread=threading.Thread(target=self.desk.torrent_loop,daemon=True);thread.start()
+        def wait(path):
+            for _ in range(200):
+                if path in fake.paths():return [c for c in fake.calls if c[0]==path][-1]
+                time.sleep(0.02)
+            self.fail('engine never received '+path)
+        self.assertEqual(wait('torrents/pause')[1]['hashes'],'a'*40)
+        self.assertEqual(self.desk.get_setting('blocked_torrents'),['a'*40])
+        self.desk.set_setting('hold',False);self.desk.torrent_wake.set()  # wake: no 15 s idle wait
+        self.assertEqual(wait('torrents/resume')[1]['hashes'],'a'*40)
+        for _ in range(100):
+            if self.desk.get_setting('blocked_torrents')==[]:break
+            time.sleep(0.02)
+        self.assertEqual(self.desk.get_setting('blocked_torrents'),[])
+        self.desk.stop.set();self.desk.torrent_wake.set();thread.join(5)
+        self.assertFalse(thread.is_alive())
+
+    def test_snapshot_lists_only_torrents_inside_the_zedair_root(self):
+        fake=self.engine()
+        fake.add_torrent('a'*40,save_path=str(self.desk.root/'Torrents'),state='downloading',progress=0.5)
+        fake.add_torrent('b'*40,save_path='/home/other')
+        self.assertEqual([t['hashString'] for t in self.desk.refresh_torrents()],['a'*40])
+        self.assertEqual(self.desk.snapshot()['torrents'][0]['percentDone'],0.5)
 
     def test_saved_settings_reapply_even_when_engine_offline(self):
         self.login()
         data=self.desk.settings();data['torrent_up_kib']=100;data['reserve_gib']=1
-        with patch.object(self.desk.rpc,'call',side_effect=APIError('offline',503)):
+        with patch.object(self.desk.bt,'apply_settings',side_effect=APIError('offline',503)):
             self.assertEqual(self.request('/api/settings',data)[0],200)
         self.assertEqual(self.desk.settings()['torrent_up_kib'],100)
 
-class RPCHandshakeTests(unittest.TestCase):
-    def test_transmission_session_handshake_and_auth(self):
-        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-        calls=[]
-        class RPCHandler(BaseHTTPRequestHandler):
-            def log_message(self,*args):pass
-            def do_POST(self):
-                body=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                calls.append((dict(self.headers),body))
-                if self.headers.get('X-Transmission-Session-Id')!='fixture-session':
-                    self.send_response(409);self.send_header('X-Transmission-Session-Id','fixture-session');self.end_headers();return
-                raw=json.dumps({'result':'success','arguments':{'version':'fixture'}}).encode()
-                self.send_response(200);self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw)
-        server=ThreadingHTTPServer(('127.0.0.1',0),RPCHandler)
-        thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
-        try:
-            client=Transmission({'rpc_url':f'http://127.0.0.1:{server.server_port}/transmission/rpc','rpc_user':'fixture','rpc_password':'fixture'})
-            self.assertEqual(client.call('session-get')['version'],'fixture')
-            self.assertEqual(len(calls),2)
-            self.assertEqual(calls[1][1]['method'],'session-get')
-            self.assertTrue(calls[1][0]['Authorization'].startswith('Basic '))
-        finally:
-            server.shutdown();server.server_close();thread.join()
+    def test_saving_torrent_settings_pushes_them_to_the_engine(self):
+        self.login();fake=self.engine()
+        data=self.desk.settings();data['torrent_down_kib']=300;data['seed_ratio']=2.0;data['reserve_gib']=1
+        self.assertEqual(self.request('/api/settings',data)[0],200)
+        sent=json.loads([c for c in fake.calls if c[0]=='app/setPreferences'][-1][1]['json'])
+        self.assertEqual((sent['dl_limit'],sent['max_ratio']),(300*1024,2.0))
+
+    def test_deleting_a_file_owned_by_a_torrent_is_refused(self):
+        self.login();fake=self.engine()
+        (self.desk.root/'Torrents'/'Pack').mkdir(parents=True)
+        path=self.desk.root/'Torrents'/'Pack'/'f0.bin';path.write_bytes(b'x')
+        fake.add_torrent('a'*40,name='Pack',save_path=str(self.desk.root/'Torrents'),files=1)
+        fake.files['a'*40][0]['name']='Pack/f0.bin'
+        st=path.stat()
+        with self.assertRaisesRegex(Exception,'Remove this torrent'):
+            self.desk.delete_file({'confirm':True,'path':'Torrents/Pack/f0.bin','stamp':f'{st.st_size}:{st.st_mtime_ns}'})
+        self.assertTrue(path.exists())
 
 
 if __name__=='__main__':

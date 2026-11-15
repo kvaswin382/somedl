@@ -92,6 +92,6 @@ class FileSortingTests(Fixture):
     def test_delete_removes_saved_date_record(self):
         self.login();p=self.put('delete.jpg',3,100);stat=p.stat()
         self.desk.write('INSERT INTO file_dates VALUES(?,?,?,?,?)',('','delete.jpg',3,stat.st_mtime_ns,400))
-        with patch.object(self.desk.rpc,'call',return_value={'torrents':[]}):
+        with patch.object(self.desk.bt,'managed',return_value=[]):
             self.desk.delete_file({'confirm':True,'path':'delete.jpg','stamp':str(stat.st_size)+':'+str(stat.st_mtime_ns)})
         self.assertEqual(self.desk.rows('SELECT * FROM file_dates'),[])

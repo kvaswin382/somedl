@@ -15,7 +15,7 @@ from server import APIError
 
 class FeatureTests(Fixture):
     def setUp(self):
-        super().setUp();self.desk.rpc.call=lambda *a,**k:{'torrents':[]}
+        super().setUp();self.desk.bt.managed=lambda:[]
     def stamp(self,p):return f'{p.stat().st_size}:{p.stat().st_mtime_ns}'
     def test_explicit_destination_and_batch100_custom_filename(self):
         result=self.desk.add_jobs({'urls':[f'https://example.com/video/{i}' for i in range(100)],'folder':'Chosen','filename':'My video'})
@@ -53,7 +53,7 @@ class FeatureTests(Fixture):
         delete_folder(self.desk,{'path':'Empty','confirm':True,**inspect_folder(self.desk,{'path':'Empty'})});self.assertFalse((self.desk.root/'Empty').exists())
         self.desk.destination('Nonempty',create=True);(self.desk.root/'Nonempty/keep').touch()
         with self.assertRaises((ValueError,APIError)):delete_folder(self.desk,{'path':'Nonempty','confirm':True})
-        self.desk.rpc.call=lambda *a,**k:{'torrents':[{'downloadDir':str(self.desk.root),'files':[{'name':'one.mp4'}]}]}
+        self.desk.bt.managed=lambda:[{'downloadDir':str(self.desk.root),'files':[{'name':'one.mp4'}]}]
         with self.assertRaises((ValueError,APIError)):manage(self.desk,{'path':'one.mp4','action':'rename','name':'new','stamp':self.stamp(p)})
     def test_profile_images_avatar_and_long_cooldown(self):
         platforms.save_cookies(self.desk.state,'instagram',{'fields':{'sessionid':'fixture'}})
@@ -106,7 +106,7 @@ class NewHTTPTests(Fixture):
         self.login()
         with patch.object(self.desk,'snapshot',side_effect=AssertionError('Full snapshot should not run')):
             self.assertEqual(self.request('/api/progress')[0],200)
-        self.desk.rpc.call=lambda *a,**k:{'torrents':[]}
+        self.desk.bt.managed=lambda:[]
         for i in range(110):(self.desk.root/f'{i:03}.jpg').write_bytes(b'image')
         (self.desk.root/'024.txt').write_text('not previewable')
         code,result,_=self.request('/api/folders?sort=name&order=asc&adjacent=023.jpg&direction=1')
@@ -118,7 +118,7 @@ class NewHTTPTests(Fixture):
     def test_new_file_endpoints_require_auth_and_confirm_snapshot(self):
         for route in ('/api/files/manage','/api/folders/inspect'):
             self.assertEqual(self.request(route,{},cookie=False)[0],401)
-        self.login();self.desk.rpc.call=lambda *a,**k:{'torrents':[]}
+        self.login();self.desk.bt.managed=lambda:[]
         folder=self.desk.destination('Remove/Sub',create=True);(folder/'a.jpg').write_bytes(b'image')
         code,info,_=self.request('/api/folders/inspect',{'path':'Remove'});self.assertEqual(code,200);self.assertEqual(info['files'],1)
         self.assertEqual(self.request('/api/folders/delete',{'path':'Remove','confirm':True})[0],400)

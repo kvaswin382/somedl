@@ -22,7 +22,7 @@ Backups contain private account sessions. Keep them private and keep at least th
 2. On Ubuntu, run:
 
 ```bash
-sudo systemctl stop zedair zedair-transmission
+sudo systemctl stop zedair zedair-qbittorrent
 sudo umount /srv/zedair-ssd
 ```
 
@@ -32,7 +32,7 @@ sudo umount /srv/zedair-ssd
 
 ```bash
 sudo mount /srv/zedair-ssd
-sudo systemctl start zedair-transmission zedair
+sudo systemctl start zedair-qbittorrent zedair
 ```
 
 6. Open the webpage and **Resume queue**. If `mount` says already mounted, continue with service startup. Verify torrents if Windows moved their files.
@@ -47,16 +47,16 @@ When websites change, update yt-dlp and gallery-dl without replacing the applica
 sudo bash /opt/zedair/update.sh
 ```
 
-This briefly stops the web service, installs current stable engine releases from PyPI, then restarts. It does not pull your GitHub app source. Initial installation uses `requirements.txt`; app upgrades retain the installed engine versions. Ubuntu updates maintain FFmpeg/Transmission. If YouTube later requires a newer Deno, update Deno from its official upstream release and verify `/opt/zedair/bin/deno --version`.
+This briefly stops the web service, installs current stable engine releases from PyPI, then restarts. It does not pull your GitHub app source. Initial installation uses `requirements.txt`; app upgrades retain the installed engine versions. Ubuntu updates maintain FFmpeg/qBittorrent. If YouTube later requires a newer Deno, update Deno from its official upstream release and verify `/opt/zedair/bin/deno --version`.
 
 ## Troubleshooting
 
 Start with:
 
 ```bash
-systemctl status zedair zedair-transmission --no-pager
+systemctl status zedair zedair-qbittorrent --no-pager
 sudo journalctl -u zedair -n 80 --no-pager
-sudo journalctl -u zedair-transmission -n 80 --no-pager
+sudo journalctl -u zedair-qbittorrent -n 80 --no-pager
 findmnt /srv/zedair-ssd
 df -h /
 df -h /srv/zedair-ssd
@@ -79,7 +79,7 @@ df -h /srv/zedair-ssd
 | X video fails | Confirm it is a video status URL; check your session and update engines. Private/deleted/restricted posts can remain unavailable. |
 | YouTube fails | Update engines, check Deno, inspect Details, and add YouTube cookies when required. |
 | Threads finds no media | Embedded exact-post media is unavailable or changed. Experimental extraction cannot handle every login wall/page format. |
-| Torrent offline after reconnect | Mount the SSD, then `sudo systemctl start zedair-transmission`. |
+| Torrent offline after reconnect | Mount the SSD, then `sudo systemctl start zedair-qbittorrent`. |
 | File deletion blocked | Remove the owning torrent first, cancel the unfinished legacy job, or refresh if the file changed. |
 | Speed test fails | Check laptop internet/DNS and endpoint reachability. Proxy/firewall restrictions or endpoint errors can prevent a test. No result is fabricated. |
 | RAM limit reached | Pause torrents during Facebook collection; reduce playlist size. One media worker and one torrent still share the 2 GB RAM. |
@@ -111,13 +111,13 @@ Open the webpage and create the administrator again with that key. There is no u
 ### Stop automatic startup
 
 ```bash
-sudo systemctl disable --now zedair zedair-transmission
+sudo systemctl disable --now zedair zedair-qbittorrent
 # If you enabled zed.local, also stop its socket so it cannot start the app:
 sudo systemctl disable --now zedair-local.socket
 sudo systemctl stop zedair-local.service
 ```
 
-This keeps files and configuration. To re-enable: `sudo systemctl enable --now zedair-transmission zedair` with the SSD connected.
+This keeps files and configuration. To re-enable: `sudo systemctl enable --now zedair-qbittorrent zedair` with the SSD connected.
 
 ## Where things live
 
@@ -128,11 +128,11 @@ This keeps files and configuration. To re-enable: `sudo systemctl enable --now z
 | `/opt/zedair/browsers` | Optional playback-detection / Facebook Chromium installation |
 | `/etc/systemd/system/zedair-local.socket` and `.service` | Optional port-80 local address proxy |
 | `/etc/zedair` | Private service configuration and setup key |
-| `/var/lib/zedair` | Account, login sessions, queue, preferences, cookies and torrent state |
+| `/var/lib/zedair` | Account, login sessions, queue, preferences, cookies and torrent engine state (`qbittorrent/`; the old `transmission/` folder remains until you delete it) |
 | `/srv/zedair-ssd/Zedair` | Downloads on the USB SSD |
 | `/var/backups/zedair` | Private backups made by the app upgrader |
 
-The implementation uses Python’s standard library for the server, plain HTML/CSS/JS, yt-dlp, gallery-dl, FFmpeg, Deno and a private Transmission daemon. No Docker, Redis or Node server is required. The optional Facebook profile tool launches one sandboxed Playwright Chromium browser only during collection, then closes it before video downloads. Direct Facebook videos do not need that browser. The service has CPU/memory limits; these are safeguards, not a measured performance guarantee on your hardware.
+The implementation uses Python’s standard library for the server, plain HTML/CSS/JS, yt-dlp, gallery-dl, FFmpeg, Deno and a private qBittorrent-nox service. No Docker, Redis or Node server is required. The optional Facebook profile tool launches one sandboxed Playwright Chromium browser only during collection, then closes it before video downloads. Direct Facebook videos do not need that browser. The service has CPU/memory limits; these are safeguards, not a measured performance guarantee on your hardware.
 
 ## Instagram collection recovery
 
@@ -149,3 +149,20 @@ resolvectl status
 ```
 
 Other websites working does not establish that this hostname resolves. Check the laptop/router DNS configuration and whether the source domain still exists; retry after resolving the reported issue.
+
+## Torrent engine (qBittorrent-nox)
+
+Torrents run in a private `qbittorrent-nox` service (`zedair-qbittorrent`) that listens on `127.0.0.1:9092` only, with a generated password stored only as a PBKDF2 hash in `/var/lib/zedair/qbittorrent`. Its web interface is not meant to be used directly: the desk applies every setting itself each time it connects, so manual changes there are overwritten.
+
+**Low-memory profile (2 GB):** POSIX disk I/O instead of memory-mapped files, 2 I/O threads, small file pool, hash-check and socket buffers, 80 peers (50 per torrent), no UPnP or LAN discovery, fixed BitTorrent port 51413, and a systemd limit of `MemoryHigh=300M` / `MemoryMax=450M`. The values live in `preferences()` in `torrent_engine.py` and the unit in `torrent_service.py`. The desk polls every 4 s while a torrent is active and every 15 s when none is, waking immediately when you act.
+
+**First upgrade from Transmission:** `sudo bash upgrade.sh` installs `qbittorrent-nox`, stops and disables `zedair-transmission`, and starts the new service. The first time the app reaches the engine with the SSD mounted it imports your old torrents once (folder, unchecked files, paused state), verifying data already on the SSD. The result is saved in `/var/lib/zedair/qbittorrent/transmission-import.json`; skipped items are listed there. Seeding history is not carried over. The old data is never modified.
+
+| Task | Command |
+| --- | --- |
+| Engine status / log | `systemctl status zedair-qbittorrent --no-pager` / `sudo journalctl -u zedair-qbittorrent -n 80 --no-pager` |
+| Engine memory | `systemctl show zedair-qbittorrent -p MemoryCurrent -p MemoryPeak` |
+| Roll back to Transmission | `sudo bash upgrade.sh --rollback /var/backups/zedair/TIMESTAMP` using a backup made before this upgrade; the matching service is re-enabled automatically |
+| Remove the old engine once happy | `sudo rm -r /var/lib/zedair/transmission && sudo apt remove transmission-daemon` |
+
+If torrents show a password or credentials error, restart both services: `sudo systemctl restart zedair-qbittorrent zedair`. Repeated wrong logins make qBittorrent temporarily block the client; waiting a few minutes or restarting the service clears it.

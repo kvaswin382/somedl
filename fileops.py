@@ -15,7 +15,7 @@ def guard(desk,path,stamp=None):
             raise ValueError('Cancel the legacy download before changing its files')
     for r in desk.rows('SELECT p.target,j.folder,j.subdir FROM published p JOIN jobs j ON p.job=j.id WHERE p.complete=0'):
         if path==desk.root/r['folder']/r['subdir']/r['target']:raise ValueError('This file is still being saved')
-    for t in desk.rpc.call('torrent-get',{'fields':['downloadDir','files']}).get('torrents',[]):
+    for t in desk.bt.managed():
         if any(path.resolve()==(Path(t['downloadDir'])/f['name']).resolve() for f in t.get('files',[])):
             raise ValueError('Remove the torrent from its queue before changing its files')
     return st
@@ -137,7 +137,7 @@ def delete_folder(desk,data):
             if any((desk.root/j['folder']/j['subdir']).is_relative_to(path) for j in active):raise ValueError('Wait for the current download to stop')
         for r in desk.rows('SELECT p.target,j.folder,j.subdir FROM published p JOIN jobs j ON p.job=j.id WHERE p.complete=0'):
             if (desk.root/r['folder']/r['subdir']/r['target']).is_relative_to(path):raise ValueError('A file in this folder is still being saved')
-        for t in desk.rpc.call('torrent-get',{'fields':['downloadDir','files']}).get('torrents',[]):
+        for t in desk.bt.managed():
             base=Path(t['downloadDir']).resolve()
             if base.is_relative_to(path.resolve()) or any((base/f['name']).resolve().is_relative_to(path.resolve()) for f in t.get('files',[])):
                 raise ValueError('Remove the torrent using this folder before deleting its files')

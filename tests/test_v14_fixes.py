@@ -10,7 +10,7 @@ from fileops import manage_batch,inspect_folder,delete_folder
 from browser_video import run
 
 class FixTests(Fixture):
-    def setUp(self):super().setUp();self.desk.rpc.call=lambda *a,**k:{'torrents':[]}
+    def setUp(self):super().setUp();self.desk.bt.managed=lambda:[]
     def stamp(self,p):return f'{p.stat().st_size}:{p.stat().st_mtime_ns}'
     def test_defaults_and_duplicate_url_variants_all_history(self):
         first=self.create_job();j=self.desk.job(first);self.assertEqual((j['quality'],j['container']),('best','mp4'))
@@ -58,9 +58,9 @@ class FixTests(Fixture):
         (folder/'new.jpg').write_bytes(b'image')
         with self.assertRaisesRegex(ValueError,'changed'):delete_folder(self.desk,{'path':'Folder','stamp':info['stamp'],'confirm':True})
         info=inspect_folder(self.desk,{'path':'Folder'})
-        self.desk.rpc.call=lambda *a,**k:{'torrents':[{'downloadDir':str(self.desk.root),'files':[{'name':'Folder/Sub/a.mp4'}]}]}
+        self.desk.bt.managed=lambda:[{'downloadDir':str(self.desk.root),'files':[{'name':'Folder/Sub/a.mp4'}]}]
         with self.assertRaisesRegex(ValueError,'torrent'):delete_folder(self.desk,{'path':'Folder',**info,'confirm':True})
-        self.desk.rpc.call=lambda *a,**k:{'torrents':[]}
+        self.desk.bt.managed=lambda:[]
         delete_folder(self.desk,{'path':'Folder',**info,'confirm':True});self.assertFalse(folder.exists())
         with self.assertRaises((ValueError,APIError)):inspect_folder(self.desk,{'path':''})
     def test_recursive_delete_rejects_symlink_without_touching_target(self):

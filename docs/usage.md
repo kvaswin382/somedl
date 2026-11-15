@@ -40,7 +40,7 @@ Use **Highest quality + MP4** by default. MP4 is an optional video container req
 
 Your optional filename is used first. If it has no extension, the actual output extension is added; a supplied known media extension is replaced by the actual output extension rather than mislabelling the bytes. Multiple outputs with the same name receive numbers. When the field is empty, a video’s source title becomes the filename when available. Instagram uses the available caption; content without a title/caption uses its source filename or post identifier. Names are shortened and cleaned for Windows/exFAT compatibility.
 
-Example: `My video.mp4`, then `My video (1).mp4`, then `My video (2).mp4`. Existing files are never intentionally replaced. Multiple carousel items with the same caption are numbered too. Torrent filenames come from the torrent and follow Transmission’s normal resume/verification behavior.
+Example: `My video.mp4`, then `My video (1).mp4`, then `My video (2).mp4`. Existing files are never intentionally replaced. Multiple carousel items with the same caption are numbered too. Torrent filenames come from the torrent and follow qBittorrent’s normal resume/verification behavior.
 
 Partial media and metadata live in hidden `Zedair/.incomplete/JOB_ID` folders. Completed new jobs publish media directly into the selected or default platform folder; there are no visible random job subfolders. Internal metadata is not offered in the file browser. Cancelled/failed jobs retain partial data for recovery; see storage cleanup in the linked guides.
 

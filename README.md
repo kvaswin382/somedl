@@ -24,7 +24,7 @@ sudo bash upgrade.sh
 - SSD downloads, saved cookies, accounts and queue history are preserved. Engine packages are updated separately.
 - Refresh with **Ctrl+F5**; the footer should show **v2.1.3**. Pulling source alone does not update the running app.
 
-**This update:** ETA uses remaining bytes and the displayed transfer speed. Stale/unknown estimates are hidden, direct transfers use recent speed, and merging has a separate status. The blue and neutral theme is unchanged.
+**This update:** the torrent engine is now **qBittorrent-nox** (replacing Transmission), tuned for a 2 GB machine. `sudo bash upgrade.sh` installs it, switches the service from `zedair-transmission` to `zedair-qbittorrent`, and imports your existing torrents once, keeping their folders, file selection and paused state. See [torrent engine](https://github.com/kvaswin382/somedl/blob/main/docs/maintenance.md#torrent-engine-qbittorrent-nox).
 
 ## First installation
 
@@ -98,7 +98,7 @@ Ordinary diagnostics go **only to the group**. CPU/RAM/disk/temperature/low-SSD 
 | Task | Command |
 | --- | --- |
 | Update download engines | `sudo bash /opt/zedair/update.sh` (or available Update buttons in Settings) |
-| Service status | `systemctl status zedair zedair-transmission --no-pager` |
+| Service status | `systemctl status zedair zedair-qbittorrent --no-pager` |
 | App logs | `sudo journalctl -u zedair -n 80 --no-pager` |
 | Check SSD / internal space | `findmnt /srv/zedair-ssd` and `df -h / /srv/zedair-ssd` |
 | Restart app | `sudo systemctl restart zedair` |
@@ -114,11 +114,11 @@ Rollback restores the selected queue/settings/cookies too; it does not restore S
 | Telegram HTTP 400 | Save & test again; read the detailed reason. Check the ID, bot membership/permissions, or topic status as indicated. |
 | Browser unavailable | Rerun `install-browser.sh`; inspect its sandbox check. Do not disable the sandbox. |
 | Website download fails | Open job **Details**. Update engines; address the reported authentication, rate-limit, network or source error. |
-| SSD offline / torrent stopped | Check USB power/cable and mount UUID. Mount the SSD, then start `zedair-transmission`. Never disable mount checks. |
+| SSD offline / torrent stopped | Check USB power/cable and mount UUID. Mount the SSD, then start `zedair-qbittorrent`. Never disable mount checks. |
 | MP4 conversion fails | Select **Keep source container** if the original codecs cannot be copied into MP4. |
 | Webpage unreachable | Check laptop IP, port 8787, service status and LAN isolation/firewall. |
 
-Use a trusted LAN. Do not forward ports 80, 8787 or torrent RPC 9092 to the internet. HTTP does not encrypt credentials; [HTTPS and LAN firewall setup](https://github.com/kvaswin382/somedl/blob/main/docs/setup.md#network-access-and-https) is available in the setup guide.
+Use a trusted LAN. Do not forward ports 80, 8787 or torrent engine port 9092 to the internet. HTTP does not encrypt credentials; [HTTPS and LAN firewall setup](https://github.com/kvaswin382/somedl/blob/main/docs/setup.md#network-access-and-https) is available in the setup guide.
 
 ## Guides
 

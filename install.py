@@ -16,6 +16,8 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+import torrent_service
+
 BASE = Path(__file__).resolve().parent
 APP = Path('/opt/zedair')
 STATE = Path('/var/lib/zedair')
@@ -99,7 +101,7 @@ def main():
         if MOUNT.exists() and any(MOUNT.iterdir()):
             raise SystemExit(f'{MOUNT} is not empty. Choose a clean mount location before continuing.')
         print(f'\nWill mount {device} by UUID at {MOUNT}, and use ONLY its Zedair folder.')
-        print('Installs Python download tools, FFmpeg, Deno and a private Transmission service. Web port: 8787.')
+        print('Installs Python download tools, FFmpeg, Deno and a private qBittorrent-nox service. Web port: 8787.')
         if input('Type INSTALL to continue: ').strip() != 'INSTALL':
             raise SystemExit('Cancelled. Nothing was changed.')
     else:
@@ -108,11 +110,8 @@ def main():
     # Avoid adding unbounded pip caches to the 32 GB eMMC.
     if shutil.disk_usage('/').free < 2*1024**3:
         raise SystemExit('Keep at least 2 GiB free on the internal drive before installation.')
-    transmission_was_installed = shutil.which('transmission-daemon') is not None
     run('apt-get', 'update')
-    run('apt-get', 'install', '-y', 'python3-venv', 'ffmpeg', 'transmission-daemon', 'exfatprogs', 'ca-certificates', 'polkitd')
-    if not transmission_was_installed:
-        subprocess.run(['systemctl', 'disable', '--now', 'transmission-daemon'], check=False)
+    run('apt-get', 'install', '-y', 'python3-venv', 'ffmpeg', 'qbittorrent-nox', 'exfatprogs', 'ca-certificates', 'polkitd')
     try:
         user = pwd.getpwnam('zedair')
     except KeyError:
@@ -131,7 +130,7 @@ def main():
         setup_key = secrets.token_urlsafe(24)
         config = {'host': '0.0.0.0', 'port': 8787, 'state': str(STATE), 'mount': str(MOUNT),
                   'require_mount': True, 'ssd_uuid': uuid, 'setup_key_hash': hashlib.sha256(setup_key.encode()).hexdigest(),
-                  'rpc_url': 'http://127.0.0.1:9092/transmission/rpc', 'rpc_user': 'zedair',
+                  'rpc_url': 'http://127.0.0.1:9092', 'rpc_user': 'zedair',
                   'rpc_password': secrets.token_urlsafe(36)}
         save(CONFIG.parent/'setup-key', setup_key+'\n', 0o600)
     if not previous:
@@ -159,7 +158,7 @@ def main():
         (root/folder).mkdir(exist_ok=True)
     if previous and Path('/etc/systemd/system/zedair.service').exists():
         run('systemctl', 'stop', 'zedair.service')
-    for name in ('download_http.py','engine_settings.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py', 'media.py', 'platforms.py', 'publishing.py', 'speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-browser.sh', 'install-speedtest.py', 'install-speedtest.sh', 'README.md', 'TEST-REPORT.md', 'LICENSE', 'requirements.txt', 'update.sh', 'upgrade.sh', 'upgrade.py'):
+    for name in ('download_http.py','engine_settings.py','torrent_engine.py','torrent_migrate.py','torrent_service.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py', 'media.py', 'platforms.py', 'publishing.py', 'speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-browser.sh', 'install-speedtest.py', 'install-speedtest.sh', 'README.md', 'TEST-REPORT.md', 'LICENSE', 'requirements.txt', 'update.sh', 'upgrade.sh', 'upgrade.py'):
         shutil.copy2(BASE/name, APP/name)
     shutil.copytree(BASE/'static', APP/'static', dirs_exist_ok=True)
     run('python3', '-m', 'venv', APP/'venv')
@@ -170,98 +169,13 @@ def main():
         raise SystemExit('Deno installation failed: '+str(exc)+'. Rerun install.sh after fixing connectivity/runtime compatibility. SSD files are safe.')
     save(CONFIG, json.dumps(config, indent=2)+'\n', 0o640)
     os.chown(CONFIG, 0, user.pw_gid)
-    transmission = STATE/'transmission'
-    transmission.mkdir(exist_ok=True, mode=0o700)
-    os.chown(transmission, user.pw_uid, user.pw_gid)
-    settings = transmission/'settings.json'
-    if not settings.exists():
-        params = {'download-dir': str(root/'Torrents'), 'incomplete-dir-enabled': False,
-                  'rpc-enabled': True, 'rpc-bind-address': '127.0.0.1', 'rpc-port': 9092,
-                  'rpc-authentication-required': True, 'rpc-username': config['rpc_user'], 'rpc-password': config['rpc_password'],
-                  'rpc-whitelist-enabled': True, 'rpc-whitelist': '127.0.0.1',
-                  'rpc-host-whitelist-enabled': True, 'rpc-host-whitelist': '127.0.0.1,localhost',
-                  'download-queue-enabled': True, 'download-queue-size': 1,
-                  'seed-queue-enabled': True, 'seed-queue-size': 1, 'queue-stalled-enabled': False,
-                  'peer-limit-global': 40, 'peer-limit-per-torrent': 20, 'cache-size-mb': 16,
-                  'speed-limit-up-enabled': True, 'speed-limit-up': 256,
-                  'ratio-limit-enabled': True, 'ratio-limit': 0, 'port-forwarding-enabled': False,
-                  'preallocation': 1, 'umask': 63}
-        save(settings, json.dumps(params, indent=2)+'\n', 0o600)
-        os.chown(settings, user.pw_uid, user.pw_gid)
     from maintenance import install_update_service
     install_update_service()
-    mount_unit = run('systemd-escape', '--path', '--suffix=mount', MOUNT, capture=True).strip()
-    save(Path('/etc/systemd/system/zedair-transmission.service'), f'''[Unit]
-Description=Zedair private torrent engine
-After=network-online.target {mount_unit}
-Wants=network-online.target
-RequiresMountsFor={MOUNT}
-BindsTo={mount_unit}
-
-[Service]
-Type=simple
-User=zedair
-Group=zedair
-ExecStart=/usr/bin/transmission-daemon --foreground --config-dir {transmission}
-Restart=on-failure
-RestartSec=10
-UMask=0077
-Nice=10
-MemoryMax=300M
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectHome=true
-ProtectSystem=strict
-ReadWritePaths={STATE} {MOUNT}
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-StandardOutput=journal
-StandardError=journal
-LogRateLimitIntervalSec=30s
-LogRateLimitBurst=20
-
-[Install]
-WantedBy=multi-user.target
-''')
-    save(Path('/etc/systemd/system/zedair.service'), f'''[Unit]
-Description=Zedair Download Desk
-After=network-online.target zedair-transmission.service
-Wants=network-online.target zedair-transmission.service
-
-[Service]
-Type=simple
-User=zedair
-Group=zedair
-WorkingDirectory={APP}
-Environment=PATH={APP}/bin:{APP}/venv/bin:/usr/local/bin:/usr/bin:/bin
-Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart={APP}/venv/bin/python {APP}/server.py --config {CONFIG}
-Restart=on-failure
-RestartSec=5
-TimeoutStopSec=30
-KillMode=control-group
-UMask=0077
-Nice=10
-CPUQuota=100%
-MemoryHigh=750M
-MemoryMax=1000M
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectHome=true
-ProtectSystem=strict
-ReadWritePaths={STATE} {MOUNT}
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-StandardOutput=journal
-StandardError=journal
-LogRateLimitIntervalSec=30s
-LogRateLimitBurst=20
-
-[Install]
-WantedBy=multi-user.target
-''')
+    torrent_service.install_services(config, APP, STATE, CONFIG)
     run('systemctl', 'daemon-reload')
-    run('systemctl', 'enable', '--now', 'zedair-transmission.service', 'zedair.service')
+    run('systemctl', 'enable', '--now', torrent_service.QBT_UNIT, 'zedair.service')
     run('systemctl', 'restart', 'zedair.service')
-    run('systemctl', 'is-active', 'zedair.service', 'zedair-transmission.service')
+    run('systemctl', 'is-active', 'zedair.service', torrent_service.QBT_UNIT)
     ips = run('hostname', '-I', capture=True).split()
     print('\nINSTALLATION COMPLETE\n')
     for ip in ips:
