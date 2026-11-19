@@ -29,8 +29,11 @@ $('#remoteChoose').onclick=()=>{remotePicker.choose(remotePicker.path);closeDial
 $('#remoteDownloadBrowse').onclick=()=>action(()=>browseRemote($('#remoteDownloadForm').remote.value,$('#remoteDownloadForm').remote_path.value,p=>$('#remoteDownloadForm').remote_path.value=p));
 $('#backupBrowse').onclick=()=>action(()=>browseRemote($('#backupForm').remote.value,$('#backupForm').path.value,p=>$('#backupForm').path.value=p));
 $('#refreshRemotes').onclick=()=>action(loadCloud);
+let cloudLoad=0;
 async function loadCloud(){
-  const r=await api('remotes'),form=$('#backupForm'),current=form.remote.value;
+  const request=++cloudLoad,r=await api('remotes');
+  if(request!==cloudLoad)return;
+  const form=$('#backupForm'),current=form.remote.value;
   const download=$('#remoteDownloadForm'),selected=download.remote.value,available=r.remotes.filter(n=>!(r.pending||[]).includes(n));
   download.remote.innerHTML=available.length?available.map(n=>`<option value="${E(n)}">${E(n)}:</option>`).join(''):'<option value="">Add a remote first</option>';
   if(available.includes(selected))download.remote.value=selected;

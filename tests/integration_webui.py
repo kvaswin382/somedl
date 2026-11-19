@@ -270,12 +270,21 @@ with sync_playwright() as pw:
             assert page.locator('#processList [data-stop-task]').count()==0
             page.locator('[data-settings-tab=activity]').click()
             expect(page.locator('#activityList')).to_contain_text('web /api/')
-            page.locator('[data-settings-tab=backup]').click()
+            pending_cloud=[]
+            page.route('**/api/remotes',lambda route:pending_cloud.append(route))
+            with page.expect_request('**/api/remotes'):
+                page.locator('[data-settings-tab=backup]').click()
             expect(page.locator('#remoteDownloadForm')).to_be_visible()
             expect(page.locator('#remoteDownloadForm button[type=submit]')).to_be_disabled()
             expect(page.locator('#remoteDownloadEmpty')).to_be_visible()
             page.route('**/api/remotes',lambda route:route.fulfill(json={'remotes':['fixture-drive'],'pending':[]}))
             page.locator('#refreshRemotes').click()
+            expect(page.locator('#remoteDownloadForm [name=remote]')).to_have_value('fixture-drive')
+            assert len(pending_cloud)==1
+            with page.expect_response('**/api/remotes') as old_cloud_response:
+                pending_cloud[0].fulfill(json={'remotes':[],'pending':[]})
+            old_cloud_response.value.finished()
+            page.evaluate('() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))')
             expect(page.locator('#remoteDownloadForm [name=remote]')).to_have_value('fixture-drive')
             expect(page.locator('#remoteDownloadForm button[type=submit]')).to_be_enabled()
             page.route('**/api/remotes/browse?*',lambda route:route.fulfill(json={'remote':'fixture-drive','path':'Videos' if 'path=Videos' in route.request.url else '', 'folders':[] if 'path=Videos' in route.request.url else ['Videos']}))
