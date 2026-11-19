@@ -3,7 +3,7 @@
 let remotePicker={name:'',path:'',choose:null},remoteConfigName='',taskPoll,duplicateScan='',activityBefore=null;
 async function loadRemoteChoices(){
   const select=$('#downloadRemote'),current=select.value;
-  try{const r=await api('remotes');select.innerHTML='<option value="">External SSD</option>'+r.remotes.map(n=>`<option value="${E(n)}">${E(n)}:</option>`).join('');select.value=current;}catch(error){if(current){select.innerHTML=`<option value="">External SSD</option><option value="${E(current)}">${E(current)}:</option>`;select.value=current;}toast('Cloud destinations unavailable: '+error.message);}
+  try{const r=await api('remotes');select.innerHTML='<option value="">External SSD</option>'+r.remotes.filter(n=>!(r.pending||[]).includes(n)).map(n=>`<option value="${E(n)}">${E(n)}:</option>`).join('');select.value=current;}catch(error){if(current){select.innerHTML=`<option value="">External SSD</option><option value="${E(current)}">${E(current)}:</option>`;select.value=current;}toast('Cloud destinations unavailable: '+error.message);}
   toggleRemoteDestination();
 }
 function toggleRemoteDestination(){const form=$('#downloadForm'),remote=!!form.remote.value;$('#remoteDestination').hidden=!remote;form.folder.closest('label').hidden=remote;form.playlist.disabled=remote;if(remote)form.playlist.checked=false;}
@@ -22,8 +22,8 @@ $('#backupBrowse').onclick=()=>action(()=>browseRemote($('#backupForm').remote.v
 $('#refreshRemotes').onclick=()=>action(loadCloud);
 async function loadCloud(){
   const r=await api('remotes'),form=$('#backupForm'),current=form.remote.value;
-  form.remote.innerHTML=r.remotes.map(n=>`<option value="${E(n)}">${E(n)}</option>`).join('');if(r.remotes.includes(current))form.remote.value=current;
-  $('#remoteList').innerHTML=r.remotes.map(n=>`<button class="secondary compact" data-browse-remote="${E(n)}">▰ ${E(n)}:</button>`).join('')||'<p class="hint">No remotes configured yet.</p>';
+  form.remote.innerHTML=r.remotes.filter(n=>!(r.pending||[]).includes(n)).map(n=>`<option value="${E(n)}">${E(n)}</option>`).join('');if(r.remotes.includes(current))form.remote.value=current;
+  $('#remoteList').innerHTML=r.remotes.map(n=>`<div class="remote-entry"><button class="secondary compact" ${(r.pending||[]).includes(n)?'data-resume-remote':'data-browse-remote'}="${E(n)}">${(r.pending||[]).includes(n)?'Continue setup:':'▰'} ${E(n)}:</button><button class="text-button danger" data-remove-remote="${E(n)}">Remove</button></div>`).join('')||'<p class="hint">No remotes configured yet.</p>';
   await loadSchedules();
   if(!form.dataset.loaded){const saved=(await api('schedules')).backup||{};if(saved.remote&&r.remotes.includes(saved.remote))form.remote.value=saved.remote;form.path.value=saved.path||'';form.dataset.loaded='1';}
   await pollTasks();
@@ -101,6 +101,8 @@ $('#refreshActivity').onclick=()=>action(()=>loadActivity());$('#olderActivity')
 $('#clearActivity').onclick=()=>action(async()=>{if(!await uiMessage('Clear the activity journal?',{danger:true}))return;await api('activity/clear',{confirm:true});await loadActivity();});
 document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;action(async()=>{
   if(b.dataset.remoteFolder!==undefined){remotePicker.path=join(remotePicker.path,b.dataset.remoteFolder);await showRemoteFolder();}
+  if(b.dataset.resumeRemote){const r=await api('remotes/configure',{action:'resume',name:b.dataset.resumeRemote});remoteConfigName=r.name;$('#remoteConfigFields').innerHTML=questionField(r.option);$('#remoteConfigError').textContent=r.error||'';openDialog('remoteConfigDialog');}
+  if(b.dataset.removeRemote){if(!await uiMessage('Remove this remote configuration from Zedair? Files in the cloud will stay untouched.',{danger:true,accept:'Remove remote'}))return;await api('remotes/delete',{remote:b.dataset.removeRemote,confirm:true});await loadCloud();}
   if(b.dataset.browseRemote)await browseRemote(b.dataset.browseRemote,'',()=>{});
   if(b.dataset.stopTask){if(!await uiMessage('Stop this Zedair worker safely? Completed files are kept; a remote stream restarts from zero.'))return;await api('tasks/stop',{id:b.dataset.stopTask,kind:b.dataset.kind||'background'});await pollTasks();}
   if(b.dataset.reviewDuplicates)await reviewDuplicates(b.dataset.reviewDuplicates);

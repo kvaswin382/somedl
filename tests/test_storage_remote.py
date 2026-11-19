@@ -98,6 +98,18 @@ class StorageTests(Fixture):
             self.assertIn('--size',rem.stream_args('cloud','v.mp4',size=123))
     def test_process_stop_cannot_address_arbitrary_pid(self):
         with self.assertRaises(ValueError):self.desk.tasks.cancel(str(os.getpid()))
+    def test_remote_setup_survives_restart_and_delete_leaves_cloud_alone(self):
+        if not __import__('shutil').which('rclone'):self.skipTest('rclone not installed')
+        rem=self.desk.remotes
+        result=rem.configure({'action':'start','name':'encrypted','provider':'crypt'})
+        self.assertFalse(result['done']);self.assertEqual(result['option']['Name'],'remote')
+        from remotes import Remotes
+        restored=Remotes(self.desk)
+        self.assertEqual(restored.configure({'action':'resume','name':'encrypted'})['option']['Name'],'remote')
+        with self.assertRaises(ValueError):restored.target('encrypted','folder')
+        restored.delete('encrypted',True)
+        self.assertNotIn('encrypted',restored.names())
+
     def test_rclone_provider_schema_with_installed_binary(self):
         if not __import__('shutil').which('rclone'):self.skipTest('rclone not installed')
         self.assertIn('drive',{p['name'] for p in self.desk.remotes.providers()})

@@ -21,7 +21,10 @@ def relative(value):
 
 class Remotes:
     def __init__(self,desk):
-        self.desk=desk;self.config=desk.state/'rclone.conf';self.lock=threading.RLock();self.questions={}
+        self.desk=desk;self.config=desk.state/'rclone.conf';self.lock=threading.RLock();self.questions={};self.responses={}
+        self.session_path=desk.state/'rclone-setup.json'
+        try:self.responses=json.loads(self.session_path.read_text());self.questions={k:v.get('State','') for k,v in self.responses.items()}
+        except (OSError,ValueError,TypeError):pass
         if self.config.is_symlink():raise ValueError('rclone config must not be a symlink')
         self.config.touch(mode=0o600,exist_ok=True);self.config.chmod(0o600)
 
@@ -44,6 +47,7 @@ class Remotes:
 
     def target(self,name,path=''):
         if not isinstance(name,str) or name not in self.names():raise ValueError('Select a configured rclone remote')
+        if self.questions.get(name):raise ValueError('Finish configuring this remote in Cloud & backups first')
         return name+':'+relative(path)
 
     def browse(self,name,path=''):
@@ -66,6 +70,10 @@ class Remotes:
         name=data.get('name','')
         if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,63}',name):raise ValueError('Use a short remote name containing letters, numbers, dots, hyphens or underscores')
         with self.lock:
+            if data.get('action')=='resume':
+                response=self.responses.get(name)
+                if not response or not response.get('State'):raise ValueError('No unfinished setup for this remote')
+                return {'name':name,'done':False,'option':response.get('Option',{}),'error':response.get('Error','')}
             if data.get('action')=='start':
                 if name in self.names():raise ValueError('Remote already exists; choose another name')
                 provider=data.get('provider')
@@ -83,7 +91,27 @@ class Remotes:
             if option.get('Name')=='config_is_local':
                 response=self.run('config','update',name,'--continue','--non-interactive','--all','--state',response['State'],'--result','false')
                 self.questions[name]=response.get('State','');option=response.get('Option') or {}
+            self.responses[name]=response;self.save_sessions()
             return {'name':name,'done':not bool(response.get('State')),'option':option,'error':response.get('Error','')}
+
+    def save_sessions(self):
+        tmp=self.session_path.with_suffix('.tmp');tmp.write_text(json.dumps(self.responses));tmp.chmod(0o600);os.replace(tmp,self.session_path)
+
+    def delete(self,name,confirm=False):
+        if confirm is not True or name not in self.names():raise ValueError('Confirm removing this configured remote')
+        if self.desk.rows("SELECT id FROM jobs WHERE remote=? AND status IN ('running','queued','retry','blocked','paused')",(name,)):
+            raise ValueError('Cancel or remove downloads using this remote first')
+        if any(j['kind']=='backup' and j['status'] in ('running','queued') for j in self.desk.tasks.public()):raise ValueError('Wait for backups to finish before removing a remote')
+        schedule=self.desk.get_setting('backup_schedule',{})
+        if schedule.get('enabled') and schedule.get('remote')==name:raise ValueError('Disable the backup schedule using this remote first')
+        with self.lock:
+            config=self.run('config','dump')
+            for other,entry in config.items():
+                if other!=name and any(re.search(r'(?:^|[ =])'+re.escape(name)+':',str(entry.get(k,''))) for k in ('remote','remotes','upstreams')):
+                    raise ValueError('Another remote depends on this one: '+other)
+            self.run('config','delete',name,json_output=False)
+            self.questions.pop(name,None);self.responses.pop(name,None);self.save_sessions()
+        return {'ok':True}
 
     def streaming_target(self,name,path,size=None):
         target=self.target(name,path)

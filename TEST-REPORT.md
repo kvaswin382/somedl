@@ -1,6 +1,6 @@
 # v2.2.0 validation
 
-- 197 unit tests passed locally, including new URL cleanup, exact duplicate revalidation, upload offsets/collisions, remote confinement, cron timezone, torrent counter resets and managed-worker checks.
+- 198 unit tests passed locally, including new URL cleanup, exact duplicate revalidation, upload offsets/collisions, remote confinement, cron timezone, torrent counter resets and managed-worker checks.
 - Real FFmpeg tests cover VOD and live-style HLS (a playlist initially lacking ENDLIST), actual MP4 container detection, original H.264/AAC resolution and GIF conversion. JPEG bytes remain unchanged with MP4 selected.
 - A real rclone/WebDAV fixture verifies remote folder browsing, exact uploaded bytes with no app media staging, a single thumbnail, MP4 attached cover, and streamed tar backup.
 - Existing media, Instagram, profile, page discovery and browser handoff fixtures passed locally. Browser launch requires the GitHub runner's sandbox integration; CI runs browser capture and the expanded desktop/mobile UI fixture.

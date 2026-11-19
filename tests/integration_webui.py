@@ -106,7 +106,7 @@ with sync_playwright() as pw:
             jid=ids[0];saved=dict(desk.live[jid])
             desk.consume(io.BytesIO(('ZEDPROG '+json.dumps({'downloaded_bytes':40*1024**2,'total_bytes':100*1024**2,'speed':1024**2,'eta':9000,'filename':'fixture.mp4'})+'\n').encode()),jid)
             page.evaluate('() => refresh()')
-            expect(page.locator('[data-progress-job="'+jid+'"] .job-speed')).to_contain_text('1.0 MiB/s · ETA ≈ 1m 0s · current file')
+            expect(page.locator('[data-progress-job="'+jid+'"] .job-speed')).to_contain_text('1.0 MiB/s · ETA 1m 0s · current file')
             fast=page.evaluate('() => api("progress")')
             row=next(j for j in fast['jobs'] if j['id']==jid)
             assert row['eta']==60 and row['speed']==1024**2

@@ -80,7 +80,7 @@ async function refresh(tick=false){
       if(progress.jobs.map(j=>j.id).sort().join(',')===old){for(const live of progress.jobs)Object.assign(state.jobs.find(j=>j.id===live.id),live);renderJobs(true);renderOverview();return;}
     }
     const initial=!state;state=await api('state');lastFullRefresh=Date.now(); $('#connection').textContent='● Connected';$('#connection').classList.remove('offline');
-    renderOverview(); if(initial&&page!=='queue')await setPage(page); if(page==='queue')renderJobs(); if(page==='torrents')renderTorrents(); if(page==='speed')renderSpeed(); if(page==='tools')renderProfileJobs(); if(page==='settings'&&settingsTab==='system'&&!document.hidden)await renderSystem();
+    renderOverview(); if(initial&&page!=='queue')await setPage(page); if(page==='queue')renderJobs(); if(page==='torrents')renderTorrents(); if(page==='speed')renderSpeed(); if(page==='tools')renderProfileJobs(); if(page==='settings'&&settingsTab==='engines'&&packageUpdatePending)await loadPackages(); if(page==='settings'&&settingsTab==='system'&&!document.hidden)await renderSystem();
   }catch(error){$('#connection').textContent='● Reconnecting';$('#connection').classList.add('offline');}
   finally{busy=false;if(!$('#shell').hidden)timer=setTimeout(()=>refresh(true),document.hidden?15000:page==='queue'&&state?.jobs.some(j=>j.status==='running')?1000:4000);}
 }
@@ -456,7 +456,7 @@ async function loadUsage(){
   $('#usageReport').innerHTML=`<div class="usage-summary"><div><span>↓ Downloaded</span><strong>${bytes(r.total)}</strong></div><div><span class="upload-color">↑ Uploaded</span><strong>${bytes(r.uploaded||0)}</strong></div><div><span>Calendar period</span><strong class="usage-period">${E(r.since)} <small>UTC</small></strong></div></div><div class="usage-chart"><div class="chart-caption"><span>Blue: download · Amber: upload</span><span>Peak ${bytes(peak===1?0:peak)}</span></div><svg viewBox="0 0 600 200" role="img" aria-label="Recorded download payload by ${period==='day'?'hour':period==='year'?'month':'day'}"><line x1="0" y1="162" x2="600" y2="162"/>${bars}</svg></div><h3>By website</h3><div class="domain-list">${r.domains.map((x,i)=>`<div class="domain-row"><span class="domain-rank">${i+1}</span><div><div class="domain-label"><strong>${E(x.domain)}</strong><span>↓ ${bytes(x.bytes)} · ↑ ${bytes(x.uploaded||0)}</span></div><div class="domain-track"><i style="width:${100*x.bytes/Math.max(1,r.total)}%"></i></div></div></div>`).join('')||'<p class="hint empty-usage">No recorded downloads in this period yet. Completed transfers with byte progress will appear here.</p>'}</div><p class="hint">${E(r.note)}</p>`;
 }
 $('#usagePeriod').onchange=()=>action(loadUsage);
-let packageTimer;
+let packageTimer,packageUpdatePending=null;
 async function loadPackages(check=false){
   clearTimeout(packageTimer);
   const r=await api('engines'+(check?'?check=1':''));
@@ -469,10 +469,11 @@ async function loadPackages(check=false){
     `</tbody></table>${managed.some(p=>p.has_update)&&!r.update_available?'<p class="notice">Run upgrade.sh on the laptop to enable the managed updater.</p>':''}<details class="package-details"><summary>All Python packages (${r.packages.length})</summary><table><thead><tr><th>Package</th><th>Installed version</th></tr></thead><tbody>${r.packages.map(p=>`<tr><td>${E(p.name)}</td><td>${E(p.version)}</td></tr>`).join('')}</tbody></table></details><h3 class="tools-heading">Ubuntu-managed tools</h3><div class="system-tools">${r.system_tools.map(p=>`<div><strong>${E(p.name)}</strong><span>${E(p.version)}</span></div>`).join('')}</div>`+
     Object.entries(r.updates).map(([k,v])=>`<p class="hint">${E(k)}: ${E(v.status)} — ${E(v.detail)}</p>`).join('');
   renderTelegramStatus(r.telegram);
-  if(r.checking&&page==='settings'&&settingsTab==='engines')packageTimer=setTimeout(()=>action(()=>loadPackages()),2000);
+  if(packageUpdatePending){const update=r.updates[packageUpdatePending.name];if(update&&update.time>=packageUpdatePending.since&&['done','error'].includes(update.status)){toast(update.detail);packageUpdatePending=null;}}
+  if((r.checking||packageUpdatePending||Object.values(r.updates).some(x=>x.status==='running'))&&page==='settings'&&settingsTab==='engines')packageTimer=setTimeout(()=>action(()=>loadPackages()),2000);
 }
 $('#loadPackages').onclick=()=>action(()=>loadPackages(true));
-document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.updatePackage)action(async()=>{if(!await uiMessage('Update '+b.dataset.updatePackage+'? Downloads pause while the service updates and restarts.'))return;const r=await api('engines/update',{package:b.dataset.updatePackage});toast(r.message);});});
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.updatePackage)action(async()=>{if(!await uiMessage('Update '+b.dataset.updatePackage+'? Downloads pause while the service updates and restarts.'))return;const name=b.dataset.updatePackage;b.disabled=true;try{const since=Date.now()/1000-2;const r=await api('engines/update',{package:name});packageUpdatePending={name,since};toast(r.message);await loadPackages();}finally{b.disabled=false;}});});
 
 // Keep each icon element alive across polling; update only changed row content.
 function reconcileJobs(html){

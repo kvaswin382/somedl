@@ -1106,7 +1106,7 @@ class Handler(BaseHTTPRequestHandler):
             from activities import processes
             self.reply({'processes':processes(d)})
         elif p.path == '/api/remotes':
-            self.reply({'remotes':d.remotes.names()})
+            self.reply({'remotes':d.remotes.names(),'pending':[name for name,value in dict(d.remotes.questions).items() if value]})
         elif p.path == '/api/remotes/providers':
             self.reply({'providers':d.remotes.providers()})
         elif p.path == '/api/remotes/browse':
@@ -1303,6 +1303,8 @@ class Handler(BaseHTTPRequestHandler):
             self.reply({'ok': True}, cookie='')
             return
         if d.get_setting('reboot_requested_at') and path not in ('/api/logout',):raise APIError('Scheduled reboot in progress; retry after reconnecting',409)
+        if path == '/api/remotes/delete':
+            self.reply(d.remotes.delete(data.get('remote'),data.get('confirm')));return
         if path == '/api/remotes/mkdir':
             self.reply(d.remotes.mkdir(data.get('remote'),data.get('path','')));return
         if path == '/api/remotes/configure':
