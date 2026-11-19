@@ -91,7 +91,10 @@ with tempfile.TemporaryDirectory() as tmp:
         assert list((cloud/'Videos/Nested').iterdir())==files,'Cancelled attempt left an object or removed a completed file'
         # Thumbnail cache + attached MP4 cover without changing the video codec.
         video=desk.root/'uploaded.mp4';video.write_bytes(source.read_bytes());key=desk.tasks.submit('thumbnails',lambda j:None)['id'];j=desk.tasks.jobs[key]
-        thumbnail(desk,j,video)
+        before=video.read_bytes()
+        thumbnail(desk,j,video,embed=False)
+        assert video.read_bytes()==before,'Generating a file-browser preview rewrote the existing video'
+        thumbnail(desk,j,video,embed=True)
         data=json.loads(subprocess.check_output(['ffprobe','-v','error','-show_streams','-of','json',str(video)]))
         assert any(s.get('disposition',{}).get('attached_pic') for s in data['streams'])
         assert next(s for s in data['streams'] if s['codec_name']=='h264')['width']==96

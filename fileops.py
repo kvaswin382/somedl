@@ -6,18 +6,31 @@ from pathlib import Path
 from publishing import filename, MEDIA
 
 
-def guard(desk,path,stamp=None):
+def protection(desk):
+    """One fresh ownership snapshot per batch; fail closed when RPC is unavailable."""
+    torrents=desk.rpc.call('torrent-get',{'fields':['downloadDir','files']}).get('torrents',[])
+    return {
+        'legacy':[desk.root/j['folder']/j['subdir'] for j in desk.rows("SELECT * FROM jobs WHERE status IN ('running','queued','retry','paused','blocked')") if j['layout']==1],
+        'reserved':{desk.root/r['folder']/r['subdir']/r['target'] for r in desk.rows('SELECT p.target,j.folder,j.subdir FROM published p JOIN jobs j ON p.job=j.id WHERE p.complete=0')},
+        'torrents':{(Path(t['downloadDir'])/f['name']).resolve() for t in torrents for f in t.get('files',[])}
+    }
+
+
+def check_file(path,stamp=None):
     if not path.is_file() or path.is_symlink():raise ValueError('Select a regular downloaded file')
     st=path.stat()
     if stamp!=f'{st.st_size}:{st.st_mtime_ns}':raise ValueError('File changed. Refresh the file list first.')
-    for j in desk.rows("SELECT * FROM jobs WHERE status IN ('running','queued','retry','paused','blocked')"):
-        if j['layout']==1 and path.is_relative_to(desk.root/j['folder']/j['subdir']):
+    return st
+
+
+def guard(desk,path,stamp=None,ownership=None):
+    st=check_file(path,stamp)
+    ownership=protection(desk) if ownership is None else ownership
+    for folder in ownership['legacy']:
+        if path.is_relative_to(folder):
             raise ValueError('Cancel the legacy download before changing its files')
-    for r in desk.rows('SELECT p.target,j.folder,j.subdir FROM published p JOIN jobs j ON p.job=j.id WHERE p.complete=0'):
-        if path==desk.root/r['folder']/r['subdir']/r['target']:raise ValueError('This file is still being saved')
-    for t in desk.rpc.call('torrent-get',{'fields':['downloadDir','files']}).get('torrents',[]):
-        if any(path.resolve()==(Path(t['downloadDir'])/f['name']).resolve() for f in t.get('files',[])):
-            raise ValueError('Remove the torrent from its queue before changing its files')
+    if path in ownership['reserved']:raise ValueError('This file is still being saved')
+    if path.resolve() in ownership['torrents']:raise ValueError('Remove this torrent from its queue before changing its files')
     return st
 
 
@@ -125,7 +138,7 @@ def inspect_folder(desk,data):
 
 def delete_folder(desk,data):
     if data.get('confirm') is not True:raise ValueError('Confirm permanently deleting the folder and its contents')
-    with desk.file_lock,desk.lock:
+    with desk.file_lock:
         path=desk.destination(data.get('path',''),reserve=False)
         inventory=folder_inventory(desk,path)
         if data.get('stamp')!=inventory['stamp']:raise ValueError('Folder changed. Review its contents and confirm deletion again.')
@@ -144,7 +157,8 @@ def delete_folder(desk,data):
         desk.destination(data['path'],reserve=False)
         shutil.rmtree(path)  # Python's fd-based implementation does not follow substituted symlinks.
         relative=path.relative_to(desk.root).as_posix()
-        for row in desk.rows('SELECT DISTINCT folder FROM file_dates'):
-            if row['folder']==relative or row['folder'].startswith(relative+'/'):
-                desk.db.execute('DELETE FROM file_dates WHERE folder=?',(row['folder'],))
-        desk.db.commit()
+        with desk.lock:
+            for row in desk.rows('SELECT DISTINCT folder FROM file_dates'):
+                if row['folder']==relative or row['folder'].startswith(relative+'/'):
+                    desk.db.execute('DELETE FROM file_dates WHERE folder=?',(row['folder'],))
+            desk.db.commit()

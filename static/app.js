@@ -31,8 +31,8 @@ function transferInfo(j){
 const labels = {running:'Downloading',queued:'Queued',retry:'Retry waiting',blocked:'Waiting for SSD',paused:'Paused',done:'Finished',error:'Needs attention',cancelled:'Cancelled'};
 const symbols = {video:'↙',instagram:'▦',threads:'@'};
 function toast(text){ $('#toast').textContent=text; $('#toast').hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('#toast').hidden=true,7000); }
-async function api(path, data){
-  const response=await fetch('/api/'+path,{method:data===undefined?'GET':'POST',cache:'no-store',headers:data===undefined?{}:{'Content-Type':'application/json','X-Zedair-CSRF':csrf},body:data===undefined?undefined:JSON.stringify(data)});
+async function api(path, data, options={}){
+  const response=await fetch('/api/'+path,{signal:options.signal,method:data===undefined?'GET':'POST',cache:'no-store',headers:data===undefined?{}:{'Content-Type':'application/json','X-Zedair-CSRF':csrf},body:data===undefined?undefined:JSON.stringify(data)});
   const result=await response.json();
   if(!response.ok){ if(response.status===401&&!path.startsWith('login')) await showAuth(); throw new Error(result.error||'Request failed'); }
   return result;
@@ -131,16 +131,42 @@ async function setPage(next){
   if(!state)return;
   if(next==='queue')renderJobs();if(next==='torrents')renderTorrents();if(next==='files')await loadFiles();if(next==='settings')renderSettings();if(next==='speed')renderSpeed();if(next==='tools'){renderTools();renderProfileJobs();}
 }
+let fileLoadController,previewPoll,previewAttempts=0;
 async function loadFiles(){
+  clearTimeout(previewPoll);previewAttempts=0;
+  if(fileLoadController)fileLoadController.abort();fileLoadController=new AbortController();
   if(loadedFilePath!==filePath){fileOffset=0;loadedFilePath=filePath;selectedFiles.clear();}
   const request=++fileRequest;
   $('#filePath').textContent='Zedair/'+filePath;$('#filesUp').disabled=!filePath;
-  try{const result=await api('folders?path='+encodeURIComponent(filePath)+'&offset='+fileOffset+'&limit='+filePageSize+'&sort='+fileSort.split('-')[0]+'&order='+fileSort.split('-')[1]);if(request!==fileRequest)return;
+  try{const result=await api('folders?path='+encodeURIComponent(filePath)+'&offset='+fileOffset+'&limit='+filePageSize+'&sort='+fileSort.split('-')[0]+'&order='+fileSort.split('-')[1],undefined,{signal:fileLoadController.signal});if(request!==fileRequest)return;
     fileEntries=result.entries;fileTotal=result.total??result.entries.length;
     if(!fileEntries.length&&fileOffset){fileOffset=Math.max(0,fileOffset-filePageSize);return loadFiles();}
     for(const entry of fileEntries){const key=join(filePath,entry.name);if(selectedFiles.has(key)&&selectedFiles.get(key)!==entry.stamp)selectedFiles.delete(key);}
-    renderFiles();
+    renderFiles();schedulePreviewPoll();
   }catch(error){if(request===fileRequest)$('#fileList').innerHTML=empty('!','Storage unavailable',error.message);}
+}
+function schedulePreviewPoll(){
+  clearTimeout(previewPoll);
+  if(page==='files'&&fileEntries.some(e=>e.thumbnail_state==='pending')&&previewAttempts<60)previewPoll=setTimeout(refreshFilePreviews,5000);
+}
+async function refreshFilePreviews(){
+  if(page!=='files')return;
+  if(document.hidden||$('dialog[open]')){schedulePreviewPoll();return;}
+  const request=fileRequest,path=filePath,names=fileEntries.filter(e=>e.thumbnail_state==='pending').map(e=>e.name);
+  if(!names.length)return;
+  previewAttempts++;
+  try{
+    const r=await api('thumbnails?path='+encodeURIComponent(path)+names.map(n=>'&name='+encodeURIComponent(n)).join(''));
+    if(request!==fileRequest||page!=='files')return;
+    for(const update of r.entries){
+      const entry=fileEntries.find(e=>e.name===update.name);if(!entry)continue;Object.assign(entry,update);
+      const tile=$$('[data-preview-file]',$('#fileList')).find(el=>el.dataset.previewFile===join(path,entry.name));
+      const box=tile?.querySelector(':scope > span');if(!box)continue;
+      if(entry.thumbnail){box.classList.remove('placeholder');box.innerHTML=`<img ${fileView==='list'?'class="row-thumbnail"':''} src="/api/thumbnail?path=${encodeURIComponent(join(path,entry.name))}&v=${encodeURIComponent(entry.thumbnail_version)}" loading="lazy" decoding="async" alt="${E(entry.name)}">`;}
+      else if(entry.thumbnail_state==='unavailable'){box.innerHTML='<small>Preview unavailable</small>';}
+    }
+  }catch(error){/* A temporary disconnect does not discard the visible folder. */}
+  if(request===fileRequest)schedulePreviewPoll();
 }
 function renderFiles(){
   $('#fileSort').value=fileSort;$('#filePageSize').value=String(filePageSize);$('#deleteFolder').disabled=!filePath;
@@ -150,11 +176,11 @@ function renderFiles(){
   $('#filesPageLabel').textContent=fileTotal?`${fileOffset+1}–${Math.min(fileOffset+filePageSize,fileTotal)} of ${fileTotal}`:'No files';
   $('#fileList').innerHTML=fileEntries.length?fileEntries.map(entry=>{
     const path=join(filePath,entry.name),attrs=entry.directory?`data-file-folder="${E(path)}"`:`data-preview-file="${E(path)}" data-preview-kind="${E(entry.preview)}"`;
-    const icon=entry.thumbnail?`<img class="row-thumbnail" src="/api/thumbnail?path=${encodeURIComponent(path)}" loading="lazy" alt="">`:entry.directory?'▰':entry.preview==='video'?'':entry.preview==='image'?'▧':entry.preview==='audio'?'♫':'▤';
+    const icon=entry.thumbnail?`<img class="row-thumbnail" src="/api/thumbnail?path=${encodeURIComponent(path)}&v=${encodeURIComponent(entry.thumbnail_version||entry.stamp)}" loading="lazy" alt="">`:entry.directory?'▰':entry.preview==='video'?'<small title="Preview pending">…</small>':entry.preview==='image'?'▧':entry.preview==='audio'?'♫':'▤';
     const selection=entry.directory?'':`<label class="file-select"><input type="checkbox" data-select-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Select ${E(entry.name)}" ${selectedFiles.has(path)?'checked':''}></label>`;
     const actions=entry.directory?'':`<div class="file-actions">${entry.preview==='image'?`<button class="secondary compact" data-set-cover="${E(path)}" data-stamp="${E(entry.stamp)}">Set folder cover</button>`:''}<button class="secondary compact" data-rename-file="${E(path)}" data-stamp="${E(entry.stamp)}">Rename</button><a class="secondary compact" href="/api/file?path=${encodeURIComponent(path)}" download aria-label="Download ${E(entry.name)}">Download</a><button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div>`;
     if(fileView==='grid'){
-      const media=entry.thumbnail?`<span class="file-thumb"><img src="/api/thumbnail?path=${encodeURIComponent(path)}" loading="lazy" decoding="async" alt="${E(entry.name)}"></span>`:entry.preview==='image'?`<span class="file-thumb"><span class="thumb-fallback">▧</span><img src="/api/preview?path=${encodeURIComponent(path)}" loading="lazy" decoding="async" alt="${E(entry.name)}"></span>`:`<span class="file-thumb placeholder"><span>${icon}</span><small>${entry.directory?'FOLDER':entry.preview==='video'?'VIDEO · PREVIEW TO PLAY':entry.preview==='audio'?'AUDIO':'FILE'}</small></span>`;
+      const media=entry.thumbnail?`<span class="file-thumb"><img src="/api/thumbnail?path=${encodeURIComponent(path)}&v=${encodeURIComponent(entry.thumbnail_version||entry.stamp)}" loading="lazy" decoding="async" alt="${E(entry.name)}"></span>`:entry.preview==='image'?`<span class="file-thumb"><span class="thumb-fallback">▧</span><img src="/api/preview?path=${encodeURIComponent(path)}" loading="lazy" decoding="async" alt="${E(entry.name)}"></span>`:`<span class="file-thumb placeholder"><span>${icon}</span><small>${entry.directory?'FOLDER':entry.preview==='video'?(entry.thumbnail_state==='unavailable'?'PREVIEW UNAVAILABLE':'CREATING PREVIEW…'):entry.preview==='audio'?'AUDIO':'FILE'}</small></span>`;
       const tag=entry.directory||entry.preview?'button':'div';
       return `<article class="file-card ${selectedFiles.has(path)?'is-selected':''}">${selection}<${tag} class="file-tile" ${tag==='button'?attrs:''}>${media}<strong>${E(entry.name)}</strong><small>${entry.directory?'Open folder':bytes(entry.size)}</small></${tag}>${actions}</article>`;
     }
@@ -499,7 +525,7 @@ for(const dialog of $$('dialog')){
 }
 const settingGroups={
   transferControls:[
-    ['simultaneous_downloads','Concurrent downloads','jobs','Browser downloads always run one at a time. Default: 1.'],
+    ['simultaneous_downloads','Concurrent downloads','jobs','Website downloads. Reducing this limit safely returns excess jobs to the queue. Browser extraction stays one at a time; torrents have a separate limit.'],
     ['reserve_gib','Keep SSD space free','GiB','Pause new downloads before the SSD fills up.'],
     ['media_kib','Website speed limit','speed','Per active website download; 0 means unlimited.'],
     ['torrent_memory_mib','Torrent memory ceiling','MiB','128–1536 MiB. This is a ceiling, not preallocated memory.'],
@@ -543,6 +569,7 @@ $('#settingsForm').addEventListener('change',e=>{
   const name=field.name,value=field.type==='checkbox'?field.checked:rangeValue(field),ticket={};
   savingSettings.set(name,ticket);$('#settingsSaveStatus').textContent='Saving…';$('#settingsSaveStatus').classList.remove('save-error');
   settingsSaveChain=settingsSaveChain.then(async()=>{
+    if(savingSettings.get(name)!==ticket)return;
     const previous=state.settings[name];
     try{await api('settings',{[name]:value});state.settings[name]=value;}
     catch(error){if(savingSettings.get(name)===ticket){if(field.type==='checkbox')field.checked=previous;else setRange(field,previous);}$('#settingsSaveStatus').classList.add('save-error');toast('Could not save '+name.replaceAll('_',' ')+': '+error.message);}

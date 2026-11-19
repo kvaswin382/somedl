@@ -68,7 +68,7 @@ class Tasks:
             key,work=item;j=self.jobs[key]
             try:
                 self.check(j);j.update(status='running',detail='Starting')
-                result=work(j);self.check(j);j.update(status='done',detail='Completed',result=result)
+                result=work(j);self.check(j);j.update(status='done',detail=j['detail'] if j['kind']=='duplicate-delete' else 'Completed',result=result)
             except InterruptedError as exc:j.update(status='cancelled',detail=str(exc))
             except Exception as exc:j.update(status='error',detail=sanitized(str(exc))[:2000])
             finally:
@@ -77,6 +77,9 @@ class Tasks:
                     for old in list(self.jobs):
                         if len(self.jobs)<=50:break
                         if self.jobs[old]['status'] not in ('running','queued'):del self.jobs[old]
+                if j['kind']=='thumbnails' and j['status']=='done' and getattr(self.desk,'thumbnail_pending',None):
+                    from storage_tools import queue_thumbnails
+                    queue_thumbnails(self.desk,[])
 
     def process(self,job,args,**kwargs):
         import subprocess
@@ -84,10 +87,13 @@ class Tasks:
         p=subprocess.Popen(args,start_new_session=True,**kwargs);job['process']=p
         return p
 
-    def wait(self,job,p):
+    def wait(self,job,p,timeout=None):
+        started=time.monotonic()
         try:
             while p.poll() is None:
-                self.check(job);time.sleep(.25)
+                self.check(job)
+                if timeout is not None and time.monotonic()-started>timeout:raise TimeoutError('Media preview timed out')
+                time.sleep(.25)
             self.check(job)
             if p.returncode:raise ValueError('Worker exited with code '+str(p.returncode))
         except BaseException:

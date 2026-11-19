@@ -65,7 +65,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.2.1')
+            expect(page.locator('#appVersion')).to_have_text('v2.2.2')
             original_theme(page)
             page.locator('[data-open=downloadDialog]').first.click()
             expect(page.locator('#downloadForm [name=container]')).to_have_value('mp4')
@@ -325,6 +325,45 @@ with sync_playwright() as pw:
             page.locator('#deleteSelected').click();page.locator('#messageAccept').click()
             expect(page.locator('[data-select-file="fixture.txt"]')).to_have_count(0)
             assert not (desk.root/'fixture.txt').exists()
+            # Visible videos acquire real thumbnails without a folder reload, in both views.
+            import subprocess
+            video=desk.root/'preview.mp4'
+            subprocess.run(['ffmpeg','-nostdin','-v','error','-f','lavfi','-i','color=blue:size=96x64:duration=1','-c:v','libx264','-threads','1',str(video)],check=True)
+            original_video=video.read_bytes()
+            page.locator('[data-file-view=list]').click();page.locator('#refreshFiles').click()
+            tile=page.locator('[data-preview-file="preview.mp4"]')
+            expect(tile).to_be_visible();expect(tile.locator('img')).to_have_count(0)
+            maintenance_thread=threading.Thread(target=desk.tasks.loop,daemon=True)
+            desk.threads.append(maintenance_thread);maintenance_thread.start()
+            expect(tile.locator('img')).to_be_visible(timeout=15000)
+            page.wait_for_function("() => document.querySelector('[data-preview-file=\"preview.mp4\"] img')?.naturalWidth > 0")
+            assert video.read_bytes()==original_video
+            page.locator('[data-file-view=grid]').click()
+            expect(tile.locator('img')).to_be_visible()
+            no_overflow(page);screenshot(page,'video-preview-mobile-dark')
+            # Real button -> asynchronous deletion, visible verification progress -> completed count.
+            for name in ('duplicate-a.bin','duplicate-b.bin'):(desk.root/name).write_bytes(b'identical fixture bytes')
+            page.locator('[data-page=settings]').click();page.locator('[data-settings-tab=storage]').click()
+            page.locator('#scanDuplicates').click()
+            expect(page.locator('[data-review-duplicates]')).to_be_visible(timeout=15000)
+            page.locator('[data-review-duplicates]').click()
+            expect(page.locator('#deleteDuplicates')).to_be_visible()
+            import storage_tools
+            real_protection=storage_tools.protection;release_delete=threading.Event()
+            def waiting_protection(d):
+                if not release_delete.wait(15):raise RuntimeError('UI did not observe deletion progress')
+                return real_protection(d)
+            try:
+                with __import__('unittest.mock').mock.patch('storage_tools.protection',side_effect=waiting_protection):
+                    page.locator('#deleteDuplicates').click();page.locator('#messageAccept').click()
+                    expect(page.locator('#duplicateReport')).to_contain_text('Deletion queued')
+                    progress=page.locator('#storageTasks progress')
+                    expect(progress).to_be_visible();expect(progress).to_have_attribute('value','0')
+                    release_delete.set()
+                    expect(progress).to_have_attribute('value','100',timeout=15000)
+                    expect(page.locator('#storageTasks')).to_contain_text('1 / 1 extra copies deleted')
+            finally:release_delete.set()
+            assert len(list(desk.root.glob('duplicate-*.bin')))==1
             assert not errors,errors
             print('PASS: original blue/neutral light and dark palettes, centered settings, border-free slider tracks and compact engine rows verified; real UI verified default MP4, live link count, stable single favicon, range autosave 1–20 step 1, masked token, release-aware engine cards, usage chart, exact highlight share, backdrop dismissal and mobile/dark layouts without overflow.')
         finally:

@@ -96,6 +96,6 @@ def loop(desk):
         # Existing/uploaded/newly downloaded videos are discovered without a
         # large permanent queue or one FFmpeg process per request.
         if when.timestamp()-last_thumb>900 and desk.storage(reserve=False)['ready'] and not desk.tasks.busy():
-            from storage_tools import scan_thumbnails
+            from storage_tools import queue_thumbnails
             if not any(j['kind']=='thumbnails' and j['status'] in ('running','queued') for j in desk.tasks.public()):
-                desk.tasks.submit('thumbnails',lambda job:scan_thumbnails(desk,job));last_thumb=when.timestamp()
+                queue_thumbnails(desk);last_thumb=when.timestamp()

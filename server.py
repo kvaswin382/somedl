@@ -19,6 +19,7 @@ import shutil
 import signal
 import socket
 import sqlite3
+import stat as stat_mode
 import ssl
 import subprocess
 import sys
@@ -198,6 +199,8 @@ class Desk:
             if key not in columns:
                 self.db.execute('ALTER TABLE jobs ADD COLUMN '+key+' '+definition)
         self.db.execute('CREATE TABLE IF NOT EXISTS published(job TEXT, source TEXT, target TEXT, signature TEXT, complete INTEGER, PRIMARY KEY(job,source))')
+        self.db.execute('CREATE INDEX IF NOT EXISTS published_pending ON published(complete,job)')
+        self.db.execute('CREATE INDEX IF NOT EXISTS jobs_queue ON jobs(status,position)')
         self.db.execute('CREATE TABLE IF NOT EXISTS file_dates(folder TEXT,name TEXT,size INTEGER,mtime_ns INTEGER,downloaded REAL,PRIMARY KEY(folder,name))')
         if not self.db.execute("SELECT 1 FROM settings WHERE key='instagram_download_fix_v131'").fetchone():
             # v1.3's print-only profile command produced false counts and could leave
@@ -294,28 +297,8 @@ class Desk:
         return path
 
     def delete_file(self, data):
-        if data.get('confirm') is not True:
-            raise APIError('Confirm permanent deletion first')
-        with self.file_lock, self.lock:
-            path = self.destination(data.get('path',''), reserve=False)
-            if not path.is_file():
-                raise APIError('File not found',404)
-            stamp = str(path.stat().st_size)+':'+str(path.stat().st_mtime_ns)
-            if data.get('stamp') != stamp:
-                raise APIError('File changed. Refresh the file list before deleting.',409)
-            for job in self.rows("SELECT * FROM jobs WHERE status IN ('running','queued','retry','paused','blocked')"):
-                old = self.root / job['folder'] / job['subdir']
-                if job['layout']==1 and path.is_relative_to(old):
-                    raise APIError('Cancel the download before deleting its files',409)
-            reserved = self.rows('SELECT p.target,j.folder,j.subdir FROM published p JOIN jobs j ON p.job=j.id WHERE p.complete=0')
-            if any(path==self.root/r['folder']/r['subdir']/r['target'] for r in reserved):
-                raise APIError('This file is still being saved',409)
-            torrents = self.rpc.call('torrent-get',{'fields':['downloadDir','files']}).get('torrents',[])
-            for torrent in torrents:
-                if any(path.resolve()==(Path(torrent['downloadDir'])/f['name']).resolve() for f in torrent.get('files',[])):
-                    raise APIError('Remove this torrent from the torrent list first, then delete its files here',409)
-            path.unlink()
-            self.write('DELETE FROM file_dates WHERE folder=? AND name=?',('' if path.parent==self.root else path.parent.relative_to(self.root).as_posix(),path.name))
+        from storage_tools import delete_batch
+        return delete_batch(self,{'confirm':data.get('confirm'),'files':[{'path':data.get('path',''),'stamp':data.get('stamp')}]})
 
     def storage(self, reserve=True):
         status = {'ready': False, 'root': str(self.root), 'mount': str(self.mount), 'free': 0, 'total': 0, 'reason': ''}
@@ -705,7 +688,7 @@ class Desk:
                 raise APIError(live.get('log', '')[-8000:] or f'Downloader exited with code {process.returncode}')
         except Exception as exc:
             fresh = self.job(jid)
-            if fresh['status'] not in ('paused', 'cancelled'):
+            if fresh['status']=='running':
                 attempts = max(fresh['attempts'], job['attempts'] + 1)
                 error = platforms.redact(str(exc), self.state)[-8000:]
                 category, detail = platforms.failure_kind(error)
@@ -734,34 +717,44 @@ class Desk:
                 saved=self.rows('SELECT status FROM jobs WHERE id=?',(jid,))
                 if saved and saved[0]['status']=='done':
                     from storage_tools import queue_thumbnails
-                    queue_thumbnails(self)
+                    paths=[self.root/self.job(jid)['folder']/self.job(jid)['subdir']/r['target'] for r in self.rows('SELECT target FROM published WHERE job=? AND complete=1',(jid,))]
+                    queue_thumbnails(self,paths,embed=True)
             (self.state / ('video-' + jid + '.json')).unlink(missing_ok=True)
             (self.state / ('gallery-' + jid + '.json')).unlink(missing_ok=True)
             (self.state / ('profile-' + jid + '.json')).unlink(missing_ok=True)
 
+    def enforce_media_limit(self):
+        with self.lock:
+            limit=max(1,min(20,int(self.get_setting('simultaneous_downloads',1))))
+            active=sorted((self.job(jid) for jid in self.workers),key=lambda j:(j['position'],j['created'],j['id']))
+            running=[j for j in active if j['status']=='running']
+            for job in running[limit:]:
+                self.update_job(job['id'],status='queued',next_try=0,detail='Returning to queue: concurrent download limit reduced')
+            return limit
+
+    def media_tick(self):
+        with self.lock:
+            limit=self.enforce_media_limit()
+            if self.get_setting('hold',False):return
+            # Exiting and preparing workers still own their slots until cleanup.
+            available=limit-len(self.workers)
+            if available<=0:return
+            rows=self.rows("SELECT * FROM jobs WHERE status IN ('queued','retry','blocked') AND next_try<=? ORDER BY position",(now(),))
+            for row in rows:
+                if available<=0:break
+                if row['id'] in self.workers:continue
+                if not row.get('remote') and not self.storage()['ready']:continue
+                key=platforms.platform_for(row['url'])
+                running=[self.job(jid) for jid in self.workers]
+                if key in ('instagram','facebook') and any(platforms.platform_for(r['url'])==key for r in running):continue
+                thread=threading.Thread(target=self.run_job,args=(row,),daemon=True)
+                self.workers[row['id']]=thread
+                thread.start();available-=1
+
     def media_loop(self):
         while not self.stop.wait(1):
-            try:
-                if self.get_setting('hold',False):continue
-                with self.lock:
-                    if self.get_setting('hold',False):continue
-                    limit=max(1,min(20,int(self.get_setting('simultaneous_downloads',1))))
-                    available=limit-len(self.workers)
-                    if available<=0:continue
-                    rows=self.rows("SELECT * FROM jobs WHERE status IN ('queued','retry','blocked') AND next_try<=? ORDER BY position",(now(),))
-                    for row in rows:
-                        if available<=0:break
-                        if row['id'] in self.workers:continue
-                        if not row.get('remote') and not self.storage()['ready']:continue
-                        # Account-bound collections never overlap with another job using the same platform.
-                        key=platforms.platform_for(row['url'])
-                        running=[self.job(jid) for jid in self.workers]
-                        if key in ('instagram','facebook') and any(platforms.platform_for(r['url'])==key for r in running):continue
-                        thread=threading.Thread(target=self.run_job,args=(row,),daemon=True)
-                        self.workers[row['id']]=thread  # reserve BEFORE starting/preparation
-                        thread.start();available-=1
-            except Exception as exc:
-                print('Queue monitor:',type(exc).__name__,flush=True)
+            try:self.media_tick()
+            except Exception as exc:print('Queue monitor:',type(exc).__name__,flush=True)
 
     def apply_torrent_settings(self):
         s = self.settings()
@@ -785,7 +778,8 @@ class Desk:
         configured = False
         while not self.stop.is_set():
             try:
-                if not configured:
+                if not configured or getattr(self,'torrent_settings_dirty',False):
+                    self.torrent_settings_dirty=False
                     self.apply_torrent_settings()
                     configured = True
                 result = self.rpc.call('torrent-get', {'fields': ['id','hashString','name','status','percentDone',
@@ -845,7 +839,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'telegram_result':self.get_setting('telegram_last_result',{}), 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.2.1', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.2.2', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def add_stories(self,data):
         from instagram_story import target
@@ -914,6 +908,7 @@ class Desk:
     def record_torrent_usage(self,stats):
         if not all(type(stats.get(k)) is int and stats[k]>=0 for k in ('downloadedBytes','uploadedBytes')):return
         previous=self.get_setting('torrent_usage_cursor')
+        if previous and all(previous.get(k)==stats[k] for k in ('downloadedBytes','uploadedBytes')):return
         if previous:
             delta=lambda k:stats[k]-previous[k] if stats[k]>=previous[k] else stats[k]
             self.record_direction('BitTorrent',delta('downloadedBytes'),delta('uploadedBytes'))
@@ -1013,8 +1008,8 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # Do not put URLs or browser cookies into the system journal.
 
-    def headers_common(self):
-        self.send_header('Cache-Control', 'no-store')
+    def headers_common(self,cache='no-store'):
+        self.send_header('Cache-Control', cache)
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('X-Frame-Options', 'DENY')
         self.send_header('Referrer-Policy', 'no-referrer')
@@ -1116,6 +1111,21 @@ class Handler(BaseHTTPRequestHandler):
         elif p.path == '/api/system/control':
             try:self.reply(json.loads(Path('/var/lib/zedair-updates/system.json').read_text()))
             except (OSError,ValueError):self.reply({})
+        elif p.path == '/api/thumbnails':
+            from storage_tools import VIDEO,thumbnail_status,queue_thumbnails,stamp
+            names=query.get('name',[])
+            if len(names)>100:raise APIError('Request at most 100 previews')
+            folder=d.destination(query.get('path',[''])[0],reserve=False)
+            pending=[];entries=[]
+            for name in names:
+                if '/' in name or '\\' in name or not name:raise APIError('Use filenames inside the current folder')
+                target=d.destination(str((folder/name).relative_to(d.root)),reserve=False)
+                if target.suffix.lower() not in VIDEO or not target.is_file():continue
+                state=thumbnail_status(d,target)
+                entries.append({'name':name,'thumbnail':state=='ready','thumbnail_state':state,'thumbnail_version':stamp(target)})
+                if state=='pending':pending.append(target)
+            if pending:queue_thumbnails(d,pending)
+            self.reply({'entries':entries})
         elif p.path == '/api/thumbnail':
             from storage_tools import thumbnail_path,IMAGE
             target=d.destination(query.get('path',[''])[0],reserve=False)
@@ -1128,9 +1138,9 @@ class Handler(BaseHTTPRequestHandler):
                 file=target if target.suffix.lower() in IMAGE else None
             else:file=thumbnail_path(d,target)
             if not file or file.is_symlink() or not file.is_file():raise APIError('Thumbnail pending',404)
+            if file.stat().st_size>16*1024*1024:raise APIError('Cover image is too large',413)
             raw=file.read_bytes()
-            if len(raw)>16*1024*1024:raise APIError('Cover image is too large',413)
-            self.send_response(200);self.headers_common();self.send_header('Content-Type',mimetypes.guess_type(str(file))[0] or 'image/jpeg');self.send_header('Content-Length',str(len(raw)));self.end_headers()
+            self.send_response(200);self.headers_common(cache='private, max-age=300');self.send_header('Content-Type',mimetypes.guess_type(str(file))[0] or 'image/jpeg');self.send_header('Content-Length',str(len(raw)));self.end_headers()
             if self.command!='HEAD':self.wfile.write(raw)
         elif p.path == '/api/usage':
             self.reply(d.usage_summary(query.get('period',['day'])[0]))
@@ -1166,19 +1176,20 @@ class Handler(BaseHTTPRequestHandler):
             dates={r['name']:r for r in d.rows('SELECT name,size,mtime_ns,downloaded FROM file_dates WHERE folder=?',(relative,))}
             reserved = {d.root/r['folder']/r['subdir']/r['target'] for r in d.rows('SELECT p.target,j.folder,j.subdir FROM published p JOIN jobs j ON p.job=j.id WHERE p.complete=0')}
             # Sort the complete directory before slicing a page; never sort just 24 items.
-            for item in path.iterdir():
-                if item.is_symlink() or item.name.startswith('.') or item in reserved:continue
-                try:
-                    stat=item.stat();directory=item.is_dir()
-                    if not directory and not item.is_file():continue
-                    saved=dates.get(item.name)
-                    recorded=not directory and saved and saved['size']==stat.st_size and saved['mtime_ns']==stat.st_mtime_ns
-                    date=saved['downloaded'] if recorded else stat.st_mtime
-                    entries.append({'name':item.name,'directory':directory,'size':stat.st_size if not directory else 0,
-                        'date':date,'date_source':'downloaded' if recorded else 'modified',
-                        'thumbnail':bool(__import__('storage_tools').folder_cover(d,item)) if directory else (item.suffix.lower() in ('.mp4','.mkv','.webm','.mov','.m4v','.avi','.ts') and __import__('storage_tools').thumbnail_path(d,item).is_file()),
-                        'preview':'' if directory else preview_type(item.suffix),'stamp':str(stat.st_size)+':'+str(stat.st_mtime_ns)})
-                except FileNotFoundError:continue
+            with os.scandir(path) as listing:
+                for child in listing:
+                    item=path/child.name
+                    if child.is_symlink() or child.name.startswith('.') or item in reserved:continue
+                    try:
+                        stat=child.stat(follow_symlinks=False);directory=stat_mode.S_ISDIR(stat.st_mode)
+                        if not directory and not stat_mode.S_ISREG(stat.st_mode):continue
+                        saved=dates.get(item.name)
+                        recorded=not directory and saved and saved['size']==stat.st_size and saved['mtime_ns']==stat.st_mtime_ns
+                        date=saved['downloaded'] if recorded else stat.st_mtime
+                        entries.append({'name':item.name,'directory':directory,'size':stat.st_size if not directory else 0,
+                            'date':date,'date_source':'downloaded' if recorded else 'modified','thumbnail':False,
+                            'preview':'' if directory else preview_type(item.suffix),'stamp':str(stat.st_size)+':'+str(stat.st_mtime_ns)})
+                    except FileNotFoundError:continue
             # Deterministic tie ordering prevents repeated/missing files on adjacent pages.
             entries.sort(key=lambda e:(e['name'].casefold(),e['name']))
             entries.sort(key=lambda e:e['name'].casefold() if sort=='name' else e[sort],reverse=order=='desc')
@@ -1193,6 +1204,20 @@ class Handler(BaseHTTPRequestHandler):
                 i=indices[0];n=i+int(direction)
                 self.reply({'entry':media[n] if 0<=n<len(media) else None,'previous':i>0,'next':i+1<len(media)});return
             total=len(entries);entries=entries[offset:offset+limit]
+            from storage_tools import VIDEO,folder_cover,thumbnail_status,queue_thumbnails,stamp
+            pending=[]
+            # Inspect covers only for the displayed page, never for every file in the directory.
+            for entry in entries:
+                target=path/entry['name']
+                try:
+                    if entry['directory']:
+                        cover=folder_cover(d,target);entry['thumbnail']=bool(cover)
+                        if cover:entry['thumbnail_version']=stamp(cover)+':'+cover.name
+                    elif target.suffix.lower() in VIDEO:
+                        state=thumbnail_status(d,target);entry['thumbnail_state']=state;entry['thumbnail']=state=='ready';entry['thumbnail_version']=entry['stamp']
+                        if state=='pending':pending.append(target)
+                except FileNotFoundError:pass
+            if pending:queue_thumbnails(d,pending)
             self.reply({'path':relative,'entries':entries,'limit':limit,'offset':offset,'total':total,'more':offset+len(entries)<total,'sort':sort,'order':order})
         elif p.path == '/api/speedtest/history.csv':
             raw=history_csv(d.speedtest.history())
@@ -1328,8 +1353,8 @@ class Handler(BaseHTTPRequestHandler):
             from storage_tools import duplicates
             self.reply(d.tasks.submit('duplicates',lambda job:duplicates(d,job)));return
         if path == '/api/duplicates/delete':
-            from storage_tools import delete_duplicates
-            self.reply(delete_duplicates(d,data));return
+            from storage_tools import start_duplicate_delete
+            self.reply(start_duplicate_delete(d,data));return
         if path == '/api/files/delete':
             from storage_tools import delete_batch
             self.reply(delete_batch(d,data));return
@@ -1389,9 +1414,9 @@ class Handler(BaseHTTPRequestHandler):
             if values.get('telegram_bot_token')=='':values.pop('telegram_bot_token')
             if data.get('clear_telegram_token') is True:values['telegram_bot_token']=''
             for key,value in values.items():d.set_setting(key,value)
-            if values.keys() & {'torrent_down_kib','torrent_up_kib','seed_ratio','simultaneous_downloads','torrent_concurrency','torrent_memory_mib'}:
-                try:d.apply_torrent_settings()
-                except APIError:pass
+            if 'simultaneous_downloads' in values:d.enforce_media_limit()
+            if values.keys() & {'torrent_down_kib','torrent_up_kib','seed_ratio','torrent_concurrency','torrent_memory_mib'}:
+                d.torrent_settings_dirty=True
             if 'torrent_memory_mib' in values and values['torrent_memory_mib']!=prior_memory:
                 result=subprocess.run(['/usr/bin/systemctl','--no-ask-password','start','--no-block','zedair-memory.service'],capture_output=True,text=True,timeout=10)
                 if result.returncode:raise APIError('Setting saved but systemd limit could not be applied. Run upgrade.sh to install memory controls.')
@@ -1451,7 +1476,10 @@ class Handler(BaseHTTPRequestHandler):
                 if not 1 <= len(decoded) <= 8*1024*1024 or not decoded.startswith(b'd'):
                     raise APIError('Invalid or oversized .torrent file')
                 arguments['metainfo'] = meta
-            self.reply(d.rpc.call('torrent-add', arguments))
+            with d.file_lock:
+                d.destination(data.get('folder',''),reserve=False)
+                result=d.rpc.call('torrent-add', arguments)
+            self.reply(result)
             return
         elif path == '/api/torrent/action':
             tid = data.get('id')

@@ -84,8 +84,8 @@ $('#backupNow').onclick=()=>action(async()=>{await api('backups/start',backupVal
 async function pollTasks(){
   clearTimeout(taskPoll);if(!state||document.hidden)return;
   const r=await api('tasks');
-  function rows(kinds){return r.tasks.filter(t=>kinds.includes(t.kind)).reverse().map(t=>`<div class="task-row"><div><strong>${E(t.kind)} · ${E(t.status)}</strong><p class="hint">${E(t.detail)}${t.bytes?' · '+bytes(t.bytes):''}</p></div>${['running','queued'].includes(t.status)?`<button class="secondary compact" data-stop-task="${E(t.id)}">Stop safely</button>`:t.kind==='duplicates'&&t.status==='done'?`<button class="secondary compact" data-review-duplicates="${E(t.id)}">Review</button>`:''}</div>`).join('');}
-  $('#storageTasks').innerHTML=rows(['duplicates','thumbnails']);$('#backupTasks').innerHTML=rows(['backup']);
+  function rows(kinds){return r.tasks.filter(t=>kinds.includes(t.kind)).reverse().map(t=>`<div class="task-row"><div><strong>${E(t.kind)} · ${E(t.status)}</strong><p class="hint">${E(t.detail)}${t.bytes?' · '+bytes(t.bytes)+(t.kind==='duplicate-delete'?' checked':''):''}</p>${t.kind==='duplicate-delete'?`<progress max="100" value="${Math.max(0,Math.min(100,Number(t.progress)||0))}" aria-label="Duplicate deletion progress"></progress><p class="hint">${Number(t.removed)||0} / ${Number(t.total)||0} extra copies deleted · ${Math.floor(Number(t.progress)||0)}%</p>`:''}</div>${['running','queued'].includes(t.status)?`<button class="secondary compact" data-stop-task="${E(t.id)}">Stop safely</button>`:t.kind==='duplicates'&&t.status==='done'?`<button class="secondary compact" data-review-duplicates="${E(t.id)}">Review</button>`:''}</div>`).join('');}
+  $('#storageTasks').innerHTML=rows(['duplicates','duplicate-delete','thumbnails']);$('#backupTasks').innerHTML=rows(['backup']);
   if(page==='settings'&&['backup','storage'].includes(settingsTab))taskPoll=setTimeout(()=>action(pollTasks),2500);
 }
 $('#scanDuplicates').onclick=()=>action(async()=>{await api('duplicates/scan',{});await pollTasks();});
@@ -93,7 +93,14 @@ $('#scanThumbnails').onclick=()=>action(async()=>{await api('thumbnails/scan',{}
 async function reviewDuplicates(id){
   const r=await api('tasks?id='+encodeURIComponent(id)),t=r.tasks.find(t=>t.id===id);if(!t?.result)return;duplicateScan=id;
   const groups=t.result.groups;$('#duplicateReport').innerHTML=`<h3>${groups.length} duplicate groups · ${bytes(t.result.recoverable)} recoverable</h3>${groups.length?'<label>Keep<select id="duplicateKeep"><option value="oldest">Oldest modified copy</option><option value="newest">Newest modified copy</option><option value="manual">Choose manually below</option></select></label>':''}`+groups.map(g=>`<details class="duplicate-group"><summary>${g.files.length} copies · ${bytes(g.size)} each</summary><label>Retain this copy<select data-duplicate-hash="${E(g.hash)}">${g.files.map(f=>`<option value="${E(f.path)}">${E(f.path)} · ${new Date(f.mtime*1000).toLocaleString()}</option>`).join('')}</select></label></details>`).join('')+(groups.length?'<button class="secondary danger" id="deleteDuplicates">Delete extra copies</button>':'<p class="hint">No identical files found.</p>');
-  if(groups.length)$('#deleteDuplicates').onclick=()=>action(async()=>{const keep=$('#duplicateKeep').value;if(!await uiMessage('Permanently delete the extra byte-identical copies? One copy per group will be kept. Files will be checked again.',{danger:true,accept:'Delete extra copies'}))return;const selected=Object.fromEntries($$('[data-duplicate-hash]').map(s=>[s.dataset.duplicateHash,s.value]));const r=await api('duplicates/delete',{scan:duplicateScan,keep,selected,confirm:true});$('#duplicateReport').textContent=r.removed+' extra copies deleted.';await pollTasks();});
+  if(groups.length)$('#deleteDuplicates').onclick=()=>action(async()=>{
+    const button=$('#deleteDuplicates'),scan=duplicateScan,keep=$('#duplicateKeep').value;
+    const selected=keep==='manual'?Object.fromEntries($$('[data-duplicate-hash]').map(s=>[s.dataset.duplicateHash,s.value])):{};
+    if(!await uiMessage('Permanently delete the extra byte-identical copies? One copy per group will be kept. Files will be checked again.',{danger:true,accept:'Delete extra copies'}))return;
+    button.disabled=true;button.textContent='Queuing deletion…';
+    try{await api('duplicates/delete',{scan,keep,selected,confirm:true});$('#duplicateReport').textContent='Deletion queued. Verification, progress and any errors are shown below.';await pollTasks();}
+    catch(error){button.disabled=false;button.textContent='Delete extra copies';throw error;}
+  });
 }
 $('#deleteSelected').onclick=()=>action(async()=>{if(!await uiMessage(`Permanently delete ${selectedFiles.size} selected files?`,{danger:true,accept:'Delete files'}))return;await api('files/delete',{files:[...selectedFiles].map(([path,stamp])=>({path,stamp})),confirm:true});selectedFiles.clear();await loadFiles();});
 $('#uploadFiles').onchange=e=>action(async()=>{

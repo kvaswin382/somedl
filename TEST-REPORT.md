@@ -1,3 +1,9 @@
+# v2.2.2 stability validation
+
+Regression coverage exercises asynchronous duplicate deletion and progress, cancellation before removal, batch ownership checks, responsive folder/task reads while verification is waiting, concurrency reduction with reserved worker slots, and settings saves independent of Transmission availability. File-browser tests check metadata work is limited to the visible page and preview polling does not rescan directories. Corrupt videos are backed off so later files can get previews. Idle torrent counters no longer cause database writes.
+
+The real FFmpeg/rclone integration checks preview-only generation preserves the original video bytes, followed by explicit cover embedding without re-encoding. The browser fixture clicks duplicate deletion through confirmation, observes live progress and completion, and checks an actual video thumbnail appears automatically in list and grid views. No Atom-laptop latency measurement or guarantee of zero remaining bugs is claimed.
+
 # v2.2.1 validation
 
 The main download form has no remote fields and makes no rclone request. Settings → Rclone owns remote setup, URL downloads, remote folder selection/creation and backups. The browser regression checks the empty-remote state, selected remote/subfolder in a cloud submission, unique URL counting and SSD-only local submission, while retaining desktop/mobile backdrop checks. Existing engine and storage integrations remain enabled.
