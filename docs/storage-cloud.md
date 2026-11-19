@@ -4,11 +4,11 @@ Use the normal upgrade commands in [README](../README.md). The upgrader also ins
 
 ## Cloud destinations
 
-1. Open **Settings → Cloud & backups → Add remote**.
+1. Open **Settings → Rclone → Add remote**.
 2. Choose Google Drive or another installed rclone provider and answer its setup questions. On a headless server, OAuth providers can ask you to run `rclone authorize` on a computer with a browser and paste its result. Follow the displayed provider instructions; tokens stay in the laptop's private configuration.
 3. To encrypt remote files, create a **crypt** remote over an existing cloud remote. Keep the encryption passwords somewhere safe: losing them prevents recovery.
 4. Unfinished setup can be resumed after closing the dialog or restarting the app. **Remove** deletes only the local configuration; it keeps cloud files and refuses removal while jobs, schedules or another remote depend on it.
-5. In **Add download → Save to**, select that remote. Browse only its folders; **New folder** creates a child folder. The saved rclone configuration is `/var/lib/zedair/rclone.conf`, owned by the service user. Existing remotes in a different user's rclone configuration are not silently imported.
+5. In **Settings → Rclone → Download URLs to remote**, paste your links and select that remote. Browse only its folders; **New folder** creates a child folder. The saved rclone configuration is `/var/lib/zedair/rclone.conf`, owned by the service user. Existing remotes in a different user's rclone configuration are not silently imported.
 
 Direct cloud transfers use bounded pipes, not the SSD/eMMC for media staging. There is one cloud download pipeline at a time. Individual HTTP files and extracted media streams are supported. MP4 streams use a fragmented MP4 container so they do not need a seekable local file. Original video/audio codecs are copied. A unique job/attempt suffix prevents overwriting an existing cloud file. Pausing or retrying restarts from zero; failed uploads are cleaned up where the provider permits it.
 

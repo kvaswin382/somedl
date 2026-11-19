@@ -1,3 +1,7 @@
+# v2.2.1 validation
+
+The main download form has no remote fields and makes no rclone request. Settings → Rclone owns remote setup, URL downloads, remote folder selection/creation and backups. The browser regression checks the empty-remote state, selected remote/subfolder in a cloud submission, unique URL counting and SSD-only local submission, while retaining desktop/mobile backdrop checks. Existing engine and storage integrations remain enabled.
+
 # v2.2.0 validation
 
 - The download dialog opens before loading cloud destinations. The browser fixture holds that response until after dismissal, then verifies that completing the lookup cannot reopen the dialog or block Settings. Mobile backdrop checks explicitly wait for the dialog to open first.

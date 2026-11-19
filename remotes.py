@@ -47,7 +47,7 @@ class Remotes:
 
     def target(self,name,path=''):
         if not isinstance(name,str) or name not in self.names():raise ValueError('Select a configured rclone remote')
-        if self.questions.get(name):raise ValueError('Finish configuring this remote in Cloud & backups first')
+        if self.questions.get(name):raise ValueError('Finish configuring this remote in Settings → Rclone first')
         return name+':'+relative(path)
 
     def browse(self,name,path=''):

@@ -1,13 +1,22 @@
 'use strict';
 // These controls reuse the desk's existing dialogs, blue palette and API guard.
 let remotePicker={name:'',path:'',choose:null},remoteConfigName='',taskPoll,duplicateScan='',activityBefore=null;
-async function loadRemoteChoices(){
-  const select=$('#downloadRemote'),current=select.value;
-  try{const r=await api('remotes');select.innerHTML='<option value="">External SSD</option>'+r.remotes.filter(n=>!(r.pending||[]).includes(n)).map(n=>`<option value="${E(n)}">${E(n)}:</option>`).join('');select.value=current;}catch(error){if(current){select.innerHTML=`<option value="">External SSD</option><option value="${E(current)}">${E(current)}:</option>`;select.value=current;}toast('Cloud destinations unavailable: '+error.message);}
-  toggleRemoteDestination();
+function updateRemoteDownloadControls(){
+  const form=$('#remoteDownloadForm'),ready=!!form.remote.value;
+  $('#remoteDownloadBrowse').disabled=!ready;$('button[type=submit]',form).disabled=!ready;
+  $('#remoteDownloadEmpty').hidden=ready;
 }
-function toggleRemoteDestination(){const form=$('#downloadForm'),remote=!!form.remote.value;$('#remoteDestination').hidden=!remote;form.folder.closest('label').hidden=remote;form.playlist.disabled=remote;if(remote)form.playlist.checked=false;}
-$('#downloadRemote').onchange=()=>{$('#downloadForm').remote_path.value='';toggleRemoteDestination();};
+function updateRemoteLinkCount(){const n=cleanLinks($('#remoteDownloadForm').urls.value).length;$('#remoteLinkCount').textContent=n+' '+(n===1?'link':'links');$('#remoteLinkCount').classList.toggle('over-limit',n>100);}
+$('#remoteDownloadForm').urls.oninput=updateRemoteLinkCount;
+$('#remoteDownloadForm').remote.onchange=()=>{$('#remoteDownloadForm').remote_path.value='';updateRemoteDownloadControls();};
+$('#remoteDownloadForm').onsubmit=e=>{e.preventDefault();action(async()=>{
+  const form=e.target,data=Object.fromEntries(new FormData(form));
+  if(!data.remote)throw Error('Add and select a remote first.');
+  data.urls=cleanLinks(data.urls);data.filename=data.filename.trim();data.playlist=false;
+  const button=$('button[type=submit]',form);button.disabled=true;
+  try{const result=await api('jobs',data);form.urls.value='';updateRemoteLinkCount();$('#remoteDownloadResult').textContent=`${result.ids.length} cloud download(s) queued${result.skipped?`; ${result.skipped} duplicate(s) skipped`:''}. View progress in Downloads.`;toast('Cloud downloads queued.');await refresh();}
+  finally{updateRemoteDownloadControls();}
+});};
 async function browseRemote(name,path,choose){if(!name)throw Error('Select a remote first.');remotePicker={name,path,choose};await showRemoteFolder();openDialog('remoteDialog');}
 async function showRemoteFolder(){
   const r=await api('remotes/browse?remote='+encodeURIComponent(remotePicker.name)+'&path='+encodeURIComponent(remotePicker.path));
@@ -17,11 +26,16 @@ async function showRemoteFolder(){
 $('#remoteUp').onclick=()=>action(async()=>{remotePicker.path=parent(remotePicker.path);await showRemoteFolder();});
 $('#remoteMkdir').onclick=()=>action(async()=>{const name=await uiMessage('Create a folder here.',{title:'New remote folder',input:true,accept:'Create'});if(!name)return;if(/[/:\\]/.test(name)||name==='.'||name==='..')throw Error('Use one folder name.');await api('remotes/mkdir',{remote:remotePicker.name,path:join(remotePicker.path,name)});await showRemoteFolder();});
 $('#remoteChoose').onclick=()=>{remotePicker.choose(remotePicker.path);closeDialog($('#remoteDialog'));};
-$('#downloadRemoteBrowse').onclick=()=>action(()=>browseRemote($('#downloadForm').remote.value,$('#downloadForm').remote_path.value,p=>$('#downloadForm').remote_path.value=p));
+$('#remoteDownloadBrowse').onclick=()=>action(()=>browseRemote($('#remoteDownloadForm').remote.value,$('#remoteDownloadForm').remote_path.value,p=>$('#remoteDownloadForm').remote_path.value=p));
 $('#backupBrowse').onclick=()=>action(()=>browseRemote($('#backupForm').remote.value,$('#backupForm').path.value,p=>$('#backupForm').path.value=p));
 $('#refreshRemotes').onclick=()=>action(loadCloud);
 async function loadCloud(){
   const r=await api('remotes'),form=$('#backupForm'),current=form.remote.value;
+  const download=$('#remoteDownloadForm'),selected=download.remote.value,available=r.remotes.filter(n=>!(r.pending||[]).includes(n));
+  download.remote.innerHTML=available.length?available.map(n=>`<option value="${E(n)}">${E(n)}:</option>`).join(''):'<option value="">Add a remote first</option>';
+  if(available.includes(selected))download.remote.value=selected;
+  if(download.remote.value!==selected)download.remote_path.value='';
+  updateRemoteDownloadControls();
   form.remote.innerHTML=r.remotes.filter(n=>!(r.pending||[]).includes(n)).map(n=>`<option value="${E(n)}">${E(n)}</option>`).join('');if(r.remotes.includes(current))form.remote.value=current;
   $('#remoteList').innerHTML=r.remotes.map(n=>`<div class="remote-entry"><button class="secondary compact" ${(r.pending||[]).includes(n)?'data-resume-remote':'data-browse-remote'}="${E(n)}">${(r.pending||[]).includes(n)?'Continue setup:':'▰'} ${E(n)}:</button><button class="text-button danger" data-remove-remote="${E(n)}">Remove</button></div>`).join('')||'<p class="hint">No remotes configured yet.</p>';
   await loadSchedules();

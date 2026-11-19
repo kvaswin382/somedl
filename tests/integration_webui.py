@@ -65,7 +65,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.2.0')
+            expect(page.locator('#appVersion')).to_have_text('v2.2.1')
             original_theme(page)
             page.locator('[data-open=downloadDialog]').first.click()
             expect(page.locator('#downloadForm [name=container]')).to_have_value('mp4')
@@ -77,7 +77,7 @@ with sync_playwright() as pw:
             screenshot(page,'download-desktop')
             page.locator('#downloadForm button[type=submit]').click()
             expect(page.locator('#downloadDialog')).not_to_be_visible()
-            jobs=desk.rows('SELECT * FROM jobs');assert len(jobs)==1 and jobs[0]['quality']=='best' and jobs[0]['container']=='mp4'
+            jobs=desk.rows('SELECT * FROM jobs');assert len(jobs)==1 and jobs[0]['quality']=='best' and jobs[0]['container']=='mp4' and not jobs[0]['remote']
             expect(page.locator('.source-icon')).to_have_class(__import__('re').compile('favicon-loaded'))
             expect(page.locator('.source-fallback')).to_be_hidden()
             page.evaluate('() => { window.fixtureIcon=document.querySelector(".queue-favicon"); }')
@@ -188,21 +188,17 @@ with sync_playwright() as pw:
             stories=desk.rows("SELECT * FROM jobs WHERE profile_mode='highlights'")
             assert len(stories)==1 and stories[0]['url'].endswith('/stories/highlights/17965850028168601/')
             page.locator('[data-page=queue]').click()
-            # A slow remote lookup must neither delay opening nor reopen a dismissed dialog.
-            pending_remotes=[]
-            page.route('**/api/remotes',lambda route:pending_remotes.append(route))
-            with page.expect_request('**/api/remotes'):
-                page.locator('[data-open=downloadDialog]').first.click()
+            # Local downloads must not depend on rclone or expose cloud controls.
+            remote_requests=[]
+            page.route('**/api/remotes',lambda route:(remote_requests.append(route.request.url),route.fulfill(json={'remotes':[]})))
+            page.locator('[data-open=downloadDialog]').first.click()
             expect(page.locator('#downloadDialog')).to_be_visible()
+            expect(page.locator('#downloadForm [name=remote]')).to_have_count(0)
+            expect(page.locator('#downloadForm [name=remote_path]')).to_have_count(0)
             page.mouse.click(5,5)
             expect(page.locator('#downloadDialog')).not_to_be_visible()
-            assert len(pending_remotes)==1
-            pending_remotes[0].fulfill(json={'remotes':['delayed-fixture'],'pending':[]})
-            expect(page.locator('#downloadRemote option[value="delayed-fixture"]')).to_have_count(1)
-            expect(page.locator('#downloadDialog')).not_to_be_visible()
+            assert not remote_requests, 'Local download modal fetched cloud destinations'
             page.unroute('**/api/remotes')
-            page.locator('[data-page=settings]').click()
-            page.locator('[data-page=queue]').click()
             # Backdrop click closes; clicking inside does not.
             page.locator('[data-open=downloadDialog]').first.click()
             page.locator('#downloadForm h2').click();expect(page.locator('#downloadDialog')).to_be_visible()
@@ -275,6 +271,34 @@ with sync_playwright() as pw:
             page.locator('[data-settings-tab=activity]').click()
             expect(page.locator('#activityList')).to_contain_text('web /api/')
             page.locator('[data-settings-tab=backup]').click()
+            expect(page.locator('#remoteDownloadForm')).to_be_visible()
+            expect(page.locator('#remoteDownloadForm button[type=submit]')).to_be_disabled()
+            expect(page.locator('#remoteDownloadEmpty')).to_be_visible()
+            page.route('**/api/remotes',lambda route:route.fulfill(json={'remotes':['fixture-drive'],'pending':[]}))
+            page.locator('#refreshRemotes').click()
+            expect(page.locator('#remoteDownloadForm [name=remote]')).to_have_value('fixture-drive')
+            expect(page.locator('#remoteDownloadForm button[type=submit]')).to_be_enabled()
+            page.route('**/api/remotes/browse?*',lambda route:route.fulfill(json={'remote':'fixture-drive','path':'Videos' if 'path=Videos' in route.request.url else '', 'folders':[] if 'path=Videos' in route.request.url else ['Videos']}))
+            page.locator('#remoteDownloadBrowse').click()
+            expect(page.locator('#remoteMkdir')).to_be_visible()
+            page.locator('[data-remote-folder="Videos"]').click()
+            expect(page.locator('#remoteLocation')).to_have_text('fixture-drive:/Videos')
+            page.locator('#remoteChoose').click()
+            expect(page.locator('#remoteDownloadForm [name=remote_path]')).to_have_value('Videos')
+            cloud_submissions=[]
+            def cloud_submit(route):
+                cloud_submissions.append(route.request.post_data_json)
+                route.fulfill(json={'ids':['cloud-fixture'],'skipped':0})
+            page.route('**/api/jobs',cloud_submit)
+            page.locator('#remoteDownloadForm [name=urls]').fill('notes https://example.com/video https://example.com/video')
+            expect(page.locator('#remoteLinkCount')).to_have_text('1 link')
+            page.locator('#remoteDownloadForm button[type=submit]').click()
+            expect(page.locator('#remoteDownloadResult')).to_contain_text('1 cloud download(s) queued')
+            assert len(cloud_submissions)==1
+            assert cloud_submissions[0]['remote']=='fixture-drive' and cloud_submissions[0]['remote_path']=='Videos'
+            assert cloud_submissions[0]['urls']==['https://example.com/video']
+            assert cloud_submissions[0]['quality']=='best' and cloud_submissions[0]['container']=='mp4'
+            page.unroute('**/api/jobs');page.unroute('**/api/remotes/browse?*');page.unroute('**/api/remotes')
             expect(page.locator('#backupForm')).to_be_visible()
             page.locator('#backupForm [name=repeat]').select_option('weekly')
             expect(page.locator('#backupForm [name=weekday]')).to_be_visible()
