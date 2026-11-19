@@ -188,6 +188,21 @@ with sync_playwright() as pw:
             stories=desk.rows("SELECT * FROM jobs WHERE profile_mode='highlights'")
             assert len(stories)==1 and stories[0]['url'].endswith('/stories/highlights/17965850028168601/')
             page.locator('[data-page=queue]').click()
+            # A slow remote lookup must neither delay opening nor reopen a dismissed dialog.
+            pending_remotes=[]
+            page.route('**/api/remotes',lambda route:pending_remotes.append(route))
+            with page.expect_request('**/api/remotes'):
+                page.locator('[data-open=downloadDialog]').first.click()
+            expect(page.locator('#downloadDialog')).to_be_visible()
+            page.mouse.click(5,5)
+            expect(page.locator('#downloadDialog')).not_to_be_visible()
+            assert len(pending_remotes)==1
+            pending_remotes[0].fulfill(json={'remotes':['delayed-fixture'],'pending':[]})
+            expect(page.locator('#downloadRemote option[value="delayed-fixture"]')).to_have_count(1)
+            expect(page.locator('#downloadDialog')).not_to_be_visible()
+            page.unroute('**/api/remotes')
+            page.locator('[data-page=settings]').click()
+            page.locator('[data-page=queue]').click()
             # Backdrop click closes; clicking inside does not.
             page.locator('[data-open=downloadDialog]').first.click()
             page.locator('#downloadForm h2').click();expect(page.locator('#downloadDialog')).to_be_visible()
@@ -196,7 +211,9 @@ with sync_playwright() as pw:
             page.set_viewport_size({'width':390,'height':844});page.evaluate('() => scrollTo(0,0)')
             no_overflow(page);screenshot(page,'queue-mobile-dark')
             assert page.locator('#jobs .job').first.bounding_box()['y']<800, 'Queue is pushed below the mobile viewport'
-            page.locator('[data-open=downloadDialog]').first.click();screenshot(page,'download-mobile-dark')
+            page.locator('[data-open=downloadDialog]').first.click()
+            expect(page.locator('#downloadDialog')).to_be_visible()
+            screenshot(page,'download-mobile-dark')
             no_overflow(page);page.mouse.click(2,2);expect(page.locator('#downloadDialog')).not_to_be_visible()
             page.locator('[data-page=settings]').click();page.locator('[data-settings-tab=general]').click()
             page.evaluate('() => scrollTo(0,0)');no_overflow(page);centered_settings(page);original_theme(page,True);screenshot(page,'settings-mobile-dark')

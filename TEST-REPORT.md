@@ -1,5 +1,6 @@
 # v2.2.0 validation
 
+- The download dialog opens before loading cloud destinations. The browser fixture holds that response until after dismissal, then verifies that completing the lookup cannot reopen the dialog or block Settings. Mobile backdrop checks explicitly wait for the dialog to open first.
 - 198 unit tests passed locally, including new URL cleanup, exact duplicate revalidation, upload offsets/collisions, remote confinement, cron timezone, torrent counter resets and managed-worker checks.
 - Real FFmpeg tests cover VOD and live-style HLS (a playlist initially lacking ENDLIST), actual MP4 container detection, original H.264/AAC resolution and GIF conversion. JPEG bytes remain unchanged with MP4 selected.
 - A real rclone/WebDAV fixture verifies remote folder browsing, exact uploaded bytes with no app media staging, a single thumbnail, MP4 attached cover, and streamed tar backup.

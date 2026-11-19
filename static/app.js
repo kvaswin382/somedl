@@ -266,8 +266,10 @@ document.addEventListener('click',event=>{
     if(el.dataset.theme!==undefined)$('#themeBtn').click();
     if(el.dataset.logout!==undefined)$('#logoutBtn').click();
     if(el.dataset.close!==undefined)closeDialog(el.closest('dialog'));
-    if(el.dataset.open==='downloadDialog')await loadRemoteChoices();
-    if(el.dataset.open)openDialog(el.dataset.open);
+    if(el.dataset.open){
+      openDialog(el.dataset.open);
+      if(el.dataset.open==='downloadDialog')await loadRemoteChoices();
+    }
     if(el.dataset.page)await setPage(el.dataset.page);
     if(el.dataset.filter){queueOffset=0;filter=el.dataset.filter;$$('[data-filter]').forEach(b=>b.classList.toggle('selected',b===el));renderJobs();}
     if(el.dataset.browse){folderTarget=el.dataset.browse;folderPath=$('#'+folderTarget+' [name=folder]').value.trim();try{await loadFolders();}catch(_){folderPath='';await loadFolders();}openDialog('folderDialog');}
