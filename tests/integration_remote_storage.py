@@ -30,6 +30,12 @@ with tempfile.TemporaryDirectory() as tmp:
         def reply(self,code,body=b'',kind='text/plain'):
             self.send_response(code);self.send_header('Content-Length',str(len(body)));self.send_header('Content-Type',kind);self.end_headers();self.wfile.write(body)
         def do_GET(self):
+            if self.path=='/slow.bin':
+                self.send_response(200);self.send_header('Content-Length',str(4*1024*1024));self.send_header('Content-Type','application/octet-stream');self.end_headers()
+                try:
+                    for _ in range(256):self.wfile.write(b'x'*16384);self.wfile.flush();time.sleep(.01)
+                except (BrokenPipeError,ConnectionResetError):pass
+                return
             if self.path=='/source.mp4':return self.reply(200,source.read_bytes(),'video/mp4')
             p=self.target();self.reply(200,p.read_bytes()) if p.is_file() else self.reply(404)
         def do_HEAD(self):
@@ -74,6 +80,15 @@ with tempfile.TemporaryDirectory() as tmp:
         files=list((cloud/'Videos/Nested').iterdir());assert len(files)==1 and files[0].read_bytes()==source.read_bytes()
         assert list(desk.root.iterdir())==[],list(desk.root.iterdir())
         assert not list(desk.state.rglob('*.mp4'))
+        with patch('server.validate_url'),patch('download_http.validate_url'),patch('remote_download.validate_url'):
+            cancelled=desk.add_jobs({'urls':[f'http://127.0.0.1:{server.server_port}/slow.bin'],'remote':'cloud','remote_path':'Videos/Nested'})['ids'][0]
+            worker=threading.Thread(target=desk.run_job,args=(desk.job(cancelled),));worker.start()
+            deadline=time.monotonic()+10
+            while cancelled not in desk.processes and worker.is_alive() and time.monotonic()<deadline:time.sleep(.01)
+            desk.job_action(cancelled,'pause');worker.join(timeout=15)
+            assert not worker.is_alive(),'Cancelled cloud worker did not exit'
+            assert desk.job(cancelled)['status']=='paused'
+        assert list((cloud/'Videos/Nested').iterdir())==files,'Cancelled attempt left an object or removed a completed file'
         # Thumbnail cache + attached MP4 cover without changing the video codec.
         video=desk.root/'uploaded.mp4';video.write_bytes(source.read_bytes());key=desk.tasks.submit('thumbnails',lambda j:None)['id'];j=desk.tasks.jobs[key]
         thumbnail(desk,j,video)
@@ -84,10 +99,17 @@ with tempfile.TemporaryDirectory() as tmp:
         features=desk.remotes.run('backend','features','cloud:')['Features']
         if features.get('PutStream'):
             key=desk.tasks.submit('backup',lambda j:None)['id'];j=desk.tasks.jobs[key]
+            desk.set_setting('backup_app_id','fixture-owner')
+            old='Backups/zedair-fixture-owner/old.tar';foreign='Backups/other-application.tar'
+            for item in (old,foreign):
+                p=cloud/item;p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(b'old backup')
+            desk.write('INSERT INTO backups VALUES(?,?,?,?)',('cloud',old,time.time()-86400*40,'fixture-owner'))
+            desk.write('INSERT INTO backups VALUES(?,?,?,?)',('cloud',foreign,time.time()-86400*40,'other-owner'))
             result=backup(desk,j,{'remote':'cloud','path':'Backups','scope':'both','days':30})
             with tarfile.open(cloud/result['path']) as tar:
                 assert 'ssd/uploaded.mp4' in tar.getnames();assert 'system/state/desk.sqlite3' in tar.getnames();assert 'zedair-backup.json' in tar.getnames()
-            assert len(desk.rows('SELECT * FROM backups'))==1
+            assert len(desk.rows('SELECT * FROM backups'))==2
+            assert not (cloud/old).exists();assert (cloud/foreign).read_bytes()==b'old backup'
         else:
             with contextlib.suppress(ValueError):desk.remotes.stream_args('cloud','unknown.mp4')
         print('PASS: real rclone/WebDAV exact-byte pipe, remote folder browsing, no SSD/state media staging, one thumbnail + embedded cover, supported streamed backup.')

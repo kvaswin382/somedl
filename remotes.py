@@ -32,7 +32,8 @@ class Remotes:
 
     def run(self,*args,json_output=True,timeout=90):
         with self.lock:
-            p=subprocess.run(self.args(*args),capture_output=True,text=True,timeout=timeout)
+            try:p=subprocess.run(self.args(*args),capture_output=True,text=True,timeout=timeout)
+            except subprocess.TimeoutExpired:raise ValueError('rclone operation timed out; check the remote connection and try again') from None
             self.config.chmod(0o600)
         if p.returncode:raise ValueError('rclone: '+sanitized(p.stderr)[-1800:])
         if len(p.stdout)>16*1024*1024:raise ValueError('Remote listing is too large; choose a smaller folder')

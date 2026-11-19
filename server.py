@@ -730,6 +730,11 @@ class Desk:
                 if self.process is process:self.process=next(iter(self.processes.values()),None)
             self.flush_usage(force=True)
             self.live.pop(jid, None)
+            if not self.stop.is_set() and not job.get('remote'):
+                saved=self.rows('SELECT status FROM jobs WHERE id=?',(jid,))
+                if saved and saved[0]['status']=='done':
+                    from storage_tools import queue_thumbnails
+                    queue_thumbnails(self)
             (self.state / ('video-' + jid + '.json')).unlink(missing_ok=True)
             (self.state / ('gallery-' + jid + '.json')).unlink(missing_ok=True)
             (self.state / ('profile-' + jid + '.json')).unlink(missing_ok=True)
@@ -739,6 +744,7 @@ class Desk:
             try:
                 if self.get_setting('hold',False):continue
                 with self.lock:
+                    if self.get_setting('hold',False):continue
                     limit=max(1,min(20,int(self.get_setting('simultaneous_downloads',1))))
                     available=limit-len(self.workers)
                     if available<=0:continue
@@ -1170,7 +1176,7 @@ class Handler(BaseHTTPRequestHandler):
                     date=saved['downloaded'] if recorded else stat.st_mtime
                     entries.append({'name':item.name,'directory':directory,'size':stat.st_size if not directory else 0,
                         'date':date,'date_source':'downloaded' if recorded else 'modified',
-                        'thumbnail':bool(d.rows('SELECT 1 FROM covers WHERE folder=?',(item.relative_to(d.root).as_posix(),))) if directory else (item.suffix.lower() in ('.mp4','.mkv','.webm','.mov','.m4v','.avi','.ts') and __import__('storage_tools').thumbnail_path(d,item).is_file()),
+                        'thumbnail':bool(__import__('storage_tools').folder_cover(d,item)) if directory else (item.suffix.lower() in ('.mp4','.mkv','.webm','.mov','.m4v','.avi','.ts') and __import__('storage_tools').thumbnail_path(d,item).is_file()),
                         'preview':'' if directory else preview_type(item.suffix),'stamp':str(stat.st_size)+':'+str(stat.st_mtime_ns)})
                 except FileNotFoundError:continue
             # Deterministic tie ordering prevents repeated/missing files on adjacent pages.
@@ -1296,6 +1302,7 @@ class Handler(BaseHTTPRequestHandler):
             d.write('DELETE FROM sessions')
             self.reply({'ok': True}, cookie='')
             return
+        if d.get_setting('reboot_requested_at') and path not in ('/api/logout',):raise APIError('Scheduled reboot in progress; retry after reconnecting',409)
         if path == '/api/remotes/mkdir':
             self.reply(d.remotes.mkdir(data.get('remote'),data.get('path','')));return
         if path == '/api/remotes/configure':

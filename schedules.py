@@ -56,7 +56,7 @@ def backup_options(desk,data):
 def busy(desk):
     # Include seed uploads, uploads to folders, backup streams, speed tests and
     # workers that are still exiting after pause.
-    if desk.workers or desk.processes or desk.tasks.busy():return True
+    if desk.workers or desk.processes or desk.tasks.busy() or desk.speedtest.snapshot().get('status')=='running':return True
     if desk.torrent_error:return True  # Cannot prove idle while RPC is unavailable.
     return any(t.get('status') in (1,2,3,4,5,6) for t in desk.torrents)
 

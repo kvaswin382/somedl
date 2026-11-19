@@ -15,7 +15,8 @@ def initialize(desk):
 
 def record(desk,event,detail=''):
     # Call sites pass identifiers/outcomes, never request bodies, credentials or cookies.
-    text=sanitized(str(detail))[:2000]
+    try:text=sanitized(str(detail))[:2000]
+    except ValueError:text='Detail omitted: malformed URL'
     with desk.lock:
         desk.db.execute('INSERT INTO activity(time,event,detail) VALUES(?,?,?)',(time.time(),str(event)[:80],text))
         desk.db.execute('DELETE FROM activity WHERE id <= (SELECT max(id)-10000 FROM activity)')
@@ -38,7 +39,7 @@ class Tasks:
         return {'id':key}
 
     def public(self,detail=None):
-        with self.lock:return [{k:v for k,v in j.items() if k not in ('cancel','process') and (k!='result' or detail==j['id'])} for j in self.jobs.values()]
+        with self.lock:return [{k:v for k,v in dict(j).items() if k not in ('cancel','process') and (k!='result' or detail==j['id'])} for j in self.jobs.values()]
 
     def busy(self):
         with self.lock:
@@ -60,7 +61,9 @@ class Tasks:
         while not self.desk.stop.is_set():
             if self.desk.get_setting('reboot_requested_at'):
                 self.desk.stop.wait(1);continue
-            with self.lock:item=self.pending.popleft() if self.pending else None
+            with self.desk.lock,self.lock:
+                item=self.pending.popleft() if self.pending and not self.desk.get_setting('reboot_requested_at') else None
+                if item:self.jobs[item[0]].update(status='running',detail='Starting')
             if not item:self.wake.wait(2);self.wake.clear();continue
             key,work=item;j=self.jobs[key]
             try:

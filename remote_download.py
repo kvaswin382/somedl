@@ -28,9 +28,11 @@ def _run(desk,job):
             line=raw.decode('utf-8','replace');errors.append(sanitized(line));del errors[:-30]
     def terminate(p):
         if p and p.poll() is None:
-            os.killpg(p.pid,signal.SIGTERM)
-            try:p.wait(timeout=10)
-            except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGKILL);p.wait()
+            try:
+                os.killpg(p.pid,signal.SIGTERM)
+                try:p.wait(timeout=10)
+                except subprocess.TimeoutExpired:os.killpg(p.pid,signal.SIGKILL);p.wait()
+            except ProcessLookupError:pass
     try:
         try:info=http.inspect(client,source,timeout=settings['http_timeout'])
         except Exception:pass
@@ -47,7 +49,7 @@ def _run(desk,job):
             # Extract metadata only. This never invokes a downloader or creates media files.
             import yt_dlp
             options={'quiet':True,'no_warnings':True,'skip_download':True,'noplaylist':True,'cachedir':False,
-                     'format':video_format(job['quality'],job.get('container')=='mp4'),'socket_timeout':settings['http_timeout'],'retries':2}
+                     'format':video_format(job['quality'],job.get('container')=='mp4'),'socket_timeout':settings['http_timeout'],'retries':2,'extractor_retries':2}
             cookie=desk.cookie_for(job)
             if cookie:options['cookiefile']=str(cookie)
             with yt_dlp.YoutubeDL(options) as ydl:metadata=ydl.extract_info(source,download=False)
@@ -60,11 +62,12 @@ def _run(desk,job):
                 header=''.join(k+': '+v+'\r\n' for k,v in headers.items() if isinstance(v,str) and '\r' not in v and '\n' not in v and k.lower() in ('user-agent','referer','origin','cookie','authorization'))
                 if header:ffargs+=['-headers',header]
                 if str(s.get('protocol','')).startswith('m3u8'):ffargs+=['-live_start_index','0']
-                ffargs+=['-protocol_whitelist','http,https,tcp,tls,crypto','-i',s['url']]
+                ffargs+=['-rw_timeout',str(settings['http_timeout']*1000000),'-protocol_whitelist','http,https,tcp,tls,crypto','-i',s['url']]
             if len(streams)>1:ffargs+=['-map','0:v:0','-map','1:a:0']
             else:ffargs+=['-map','0:v:0?','-map','0:a:0?']
             ffargs+=['-c','copy','-threads','1','-movflags','frag_keyframe+empty_moov+default_base_moof','-f','mp4','pipe:1']
             name=filename(Path(job.get('filename') or metadata.get('title') or 'Video').stem)+'.mp4'
+        if stopped():raise InterruptedError('Remote transfer stopped before upload')
         # A per-job suffix prevents retries/collisions from overwriting existing user files.
         base=Path(name);output=relative('/'.join(x for x in (job.get('remote_path',''),base.stem+' ['+jid+'-'+str(job['attempts']+1)+']'+base.suffix) if x))
         args=remotes.stream_args(job['remote'],output,size)

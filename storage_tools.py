@@ -99,12 +99,18 @@ def delete_batch(desk,data):
 
 def upload(desk,data):
     action=data.get('action');key=data.get('id','')
-    with desk.file_lock:
+    with desk.file_lock,desk.lock,desk.tasks.lock:
         if action=='start':
+            for expired,item in list(desk.tasks.uploads.items()):
+                if time.time()-item['updated']>3600:
+                    if not item['temp'].is_symlink():item['temp'].unlink(missing_ok=True)
+                    del desk.tasks.uploads[expired]
             if desk.get_setting('reboot_requested_at'):raise ValueError('Scheduled reboot in progress')
             folder=desk.destination(data.get('folder',''),create=False)
             name=data.get('name','');size=data.get('size')
             if not isinstance(name,str) or not name or name.startswith('.') or '/' in name or '\\' in name or len(name.encode())>200:raise ValueError('Invalid filename')
+            from server import safe_relative
+            safe_relative(name)
             if type(size) is not int or size<0 or size>desk.storage()['free']-desk.get_setting('reserve_gib',5)*1024**3:raise ValueError('Insufficient SSD space for upload and reserve')
             if len(desk.tasks.uploads)>=20:raise ValueError('Finish or cancel existing uploads first')
             key=secrets.token_hex(16);temp=folder/('.zedair-upload-'+key)
@@ -133,6 +139,7 @@ def upload(desk,data):
         with target.open('xb'):pass
         os.replace(temp,target);del desk.tasks.uploads[key]
         record(desk,'upload completed',target.relative_to(desk.root).as_posix())
+        if target.suffix.lower() in VIDEO:queue_thumbnails(desk)
         return {'path':target.relative_to(desk.root).as_posix()}
 
 
@@ -145,6 +152,15 @@ def set_cover(desk,data):
         desk.write('INSERT OR REPLACE INTO covers VALUES(?,?)',(folder,p.name))
     record(desk,'folder cover changed',folder)
     return {'ok':True}
+
+
+def folder_cover(desk,path):
+    rows=desk.rows('SELECT name FROM covers WHERE folder=?',(path.relative_to(desk.root).as_posix(),))
+    if not rows:return None
+    name=rows[0]['name']
+    if not isinstance(name,str) or '/' in name or '\\' in name:return None
+    p=path/name
+    return p if p.is_file() and not p.is_symlink() and p.suffix.lower() in IMAGE else None
 
 
 def thumbnail_path(desk,p):
@@ -184,7 +200,11 @@ def thumbnail(desk,job,p):
             desk.tasks.wait(job,proc)
             with desk.file_lock:
                 guard(desk,p,before)
+                import shutil
+                shutil.copystat(p,temp)
                 os.replace(temp,p)
+                folder=p.parent.relative_to(desk.root).as_posix();folder='' if folder=='.' else folder
+                desk.write('UPDATE file_dates SET size=?,mtime_ns=? WHERE folder=? AND name=?',(p.stat().st_size,p.stat().st_mtime_ns,folder,p.name))
                 os.replace(out,thumbnail_path(desk,p))
         finally:temp.unlink(missing_ok=True)
 
@@ -202,3 +222,10 @@ def scan_thumbnails(desk,job):
         except (OSError,ValueError,subprocess.SubprocessError) as exc:record(desk,'thumbnail skipped',p.name+': '+str(exc))
         job['detail']=f'Processed {count} videos'
     return {'videos':count}
+
+
+def queue_thumbnails(desk):
+    with desk.lock,desk.tasks.lock:
+        if any(j['kind']=='thumbnails' and j['status'] in ('queued','running') for j in desk.tasks.jobs.values()):return
+        try:desk.tasks.submit('thumbnails',lambda job:scan_thumbnails(desk,job))
+        except ValueError:pass  # Periodic reconciliation picks it up after the queue drains.
