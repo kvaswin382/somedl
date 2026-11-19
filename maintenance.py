@@ -24,7 +24,7 @@ def inventory(desk,check=False):
     for name in sorted(UPDATES):
         if not any(p['name'].lower()==name for p in packages):packages.append({'name':name,'version':'Not installed'})
     binaries=[]
-    for name,args in [('ffmpeg',['-version']),('deno',['--version']),('transmission-daemon',['--version'])]:
+    for name,args in [('ffmpeg',['-version']),('rclone',['version']),('deno',['--version']),('transmission-daemon',['--version'])]:
         path=shutil.which(name)
         try:
             result=subprocess.run([path,*args],capture_output=True,text=True,timeout=3) if path else None
@@ -101,7 +101,9 @@ def request_update(desk,package):
     if package not in UPDATES:raise ValueError('Only yt-dlp, gallery-dl and Playwright are managed by this updater')
     # No URL, shell expression, arbitrary package name or user-defined command is accepted.
     result=subprocess.run(['/usr/bin/systemctl','--no-ask-password','start','--no-block',f'zedair-update@{package}.service'],capture_output=True,text=True,timeout=10)
-    if result.returncode:raise ValueError('Managed updater is unavailable. Run upgrade.sh on the laptop to install its restricted service.')
+    if result.returncode:
+        from notifications import sanitized
+        raise ValueError('Managed update could not start: '+sanitized(result.stderr.strip())[:800]+'. Run upgrade.sh to repair the restricted systemd/polkit integration.')
     return {'ok':True,'message':'Update scheduled. The service will pause, update and restart; refresh after reconnecting.'}
 
 
@@ -175,5 +177,6 @@ UMask=0077
     UPDATE_STATE.mkdir(mode=0o755,exist_ok=True)
     os.chown(UPDATE_STATE,0,0);UPDATE_STATE.chmod(0o755)
     subprocess.run(['/usr/bin/systemctl','daemon-reload'],check=True)
+    subprocess.run(['/usr/bin/systemctl','start','polkit.service'],check=True)
     marker=UPDATE_STATE/'integration.json'
     marker.write_text(json.dumps({'version':1,'packages':sorted(UPDATES)}));marker.chmod(0o644)

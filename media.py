@@ -144,6 +144,7 @@ def build_command(job, dest, cookie, settings, state):
     fmt = video_format(quality,mp4)
     args = [sys.executable, '-m', 'yt_dlp', '--ignore-config', '--no-cache-dir',
             '--newline', '--progress', '--no-colors', '--windows-filenames', '--trim-filenames', '160',
+            '--embed-thumbnail', '--convert-thumbnails', 'jpg',
             '--continue', '--write-info-json', '--no-overwrites', '--retries', '3', '--fragment-retries', '3',
             '--socket-timeout', str(settings.get('http_timeout',30)), '--concurrent-fragments', '1', '--format-sort', 'res,fps,vbr,abr',
             '--progress-delta', '1', '--progress-template',
@@ -151,6 +152,8 @@ def build_command(job, dest, cookie, settings, state):
             '--no-simulate', '-f', fmt, '-P', str(dest), '-P', f'temp:{dest}',
             '-o', '%(title).120B [%(id)s].%(ext)s',
             '--postprocessor-args', 'ffmpeg:-threads 1',
+            '--downloader', 'm3u8:ffmpeg', '--hls-use-mpegts',
+            '--downloader-args', 'ffmpeg_i:-live_start_index 0',
             '--yes-playlist' if job['playlist'] else '--no-playlist',
             '--playlist-end', str(prefs.get('playlist_limit',settings['playlist_limit']))]
     if mp4:

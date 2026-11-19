@@ -194,7 +194,7 @@ class Desk:
                 last_error TEXT DEFAULT '', position REAL);
         ''')
         columns = {r[1] for r in self.db.execute('PRAGMA table_info(jobs)')}
-        for key, definition in {'container':"TEXT DEFAULT 'auto'", 'layout':'INTEGER DEFAULT 1', 'phase':"TEXT DEFAULT 'download'", 'error_kind':"TEXT DEFAULT ''", 'profile_mode':"TEXT DEFAULT ''", 'profile_username':"TEXT DEFAULT ''", 'scroll_limit':'INTEGER DEFAULT 2000', 'items':'INTEGER DEFAULT 0', 'filename':"TEXT DEFAULT ''", 'images_only':'INTEGER DEFAULT 0', 'browser_fallback':'INTEGER DEFAULT 1', 'engine':"TEXT DEFAULT 'video'", 'browser_force':'INTEGER DEFAULT 0', 'remove_requested':'INTEGER DEFAULT 0'}.items():
+        for key, definition in {'remote':"TEXT DEFAULT ''", 'remote_path':"TEXT DEFAULT ''", 'container':"TEXT DEFAULT 'auto'", 'layout':'INTEGER DEFAULT 1', 'phase':"TEXT DEFAULT 'download'", 'error_kind':"TEXT DEFAULT ''", 'profile_mode':"TEXT DEFAULT ''", 'profile_username':"TEXT DEFAULT ''", 'scroll_limit':'INTEGER DEFAULT 2000', 'items':'INTEGER DEFAULT 0', 'filename':"TEXT DEFAULT ''", 'images_only':'INTEGER DEFAULT 0', 'browser_fallback':'INTEGER DEFAULT 1', 'engine':"TEXT DEFAULT 'video'", 'browser_force':'INTEGER DEFAULT 0', 'remove_requested':'INTEGER DEFAULT 0'}.items():
             if key not in columns:
                 self.db.execute('ALTER TABLE jobs ADD COLUMN '+key+' '+definition)
         self.db.execute('CREATE TABLE IF NOT EXISTS published(job TEXT, source TEXT, target TEXT, signature TEXT, complete INTEGER, PRIMARY KEY(job,source))')
@@ -212,7 +212,17 @@ class Desk:
         self.db.execute('DELETE FROM jobs WHERE remove_requested=1')
         self.db.execute('CREATE TABLE IF NOT EXISTS usage(day TEXT,domain TEXT,bytes INTEGER DEFAULT 0,PRIMARY KEY(day,domain))')
         self.db.execute('CREATE TABLE IF NOT EXISTS usage_hourly(hour TEXT,domain TEXT,bytes INTEGER DEFAULT 0,PRIMARY KEY(hour,domain))')
+        for table in ('usage','usage_hourly'):
+            if 'uploaded' not in {r[1] for r in self.db.execute('PRAGMA table_info('+table+')')}:
+                self.db.execute('ALTER TABLE '+table+' ADD COLUMN uploaded INTEGER DEFAULT 0')
+        self.db.execute('CREATE TABLE IF NOT EXISTS covers(folder TEXT PRIMARY KEY,name TEXT)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS backups(remote TEXT,path TEXT,created REAL,owner TEXT,PRIMARY KEY(remote,path))')
         self.db.commit()
+        import activities
+        activities.initialize(self)
+        if self.get_setting('reboot_restore_hold') is not None:
+            self.set_setting('hold',self.get_setting('reboot_restore_hold'))
+            self.write("DELETE FROM settings WHERE key IN ('reboot_restore_hold','reboot_requested_at')")
         if self.get_setting('telegram_errors') is None:
             # Claude enabled error notices through a configured token/recipient;
             # retain that choice while giving new installations an explicit switch.
@@ -231,6 +241,7 @@ class Desk:
         self.notices = queue.Queue(maxsize=20)
         self.critical_notices = queue.Queue(maxsize=10)
         self.usage_pending = {}
+        self.upload_pending = {}
         self.usage_flushed = now()
         self.live = {}
         self.torrents = []
@@ -241,6 +252,10 @@ class Desk:
         self.threads = []
         self.speedtest = SpeedTest(self)
         self.systemstats = SystemStats()
+        from activities import Tasks
+        from remotes import Remotes
+        self.tasks=Tasks(self);self.remotes=Remotes(self)
+
 
     def rows(self, sql, args=()):
         with self.lock:
@@ -353,15 +368,26 @@ class Desk:
         return rows[0]
 
     def update_job(self, jid, **fields):
+        if 'status' in fields:
+            import activities
+            activities.record(self,'download '+fields['status'],jid+' '+str(fields.get('detail','')))
         fields['updated'] = now()
         with self.lock:
             self.db.execute('UPDATE jobs SET ' + ','.join(k + '=?' for k in fields) + ' WHERE id=?', (*fields.values(), jid))
             self.db.commit()
 
     def add_jobs(self, data):
-        urls = data.get('urls', [])
+        from url_input import clean
+        original=data.get('urls',[])
+        if isinstance(original,list) and len(original)>100:raise APIError('Paste at most 100 URLs')
+        urls = clean(original)
+        raw_count=len(original) if isinstance(original,list) else len(urls)
         if not isinstance(urls, list) or not 1 <= len(urls) <= 100:
             raise APIError('Paste between 1 and 100 URLs')
+        remote=data.get('remote','');remote_path=data.get('remote_path','')
+        if remote:
+            self.remotes.target(remote,remote_path)
+            if data.get('playlist'):raise APIError('Submit individual URLs for direct-to-remote downloads')
         quality = data.get('quality', 'best')
         if quality not in (*QUALITY, 'platform'):
             raise APIError('Unknown quality preset')
@@ -413,9 +439,10 @@ class Desk:
                      int(bool(data.get('playlist') or (quality=='platform' and prefs.get('playlist')))), int(bool(data.get('subtitles') or (quality=='platform' and prefs.get('subtitles')))), cookie, 'queued', now(), now(), now()))
                 selected_container=prefs.get('container','auto') if container=='platform' else container
                 self.db.execute('UPDATE jobs SET container=?,filename=?,browser_fallback=? WHERE id=?',(selected_container,custom,int(data.get('browser_fallback',True) is True),jid))
+                if remote:self.db.execute('UPDATE jobs SET remote=?,remote_path=? WHERE id=?',(remote,remote_path,jid))
                 result.append(jid)
             self.db.commit()
-        return {'ids': result, 'skipped': len(urls)-len(result)}
+        return {'ids': result, 'skipped': max(len(urls),raw_count)-len(result)}
 
     def add_profile(self, data):
         platform=data.get('platform')
@@ -569,6 +596,11 @@ class Desk:
                 self.current=jid
                 self.update_job(jid, status='running', attempts=job['attempts']+1, engine='video', detail='Connecting…')
             validate_url(job['url'])
+            if job.get('remote'):
+                from remote_download import run as remote_run
+                self.live[jid]={}
+                remote_run(self,job)
+                return
             relative = '/'.join(p for p in (job['folder'], job['subdir']) if p)
             output = self.destination(relative, create=True)
             dest = self.staging(jid) if job['layout']==2 else output
@@ -705,7 +737,7 @@ class Desk:
     def media_loop(self):
         while not self.stop.wait(1):
             try:
-                if self.get_setting('hold',False) or not self.storage()['ready']:continue
+                if self.get_setting('hold',False):continue
                 with self.lock:
                     limit=max(1,min(20,int(self.get_setting('simultaneous_downloads',1))))
                     available=limit-len(self.workers)
@@ -714,6 +746,7 @@ class Desk:
                     for row in rows:
                         if available<=0:break
                         if row['id'] in self.workers:continue
+                        if not row.get('remote') and not self.storage()['ready']:continue
                         # Account-bound collections never overlap with another job using the same platform.
                         key=platforms.platform_for(row['url'])
                         running=[self.job(jid) for jid in self.workers]
@@ -727,13 +760,13 @@ class Desk:
     def apply_torrent_settings(self):
         s = self.settings()
         return self.rpc.call('session-set', {
-            'download-queue-enabled': True, 'download-queue-size': min(4,s['simultaneous_downloads']),
+            'download-queue-enabled': True, 'download-queue-size': s['torrent_concurrency'],
             'seed-queue-enabled': True, 'seed-queue-size': 1, 'queue-stalled-enabled': False,
             'speed-limit-down-enabled': bool(s['torrent_down_kib']), 'speed-limit-down': s['torrent_down_kib'],
             'speed-limit-up-enabled': True, 'speed-limit-up': max(1, s['torrent_up_kib']),
             'seedRatioLimited': True, 'seedRatioLimit': s['seed_ratio'],
-            'peer-limit-global': 40, 'peer-limit-per-torrent': 20,
-            'cache-size-mb': 16, 'port-forwarding-enabled': False, 'preallocation': 0,
+            'peer-limit-global': min(80,max(20,s['torrent_memory_mib']//16)), 'peer-limit-per-torrent': 12,
+            'cache-size-mb': min(16,max(2,s['torrent_memory_mib']//64)), 'port-forwarding-enabled': False, 'preallocation': 0,
         })
 
     def owned_torrent(self, torrent):
@@ -750,8 +783,10 @@ class Desk:
                     self.apply_torrent_settings()
                     configured = True
                 result = self.rpc.call('torrent-get', {'fields': ['id','hashString','name','status','percentDone',
-                    'rateDownload','rateUpload','eta','totalSize','errorString','uploadRatio','downloadDir','metadataPercentComplete','queuePosition']})
+                    'rateDownload','rateUpload','eta','totalSize','errorString','uploadRatio','downloadDir','metadataPercentComplete','queuePosition','peersConnected','peersSendingToUs','peersGettingFromUs','trackerStats']})
                 items = [t for t in result.get('torrents', []) if self.owned_torrent(t)]
+                stats=self.rpc.call('session-stats').get('cumulative-stats',{})
+                self.record_torrent_usage(stats)
                 with self.lock:
                     self.torrents = items
                     self.torrent_error = ''
@@ -772,7 +807,8 @@ class Desk:
             self.stop.wait(4)
 
     def start(self):
-        for function in (self.media_loop, self.torrent_loop,self.notification_loop,self.health_loop):
+        import schedules
+        for function in (self.media_loop, self.torrent_loop,self.notification_loop,self.health_loop,self.tasks.loop,lambda:schedules.loop(self)):
             thread = threading.Thread(target=function, daemon=True)
             thread.start()
             self.threads.append(thread)
@@ -803,7 +839,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'telegram_result':self.get_setting('telegram_last_result',{}), 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.1.3', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.2.0', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def add_stories(self,data):
         from instagram_story import target
@@ -833,9 +869,12 @@ class Desk:
             if not force and now()-self.usage_flushed<10:return
             for (hour,domain),count in self.usage_pending.items():
                 day=hour[:10]
-                self.db.execute('INSERT INTO usage_hourly VALUES(?,?,?) ON CONFLICT(hour,domain) DO UPDATE SET bytes=bytes+excluded.bytes',(hour,domain,count))
-                self.db.execute('INSERT INTO usage VALUES(?,?,?) ON CONFLICT(day,domain) DO UPDATE SET bytes=bytes+excluded.bytes',(day,domain,count))
-            self.db.commit();self.usage_pending.clear();self.usage_flushed=now()
+                self.db.execute('INSERT INTO usage_hourly(hour,domain,bytes) VALUES(?,?,?) ON CONFLICT(hour,domain) DO UPDATE SET bytes=bytes+excluded.bytes',(hour,domain,count))
+                self.db.execute('INSERT INTO usage(day,domain,bytes) VALUES(?,?,?) ON CONFLICT(day,domain) DO UPDATE SET bytes=bytes+excluded.bytes',(day,domain,count))
+            for (hour,domain),count in self.upload_pending.items():
+                self.db.execute('INSERT INTO usage_hourly(hour,domain,uploaded) VALUES(?,?,?) ON CONFLICT(hour,domain) DO UPDATE SET uploaded=uploaded+excluded.uploaded',(hour,domain,count))
+                self.db.execute('INSERT INTO usage(day,domain,uploaded) VALUES(?,?,?) ON CONFLICT(day,domain) DO UPDATE SET uploaded=uploaded+excluded.uploaded',(hour[:10],domain,count))
+            self.db.commit();self.usage_pending.clear();self.upload_pending.clear();self.usage_flushed=now()
 
     def usage_summary(self,period):
         today=datetime.datetime.now(datetime.timezone.utc).date()
@@ -843,20 +882,39 @@ class Desk:
         if period not in starts:raise APIError('Choose day, week, month or year')
         self.flush_usage(force=True)
         since=starts[period].isoformat()
-        domains=self.rows('SELECT domain,sum(bytes) AS bytes FROM usage WHERE day>=? AND day<=? GROUP BY domain ORDER BY bytes DESC',(since,today.isoformat()))
+        domains=self.rows('SELECT domain,sum(bytes) AS bytes,sum(uploaded) AS uploaded FROM usage WHERE day>=? AND day<=? GROUP BY domain ORDER BY bytes DESC',(since,today.isoformat()))
         if period=='day':
-            points=self.rows('SELECT hour AS label,sum(bytes) AS bytes FROM usage_hourly WHERE hour LIKE ? GROUP BY hour',(since+'%',))
+            points=self.rows('SELECT hour AS label,sum(bytes) AS bytes,sum(uploaded) AS uploaded FROM usage_hourly WHERE hour LIKE ? GROUP BY hour',(since+'%',))
             labels=[since+'T'+str(h).zfill(2) for h in range(24)]
         elif period=='year':
-            points=self.rows('SELECT substr(day,1,7) AS label,sum(bytes) AS bytes FROM usage WHERE day>=? AND day<=? GROUP BY label',(since,today.isoformat()))
+            points=self.rows('SELECT substr(day,1,7) AS label,sum(bytes) AS bytes,sum(uploaded) AS uploaded FROM usage WHERE day>=? AND day<=? GROUP BY label',(since,today.isoformat()))
             labels=[f'{today.year}-{m:02}' for m in range(1,13)]
         else:
-            points=self.rows('SELECT day AS label,sum(bytes) AS bytes FROM usage WHERE day>=? AND day<=? GROUP BY day',(since,today.isoformat()))
+            points=self.rows('SELECT day AS label,sum(bytes) AS bytes,sum(uploaded) AS uploaded FROM usage WHERE day>=? AND day<=? GROUP BY day',(since,today.isoformat()))
             labels=[(starts[period]+datetime.timedelta(days=n)).isoformat() for n in range((today-starts[period]).days+1)]
-        values={r['label']:r['bytes'] for r in points}
+        values={r['label']:r['bytes'] for r in points};uploads={r['label']:r['uploaded'] for r in points}
         return {'period':period,'timezone':'UTC','since':since,'domains':domains,
-            'total':sum(r['bytes'] for r in domains),'series':[{'label':k,'bytes':values.get(k,0)} for k in labels],
-            'note':'Recorded website payload estimates, grouped by submitted site. Resumed bytes may be counted again. Browser traffic, protocol overhead, torrents and engines without byte progress are excluded. Hourly history starts with this upgrade.'}
+            'uploaded':sum(r['uploaded'] for r in domains),'total':sum(r['bytes'] for r in domains),'series':[{'label':k,'bytes':values.get(k,0),'uploaded':uploads.get(k,0)} for k in labels],
+            'note':'Website payload, torrent download/upload counters and rclone streamed upload bytes. Browser traffic and protocol overhead are excluded. Retransfers count again; upload/torrent history starts with this upgrade.'}
+
+    def record_direction(self,domain,downloaded=0,uploaded=0):
+        hour=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H')
+        with self.lock:
+            key=(hour,domain)
+            if downloaded>0:self.usage_pending[key]=self.usage_pending.get(key,0)+downloaded
+            if uploaded>0:self.upload_pending[key]=self.upload_pending.get(key,0)+uploaded
+        self.flush_usage()
+
+    def record_torrent_usage(self,stats):
+        if not all(type(stats.get(k)) is int and stats[k]>=0 for k in ('downloadedBytes','uploadedBytes')):return
+        previous=self.get_setting('torrent_usage_cursor')
+        if previous:
+            delta=lambda k:stats[k]-previous[k] if stats[k]>=previous[k] else stats[k]
+            self.record_direction('BitTorrent',delta('downloadedBytes'),delta('uploadedBytes'))
+        # Commit counters with their cursor to avoid counting the same poll after restart.
+        with self.lock:
+            self.db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',('torrent_usage_cursor',json.dumps(stats)))
+            self.flush_usage(force=True)
 
     def queue_notice(self,job,error):
         settings=self.settings()
@@ -957,6 +1015,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 
     def reply(self, data, status=200, cookie=None):
+        if self.command=='POST' and not (urllib.parse.urlsplit(self.path).path=='/api/files/upload' and isinstance(data,dict) and 'offset' in data):
+            import activities
+            activities.record(self.desk,'web '+urllib.parse.urlsplit(self.path).path,'success' if status<400 else 'failed ('+str(status)+')')
         raw = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
         self.headers_common()
@@ -1009,7 +1070,7 @@ class Handler(BaseHTTPRequestHandler):
         p = urllib.parse.urlsplit(self.path)
         query = urllib.parse.parse_qs(p.query)
         d = self.desk
-        if p.path in ('/', '/app.js', '/style.css', '/favicon.svg'):
+        if p.path in ('/', '/app.js', '/extras.js', '/style.css', '/favicon.svg'):
             file = HERE / 'static' / ('index.html' if p.path == '/' else p.path[1:])
             raw = file.read_bytes()
             self.send_response(200)
@@ -1030,6 +1091,41 @@ class Handler(BaseHTTPRequestHandler):
         self.require_session()
         if p.path == '/api/state':
             self.reply(d.snapshot())
+        elif p.path == '/api/tasks':
+            self.reply({'tasks':d.tasks.public(query.get('id',[None])[0])})
+        elif p.path == '/api/activity':
+            before=int(query.get('before',['9223372036854775807'])[0])
+            self.reply({'entries':d.rows('SELECT * FROM activity WHERE id<? ORDER BY id DESC LIMIT 200',(before,))})
+        elif p.path == '/api/processes':
+            from activities import processes
+            self.reply({'processes':processes(d)})
+        elif p.path == '/api/remotes':
+            self.reply({'remotes':d.remotes.names()})
+        elif p.path == '/api/remotes/providers':
+            self.reply({'providers':d.remotes.providers()})
+        elif p.path == '/api/remotes/browse':
+            self.reply(d.remotes.browse(query.get('remote',[''])[0],query.get('path',[''])[0]))
+        elif p.path == '/api/schedules':
+            self.reply({k:d.get_setting(k+'_schedule',{}) for k in ('backup','reboot')})
+        elif p.path == '/api/system/control':
+            try:self.reply(json.loads(Path('/var/lib/zedair-updates/system.json').read_text()))
+            except (OSError,ValueError):self.reply({})
+        elif p.path == '/api/thumbnail':
+            from storage_tools import thumbnail_path,IMAGE
+            target=d.destination(query.get('path',[''])[0],reserve=False)
+            if target.is_dir():
+                key=target.relative_to(d.root).as_posix();cover=d.rows('SELECT name FROM covers WHERE folder=?',(key,))
+                if not cover:raise APIError('No folder cover',404)
+                name=cover[0]['name']
+                if '/' in name or '\\' in name:raise APIError('Invalid cover',404)
+                target=d.destination(str((target/name).relative_to(d.root)),reserve=False)
+                file=target if target.suffix.lower() in IMAGE else None
+            else:file=thumbnail_path(d,target)
+            if not file or file.is_symlink() or not file.is_file():raise APIError('Thumbnail pending',404)
+            raw=file.read_bytes()
+            if len(raw)>16*1024*1024:raise APIError('Cover image is too large',413)
+            self.send_response(200);self.headers_common();self.send_header('Content-Type',mimetypes.guess_type(str(file))[0] or 'image/jpeg');self.send_header('Content-Length',str(len(raw)));self.end_headers()
+            if self.command!='HEAD':self.wfile.write(raw)
         elif p.path == '/api/usage':
             self.reply(d.usage_summary(query.get('period',['day'])[0]))
         elif p.path == '/api/engines':
@@ -1074,6 +1170,7 @@ class Handler(BaseHTTPRequestHandler):
                     date=saved['downloaded'] if recorded else stat.st_mtime
                     entries.append({'name':item.name,'directory':directory,'size':stat.st_size if not directory else 0,
                         'date':date,'date_source':'downloaded' if recorded else 'modified',
+                        'thumbnail':bool(d.rows('SELECT 1 FROM covers WHERE folder=?',(item.relative_to(d.root).as_posix(),))) if directory else (item.suffix.lower() in ('.mp4','.mkv','.webm','.mov','.m4v','.avi','.ts') and __import__('storage_tools').thumbnail_path(d,item).is_file()),
                         'preview':'' if directory else preview_type(item.suffix),'stamp':str(stat.st_size)+':'+str(stat.st_mtime_ns)})
                 except FileNotFoundError:continue
             # Deterministic tie ordering prevents repeated/missing files on adjacent pages.
@@ -1137,7 +1234,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(job)
         elif p.path == '/api/torrent':
             tid = query.get('id', [''])[0]
-            torrents = d.rpc.call('torrent-get', {'ids': [tid], 'fields': ['hashString', 'name', 'files', 'fileStats', 'downloadDir']}).get('torrents', [])
+            torrents = d.rpc.call('torrent-get', {'ids': [tid], 'fields': ['hashString', 'name', 'files', 'fileStats', 'downloadDir', 'trackerStats', 'peersConnected', 'peersSendingToUs', 'peersGettingFromUs']}).get('torrents', [])
             if not torrents or not d.owned_torrent(torrents[0]):
                 raise APIError('Torrent not found', 404)
             self.reply(torrents[0])
@@ -1199,6 +1296,43 @@ class Handler(BaseHTTPRequestHandler):
             d.write('DELETE FROM sessions')
             self.reply({'ok': True}, cookie='')
             return
+        if path == '/api/remotes/mkdir':
+            self.reply(d.remotes.mkdir(data.get('remote'),data.get('path','')));return
+        if path == '/api/remotes/configure':
+            self.reply(d.remotes.configure(data));return
+        if path == '/api/schedules':
+            from schedules import save
+            self.reply(save(d,data));return
+        if path == '/api/backups/start':
+            from schedules import backup_options
+            from backups import backup
+            options=backup_options(d,data)
+            self.reply(d.tasks.submit('backup',lambda job:backup(d,job,options)));return
+        if path == '/api/tasks/stop':
+            if data.get('kind')=='download':d.job_action(data.get('id'),'pause')
+            else:d.tasks.cancel(data.get('id'))
+            self.reply({'ok':True});return
+        if path == '/api/activity/clear':
+            if data.get('confirm') is not True:raise APIError('Confirm clearing the activity journal')
+            d.write('DELETE FROM activity');self.reply({'ok':True});return
+        if path == '/api/duplicates/scan':
+            from storage_tools import duplicates
+            self.reply(d.tasks.submit('duplicates',lambda job:duplicates(d,job)));return
+        if path == '/api/duplicates/delete':
+            from storage_tools import delete_duplicates
+            self.reply(delete_duplicates(d,data));return
+        if path == '/api/files/delete':
+            from storage_tools import delete_batch
+            self.reply(delete_batch(d,data));return
+        if path == '/api/files/upload':
+            from storage_tools import upload
+            self.reply(upload(d,data));return
+        if path == '/api/folders/cover':
+            from storage_tools import set_cover
+            self.reply(set_cover(d,data));return
+        if path == '/api/thumbnails/scan':
+            from storage_tools import scan_thumbnails
+            self.reply(d.tasks.submit('thumbnails',lambda job:scan_thumbnails(d,job)));return
         if path == '/api/profiles':
             self.reply(d.add_profile(data));return
         if path == '/api/jobs':
@@ -1235,6 +1369,7 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/hold':
             d.set_setting('hold', bool(data.get('hold')))
         elif path == '/api/settings':
+            prior_memory=d.get_setting('torrent_memory_mib',1024)
             values=engine_settings.checked(data)
             for key,(lo,hi) in engine_settings.TRANSFER_RANGES.items():
                 if key not in data:continue
@@ -1245,9 +1380,12 @@ class Handler(BaseHTTPRequestHandler):
             if values.get('telegram_bot_token')=='':values.pop('telegram_bot_token')
             if data.get('clear_telegram_token') is True:values['telegram_bot_token']=''
             for key,value in values.items():d.set_setting(key,value)
-            if values.keys() & {'torrent_down_kib','torrent_up_kib','seed_ratio','simultaneous_downloads'}:
+            if values.keys() & {'torrent_down_kib','torrent_up_kib','seed_ratio','simultaneous_downloads','torrent_concurrency','torrent_memory_mib'}:
                 try:d.apply_torrent_settings()
                 except APIError:pass
+            if 'torrent_memory_mib' in values and values['torrent_memory_mib']!=prior_memory:
+                result=subprocess.run(['/usr/bin/systemctl','--no-ask-password','start','--no-block','zedair-memory.service'],capture_output=True,text=True,timeout=10)
+                if result.returncode:raise APIError('Setting saved but systemd limit could not be applied. Run upgrade.sh to install memory controls.')
         elif path == '/api/jobs/retry-all':
             with d.lock:
                 for row in d.rows("SELECT id FROM jobs WHERE status='error'"):
@@ -1337,6 +1475,17 @@ class Handler(BaseHTTPRequestHandler):
                 if unwanted:
                     args['files-unwanted'] = unwanted
                 d.rpc.call('torrent-set', args)
+            elif action == 'trackers':
+                urls=data.get('trackers',[])
+                if not isinstance(urls,list) or not 1<=len(urls)<=30:raise APIError('Provide 1–30 tracker URLs')
+                for url in urls:
+                    if not isinstance(url,str) or len(url)>2000 or any(ord(c)<32 for c in url):raise APIError('Invalid tracker URL')
+                    parsed=urllib.parse.urlsplit(url)
+                    if parsed.scheme not in ('http','https','udp') or not parsed.hostname or parsed.username or parsed.password:raise APIError('Use HTTP, HTTPS or UDP trackers')
+                    validate_url(urllib.parse.urlunsplit(('https',parsed.netloc,parsed.path,parsed.query,'')))
+                d.rpc.call('torrent-set',{'ids':[tid],'trackerAdd':list(dict.fromkeys(urls))})
+            elif action == 'announce':
+                d.rpc.call('torrent-reannounce',{'ids':[tid]})
             elif action == 'verify':
                 if not d.storage()['ready'] or d.get_setting('hold', False):
                     raise APIError('Connect the SSD and resume the queue first', 409)

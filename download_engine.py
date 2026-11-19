@@ -117,7 +117,11 @@ def finish_media(path,spec):
     """Container/audio choices happen AFTER the validated HTTP transfer.
     Copy codecs: never lower source quality with an implicit encode."""
     audio=spec.get('quality')=='audio'
-    if not audio and (spec.get('container','auto')!='mp4' or path.suffix=='.mp4'):return
+    if not audio and spec.get('container','auto')!='mp4':return
+    if not audio and path.suffix.lower()=='.mp4':
+        probe=subprocess.run(['ffprobe','-v','error','-show_entries','format=format_name','-of','default=nw=1:nk=1',str(path)],capture_output=True,text=True,timeout=30)
+        if probe.returncode:raise ValueError('Downloaded video is unreadable; partial data kept')
+        if 'mp4' in probe.stdout.split(','):return
     ext='.mp4'
     if audio:
         probe=subprocess.run(['ffprobe','-v','error','-select_streams','a:0','-show_entries','stream=codec_name',
@@ -126,7 +130,7 @@ def finish_media(path,spec):
         if probe.returncode or not codec:raise ValueError('The selected file contains no readable audio stream')
         ext={'aac':'.m4a','alac':'.m4a','mp3':'.mp3','opus':'.opus','vorbis':'.ogg','flac':'.flac','ac3':'.ac3','eac3':'.eac3'}.get(codec,'.mka')
     target=path.with_suffix(ext)
-    if target==path:return
+    if audio and target==path:return
     temp=path.parent/('.remux-'+path.stem+ext)
     say('Copying original codecs into '+ext+'; no quality reduction.')
     process=subprocess.run(['ffmpeg','-nostdin','-hide_banner','-loglevel','error','-y','-i',str(path),
@@ -134,7 +138,9 @@ def finish_media(path,spec):
     if process.returncode:
         temp.unlink(missing_ok=True)
         raise ValueError('Source codecs could not be copied into the selected container. Try Keep source container. '+process.stderr[-1200:])
-    os.replace(temp,target);path.unlink();http.output_register(path.parent,target.name)
+    os.replace(temp,target)
+    if path!=target:path.unlink()
+    http.output_register(path.parent,target.name)
 
 
 def finish_gifs(dest):
@@ -167,6 +173,11 @@ def run(spec):
     browser_job=contextlib.ExitStack()
     browser_slot=False
     def completed():
+        # FFmpeg records live HLS into recoverable TS, even when yt-dlp names it mp4.
+        # Probe the real container and atomically remux before publishing.
+        for item in dest.iterdir():
+            if item.is_file() and not item.is_symlink() and not item.name.startswith('.') and item.suffix.lower()=='.mp4':
+                finish_media(item,{**spec,'container':'mp4'})
         finish_gifs(dest)
         return 0
     def save_jar():
@@ -212,6 +223,12 @@ def run(spec):
                 problems.append('HTTP inspection/transfer: '+diagnostic(exc));say(problems[-1])
             force=bool(spec.get('force')) or attempt>0
             if not force:
+                if platforms.platform_for(source)=='reddit':
+                    try:
+                        from reddit_media import discover as reddit_discover
+                        found,post_title=reddit_discover(source,session.jar,settings['http_timeout'])
+                        if download(found,spec.get('filename') or post_title)==0:return completed()
+                    except Exception as exc:problems.append('Reddit public metadata: '+diagnostic(exc));say(problems[-1])
                 if platforms.platform_for(source)=='threads' and info and info.get('html'):
                     try:
                         code=re.search(r'/(?:post|t)/([\w-]+)',urllib.parse.urlsplit(source).path)

@@ -184,7 +184,7 @@ class BrowserSlotTests(unittest.TestCase):
             def worker(spec):
                 try:download_engine.run(spec)
                 except Exception as exc:errors.append(str(exc))
-            with patch('download_http.inspect',return_value={'kind':'page','html':''}),patch('browser_capture.capture',side_effect=capture),patch('download_http.transfer',side_effect=transfer),contextlib.redirect_stdout(io.StringIO()):
+            with patch('download_http.inspect',return_value={'kind':'page','html':''}),patch('browser_capture.capture',side_effect=capture),patch('download_http.transfer',side_effect=transfer),patch('download_engine.finish_media'),contextlib.redirect_stdout(io.StringIO()):
                 threads=[threading.Thread(target=worker,args=(spec,),daemon=True) for spec in specs]
                 for thread in threads:thread.start()
                 for thread in threads:thread.join(3)

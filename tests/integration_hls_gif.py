@@ -1,5 +1,5 @@
 """Real HTTP, yt-dlp and FFmpeg: HLS -> MP4, GIF -> MP4, JPEG unchanged."""
-import contextlib,functools,http.server,io,json,subprocess,sys,tempfile,threading
+import contextlib,functools,http.server,io,json,subprocess,sys,tempfile,threading,time
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
@@ -15,12 +15,20 @@ with tempfile.TemporaryDirectory() as tmp:
         '-c:v','libx264','-threads','1','-g','10','-c:a','aac','-hls_time','1','-hls_list_size','0',str(source/'stream.m3u8'))
     ffmpeg('-f','lavfi','-i','testsrc=size=65x63:rate=5:duration=1','-threads','1',str(source/'animation.gif'))
     ffmpeg('-f','lavfi','-i','color=c=blue:s=64x64:d=1','-frames:v','1','-threads','1',str(source/'photo.jpg'))
+    event_started=[None];event_open=[0]
     class Handler(http.server.SimpleHTTPRequestHandler):
         def log_message(self,*a):pass
+        def do_GET(self):
+            if self.path=='/event.m3u8':
+                if event_started[0] is None:event_started[0]=time.monotonic()
+                raw=(source/'stream.m3u8').read_bytes()
+                if time.monotonic()-event_started[0]<4:raw=raw.replace(b'#EXT-X-ENDLIST',b'');event_open[0]+=1
+                self.send_response(200);self.send_header('Content-Type','application/vnd.apple.mpegurl');self.send_header('Content-Length',str(len(raw)));self.end_headers();self.wfile.write(raw);return
+            super().do_GET()
     server=http.server.ThreadingHTTPServer(('127.0.0.1',0),functools.partial(Handler,directory=str(source)))
     thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
     try:
-        for name in ('stream.m3u8','animation.gif','photo.jpg'):
+        for name in ('stream.m3u8','event.m3u8','animation.gif','photo.jpg'):
             dest=root/name;dest.mkdir()
             url=f'http://127.0.0.1:{server.server_port}/'+name
             job={'id':'fixture','url':url,'kind':'video','quality':'best','container':'mp4','playlist':0,'subtitles':0}
@@ -35,10 +43,12 @@ with tempfile.TemporaryDirectory() as tmp:
                 assert files[0].read_bytes()==(source/name).read_bytes();assert not list(dest.glob('*.mp4'))
             else:
                 files=list(dest.glob('*.mp4'));assert len(files)==1,(list(dest.iterdir()),output.getvalue())
-                data=probe(files[0]);video=next(s for s in data['streams'] if s['codec_type']=='video')
+                data=probe(files[0]);assert 'mp4' in data['format']['format_name'].split(',');video=next(s for s in data['streams'] if s['codec_type']=='video')
                 assert video['codec_name']=='h264';assert float(data['format']['duration'])>=1
                 if name.endswith('.m3u8'):
                     assert (video['width'],video['height'])==(96,64)
+                    assert float(data['format']['duration'])>=2
+                    if name=='event.m3u8':assert event_open[0]>1
                     assert any(s['codec_type']=='audio' and s['codec_name']=='aac' for s in data['streams'])
                 else:
                     assert video['width']==66 and video['height']==64 # Only pad odd GIF dimensions; never resize.

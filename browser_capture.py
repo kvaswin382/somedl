@@ -107,7 +107,11 @@ def capture(url,jar,state,quality='best',settings=None,dest=None):
     settings={**DEFAULTS,**(settings or {})}
     timeout=settings['browser_timeout'];limit=settings['browser_candidates']
     with browser_lease(state):
-        if available_memory()<settings['browser_min_memory_mib']*1024**2:raise ValueError('Browser waiting: insufficient host/service memory headroom; reduce concurrent downloads')
+        deadline=time.monotonic()+settings.get('browser_memory_wait',120)
+        while available_memory()<settings['browser_min_memory_mib']*1024**2:
+            if time.monotonic()>=deadline:raise ValueError('Browser waiting: insufficient host/service memory headroom after waiting; pause torrents or lower concurrent downloads')
+            print('ZEDPROFILE Waiting for browser RAM headroom; no browser has been launched.',flush=True)
+            time.sleep(5)
         # An evaluate() can outlive normal locator timeouts; terminate this job's
         # complete process group, not the web server, if Chromium stops responding.
         def expire():

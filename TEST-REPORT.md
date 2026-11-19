@@ -1,4 +1,11 @@
-# v2.1.3 ETA verification
+# v2.2.0 validation
+
+- 197 unit tests passed locally, including new URL cleanup, exact duplicate revalidation, upload offsets/collisions, remote confinement, cron timezone, torrent counter resets and managed-worker checks.
+- Real FFmpeg tests cover VOD and live-style HLS (a playlist initially lacking ENDLIST), actual MP4 container detection, original H.264/AAC resolution and GIF conversion. JPEG bytes remain unchanged with MP4 selected.
+- A real rclone/WebDAV fixture verifies remote folder browsing, exact uploaded bytes with no app media staging, a single thumbnail, MP4 attached cover, and streamed tar backup.
+- Existing media, Instagram, profile, page discovery and browser handoff fixtures passed locally. Browser launch requires the GitHub runner's sandbox integration; CI runs browser capture and the expanded desktop/mobile UI fixture.
+- No user cookies, Telegram token, Drive account, real reboot or live package update is used by these tests. Those deployment-specific integrations require the installed Ubuntu service and real account permissions. Reddit IP-block bypass is not claimed.
+
 
 Ten new regressions cover inconsistent engine ETAs, speed changes, resumed offsets, stream/counter resets, unknown and invalid rates, estimated sizes, completion, stale snapshot values, fallback/conversion, and a real direct-transfer loop with deterministic slowing response data. The UI integration checks full-state and fast-poll consistency, stale/finishing text, and seconds/minutes/hours/days formatting. ETA is current-file remaining bytes divided by the displayed rate; merging and whole-playlist duration are not predicted. Live site transfer speed can still fluctuate.
 

@@ -26,7 +26,7 @@ function transferInfo(j){
   if(j.transfer_state==='waiting')return 'Waiting for data · ETA —';
   if(j.transfer_state==='connecting')return 'Connecting · ETA —';
   const known=Number.isFinite(j.eta)&&j.eta>=0&&Number.isFinite(j.speed)&&j.speed>0;
-  return `${bytes(j.speed)}/s · ETA ${known?'≈ '+eta(j.eta)+' · current file':'—'}`;
+  return `${bytes(j.speed)}/s · ETA ${known?eta(j.eta)+' · current file':'—'}`;
 }
 const labels = {running:'Downloading',queued:'Queued',retry:'Retry waiting',blocked:'Waiting for SSD',paused:'Paused',done:'Finished',error:'Needs attention',cancelled:'Cancelled'};
 const symbols = {video:'↙',instagram:'▦',threads:'@'};
@@ -112,7 +112,7 @@ function renderJobs(fast=false){
   $('#queuePrev').disabled=queueOffset===0;$('#queueNext').disabled=queueOffset+queuePageSize>=jobs.length;$('#queuePageSize').value=queuePageSize;$('#queuePageLabel').textContent=`${queueOffset+1}–${Math.min(queueOffset+queuePageSize,jobs.length)} of ${jobs.length}`;
   const rowsHTML=jobs.slice(queueOffset,queueOffset+queuePageSize).map(j=>{
     const active=['queued','running','retry','blocked'].includes(j.status);
-    const info=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · ${j.status==='running'?'total unknown':labels[j.status]||j.status}`:j.status==='running'?transferInfo(j):j.status==='retry'?`Retry in ${eta(Math.max(1,j.next_try-Date.now()/1000))}`:j.status==='done'?'On the SSD':`Attempt ${j.attempts} · ${engineName(j)}`;
+    const info=j.profile_mode?`${j.items||0} files this job · ${j.profile_mode} · ${j.status==='running'?'total unknown':labels[j.status]||j.status}`:j.status==='running'?transferInfo(j):j.status==='retry'?`Retry in ${eta(Math.max(1,j.next_try-Date.now()/1000))}`:j.status==='done'?(j.remote?'On '+j.remote+':':'On the SSD'):`Attempt ${j.attempts} · ${engineName(j)}`;
     const percent=Math.max(0,Math.min(100,Number(j.progress)||0));
     return `<article class="job" data-progress-job="${j.id}"><div class="source-icon ${E(j.kind)}"><img class="queue-favicon" src="/api/favicon?id=${j.id}" alt=""><span class="source-fallback" aria-hidden="true">${symbols[j.kind]||'↙'}</span></div><div class="job-info"><span class="job-title" title="${E(j.name)}">${E(j.name)}</span><div class="job-meta" title="${E(shortFolder(j))}">${E(shortFolder(j))}</div><span class="engine-badge">${E(engineName(j))}</span>${j.status==='error'?`<span class="attention-note">${E(j.detail)}</span>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${E(j.status)}">${E(labels[j.status]||j.status)}</span><span>${j.status==='running'?(j.profile_mode?'Working…':percent.toFixed(1)+'%'):''}</span></div><div class="progress"><i style="width:${percent}%"></i></div><div class="job-speed">${E(info)}</div></div><div class="job-controls">${active?button('Ⅱ','Pause',`data-job="${j.id}" data-action="pause"`):j.status!=='done'?button('▶','Resume / retry',`data-job="${j.id}" data-action="retry"`):button('▤','Open destination',`data-job-folder="${E(join(j.folder,j.subdir))}"`)}${button('⋯','Details and log',`data-detail="${j.id}"`)}${button('×','Remove from queue',`data-job="${j.id}" data-action="remove"`)}</div></article>`;
   }).join('');
@@ -122,7 +122,7 @@ function renderTorrents(){
   $('#torrentAlert').hidden=!state.torrent_error;$('#torrentAlert').textContent=state.torrent_error;
   if(!state.torrents.length){$('#torrents').innerHTML=empty('⇄','No torrents yet.','Add a magnet link or upload a .torrent file. Files download directly into your chosen SSD folder.');return;}
   const status=['Paused','Verify queued','Verifying','Queued','Downloading','Seed queued','Seeding'];
-  $('#torrents').innerHTML=state.torrents.map(t=>`<article class="job"><div class="source-icon torrent">⇄</div><div><div class="job-title">${E(t.name)}</div><div class="job-meta">${bytes(t.totalSize)} <b>·</b> Ratio ${Number(t.uploadRatio||0).toFixed(2)}</div>${t.errorString?`<p class="form-error">${E(t.errorString)}</p>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${t.status===4?'running':''}">${E(status[t.status]||'Waiting')}</span><span>${(100*t.percentDone).toFixed(1)}%</span></div><div class="progress"><i style="width:${100*t.percentDone}%"></i></div><div class="job-speed">↓ ${bytes(t.rateDownload)}/s · ↑ ${bytes(t.rateUpload)}/s</div></div><div class="job-controls">${button(t.status===0?'▶':'Ⅱ',t.status===0?'Resume':'Pause',`data-torrent="${E(t.hashString)}" data-action="${t.status===0?'resume':'pause'}"`)}${button('▤','Select files',`data-torrent-files="${E(t.hashString)}"`)}${button('×','Remove torrent, keep files',`data-torrent="${E(t.hashString)}" data-action="remove"`)}</div></article>`).join('');
+  $('#torrents').innerHTML=state.torrents.map(t=>`<article class="job"><div class="source-icon torrent">⇄</div><div><div class="job-title">${E(t.name)}</div><div class="job-meta">${bytes(t.totalSize)} <b>·</b> Peers ${t.peersConnected||0} · ↓ ${t.peersSendingToUs||0} · ↑ ${t.peersGettingFromUs||0} <b>·</b> Ratio ${Number(t.uploadRatio||0).toFixed(2)}</div>${t.errorString?`<p class="form-error">${E(t.errorString)}</p>`:''}</div><div class="job-progress"><div class="job-state"><span class="pill ${t.status===4?'running':''}">${E(status[t.status]||'Waiting')}</span><span>${(100*t.percentDone).toFixed(1)}%</span></div><div class="progress"><i style="width:${100*t.percentDone}%"></i></div><div class="job-speed">↓ ${bytes(t.rateDownload)}/s · ↑ ${bytes(t.rateUpload)}/s</div></div><div class="job-controls">${button(t.status===0?'▶':'Ⅱ',t.status===0?'Resume':'Pause',`data-torrent="${E(t.hashString)}" data-action="${t.status===0?'resume':'pause'}"`)}${button('▤','Select files',`data-torrent-files="${E(t.hashString)}"`)}${button('×','Remove torrent, keep files',`data-torrent="${E(t.hashString)}" data-action="remove"`)}</div></article>`).join('');
 }
 async function setPage(next){
   page=next; for(const name of ['queue','torrents','files','tools','speed','settings'])$('#'+name+'Page').hidden=name!==next;
@@ -150,11 +150,11 @@ function renderFiles(){
   $('#filesPageLabel').textContent=fileTotal?`${fileOffset+1}–${Math.min(fileOffset+filePageSize,fileTotal)} of ${fileTotal}`:'No files';
   $('#fileList').innerHTML=fileEntries.length?fileEntries.map(entry=>{
     const path=join(filePath,entry.name),attrs=entry.directory?`data-file-folder="${E(path)}"`:`data-preview-file="${E(path)}" data-preview-kind="${E(entry.preview)}"`;
-    const icon=entry.directory?'▰':entry.preview==='video'?'▷':entry.preview==='image'?'▧':entry.preview==='audio'?'♫':'▤';
+    const icon=entry.thumbnail?`<img class="row-thumbnail" src="/api/thumbnail?path=${encodeURIComponent(path)}" loading="lazy" alt="">`:entry.directory?'▰':entry.preview==='video'?'':entry.preview==='image'?'▧':entry.preview==='audio'?'♫':'▤';
     const selection=entry.directory?'':`<label class="file-select"><input type="checkbox" data-select-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Select ${E(entry.name)}" ${selectedFiles.has(path)?'checked':''}></label>`;
-    const actions=entry.directory?'':`<div class="file-actions"><button class="secondary compact" data-rename-file="${E(path)}" data-stamp="${E(entry.stamp)}">Rename</button><a class="secondary compact" href="/api/file?path=${encodeURIComponent(path)}" download aria-label="Download ${E(entry.name)}">Download</a><button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div>`;
+    const actions=entry.directory?'':`<div class="file-actions">${entry.preview==='image'?`<button class="secondary compact" data-set-cover="${E(path)}" data-stamp="${E(entry.stamp)}">Set folder cover</button>`:''}<button class="secondary compact" data-rename-file="${E(path)}" data-stamp="${E(entry.stamp)}">Rename</button><a class="secondary compact" href="/api/file?path=${encodeURIComponent(path)}" download aria-label="Download ${E(entry.name)}">Download</a><button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div>`;
     if(fileView==='grid'){
-      const media=entry.preview==='image'?`<span class="file-thumb"><span class="thumb-fallback">▧</span><img src="/api/preview?path=${encodeURIComponent(path)}" loading="lazy" decoding="async" alt="${E(entry.name)}"></span>`:`<span class="file-thumb placeholder"><span>${icon}</span><small>${entry.directory?'FOLDER':entry.preview==='video'?'VIDEO · PREVIEW TO PLAY':entry.preview==='audio'?'AUDIO':'FILE'}</small></span>`;
+      const media=entry.thumbnail?`<span class="file-thumb"><img src="/api/thumbnail?path=${encodeURIComponent(path)}" loading="lazy" decoding="async" alt="${E(entry.name)}"></span>`:entry.preview==='image'?`<span class="file-thumb"><span class="thumb-fallback">▧</span><img src="/api/preview?path=${encodeURIComponent(path)}" loading="lazy" decoding="async" alt="${E(entry.name)}"></span>`:`<span class="file-thumb placeholder"><span>${icon}</span><small>${entry.directory?'FOLDER':entry.preview==='video'?'VIDEO · PREVIEW TO PLAY':entry.preview==='audio'?'AUDIO':'FILE'}</small></span>`;
       const tag=entry.directory||entry.preview?'button':'div';
       return `<article class="file-card ${selectedFiles.has(path)?'is-selected':''}">${selection}<${tag} class="file-tile" ${tag==='button'?attrs:''}>${media}<strong>${E(entry.name)}</strong><small>${entry.directory?'Open folder':bytes(entry.size)}</small></${tag}>${actions}</article>`;
     }
@@ -178,7 +178,7 @@ async function loadFolders(){
 }
 const platformNames={youtube:'YouTube',facebook:'Facebook',reddit:'Reddit',instagram:'Instagram',x:'X / Twitter',threads:'Threads',other:'Other websites'};
 function selectSettingsTab(tab){
-  settingsTab=tab; if(tab==='system')renderSystem();if(tab==='engines')action(()=>loadPackages());if(tab==='usage')action(loadUsage); $$('[data-settings-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.settingsTab===tab));
+  settingsTab=tab; if(tab==='system'){renderSystem();action(loadSchedules);}if(tab==='backup')action(loadCloud);if(tab==='activity')action(()=>loadActivity());if(tab==='engines')action(()=>loadPackages());if(tab==='usage')action(loadUsage); $$('[data-settings-tab]').forEach(b=>b.classList.toggle('selected',b.dataset.settingsTab===tab));
   $$('[data-settings-panel]').forEach(p=>p.hidden=p.dataset.settingsPanel!==tab);
 }
 function renderSettings(){
@@ -217,10 +217,11 @@ async function showTorrentFiles(id){
   const torrent=await api('torrent?id='+encodeURIComponent(id));$('#detailTitle').textContent=torrent.name;
   if(!torrent.files.length){$('#detailBody').innerHTML='<p class="hint">Metadata is not available yet. Start the torrent briefly and reopen Files. Magnet links need peers to discover their file list.</p>';}
   else{$('#detailBody').innerHTML=`<p class="hint">Unchecking a file stops future downloading; it does not delete existing data. Shared torrent pieces may contain small portions of adjacent files.</p><form id="torrentFilesForm" novalidate data-id="${E(id)}"><div class="torrent-files">${torrent.files.map((f,i)=>`<label><input type="checkbox" name="file" value="${i}" ${torrent.fileStats[i].wanted?'checked':''}><span>${E(f.name)}<small class="hint"> · ${bytes(f.length)} · ${f.length?(100*f.bytesCompleted/f.length).toFixed(0):100}%</small></span></label>`).join('')}</div><div class="dialog-footer"><button type="button" class="secondary" data-torrent="${E(id)}" data-action="verify">Verify existing data</button><button class="primary" type="submit">Save file selection</button></div></form>`;}
+  appendTorrentTrackers(torrent,id);
   openDialog('detailDialog');
 }
 $('#authForm').addEventListener('submit',async event=>{event.preventDefault();const form=event.target;const button=$('button[type=submit]',form);button.disabled=true;$('#authError').textContent='';try{const data=Object.fromEntries(new FormData(form));await api(form.dataset.setup==='true'?'setup':'login',data);form.reset();await showAuth();}catch(error){$('#authError').textContent=error.message;}finally{button.disabled=false;}});
-$('#downloadForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target,data=Object.fromEntries(new FormData(form));data.urls=data.urls.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);data.filename=form.filename.value.trim();data.folder_selected=form.folder_selected.checked;data.browser_fallback=form.browser_fallback.checked;data.playlist=form.playlist.checked;data.subtitles=form.subtitles.checked;const result=await api('jobs',data);closeDialog($('#downloadDialog'));form.urls.value='';updateLinkCount();toast(`${result.ids.length} download(s) queued${result.skipped?`; ${result.skipped} duplicate(s) skipped`:''}.`);await refresh();});});
+$('#downloadForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target,data=Object.fromEntries(new FormData(form));data.urls=cleanLinks(data.urls);data.filename=form.filename.value.trim();data.folder_selected=form.folder_selected.checked;data.browser_fallback=form.browser_fallback.checked;data.playlist=form.playlist.checked;data.subtitles=form.subtitles.checked;const result=await api('jobs',data);closeDialog($('#downloadDialog'));form.urls.value='';updateLinkCount();toast(`${result.ids.length} download(s) queued${result.skipped?`; ${result.skipped} duplicate(s) skipped`:''}.`);await refresh();});});
 $('#torrentForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target;const data={folder:form.folder.value,magnet:form.magnet.value.trim(),paused:form.paused.checked};if(!data.magnet){const file=form.torrent.files[0];if(!file)throw Error('Paste a magnet link or choose a .torrent file.');if(file.size>8*1024*1024)throw Error('Torrent file must be smaller than 8 MiB.');const array=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<array.length;i+=8192)binary+=String.fromCharCode(...array.subarray(i,i+8192));data.metainfo=btoa(binary);}await api('torrents',data);closeDialog($('#torrentDialog'));form.reset();toast('Torrent added.');await setPage('torrents');await refresh();});});
 async function saveConnectionSettings({telegramOnly=false}={}){
   const form=$('#settingsForm'),data={},names=['telegram_bot_token','telegram_chat_id','telegram_admin_id'];
@@ -265,6 +266,7 @@ document.addEventListener('click',event=>{
     if(el.dataset.theme!==undefined)$('#themeBtn').click();
     if(el.dataset.logout!==undefined)$('#logoutBtn').click();
     if(el.dataset.close!==undefined)closeDialog(el.closest('dialog'));
+    if(el.dataset.open==='downloadDialog')await loadRemoteChoices();
     if(el.dataset.open)openDialog(el.dataset.open);
     if(el.dataset.page)await setPage(el.dataset.page);
     if(el.dataset.filter){queueOffset=0;filter=el.dataset.filter;$$('[data-filter]').forEach(b=>b.classList.toggle('selected',b===el));renderJobs();}
@@ -349,7 +351,7 @@ function renderTools(){
   $('#startProfile').disabled=facebook&&!state.tools?.facebook_browser;
   const session=state.cookie_status[toolPlatform];$('#profileSessionNotice').hidden=session?.usable;
   $('#profileSessionNotice').textContent='Add your '+(facebook?'Facebook':'Instagram')+' session in Settings before queuing a profile.';
-  $('#localAddressStatus').textContent=state.tools?.local_enabled?'Local-address setup has run on this laptop. Open http://zed.local on your other devices.':'Not configured yet. Your current address continues to work.';
+
 }
 function renderProfileJobs(){
   const jobs=state.jobs.filter(j=>j.profile_mode);
@@ -372,6 +374,7 @@ async function renderSystem(){
     const size=d=>d?`${bytes(d.used)} / ${bytes(d.total)}`:'Unavailable';
     $('#systemGauges').innerHTML=gauge('CPU',data.cpu_percent,data.cpu_percent===null?'Waiting for next sample':`${data.cores} logical cores · whole laptop`,state.settings.alert_cpu_percent)+gauge('RAM',data.memory?.percent,size(data.memory),state.settings.alert_ram_percent)+gauge('Swap',data.swap?.percent,data.swap?.total?size(data.swap):'No swap configured')+gauge('System disk',data.system_disk?.percent,size(data.system_disk),state.settings.alert_disk_percent)+gauge('External SSD',data.ssd?.percent,data.ssd?size(data.ssd):'SSD unavailable');
     $('#systemDetails').innerHTML=`<div><span>Uptime</span><strong>${data.uptime_seconds===null?'Unavailable':Math.floor(data.uptime_seconds/86400)+'d '+Math.floor(data.uptime_seconds%86400/3600)+'h '+Math.floor(data.uptime_seconds%3600/60)+'m'}</strong></div><div><span>Load average · 1 / 5 / 15 min</span><strong>${data.load?.map(x=>x.toFixed(2)).join(' / ')||'Unavailable'}</strong></div><div><span>CPU temperature</span><strong>${data.temperature_c===null?'Sensor unavailable':data.temperature_c.toFixed(1)+' °C'}</strong></div><div><span>RAM available</span><strong>${data.memory?bytes(data.memory.available):'Unavailable'}</strong></div>`;
+    if($('#showProcesses').checked)await loadProcesses();
     $('#systemUpdated').textContent='Updated '+new Date(data.sampled_at*1000).toLocaleTimeString();$('#systemError').hidden=true;
   }catch(error){$('#systemError').textContent='Unable to read laptop usage: '+error.message;$('#systemError').hidden=false;$('#systemUpdated').textContent='Readings may be stale';}
   finally{systemBusy=false;}
@@ -383,6 +386,7 @@ $('#previewPrev').onclick=()=>stepPreview(-1);$('#previewNext').onclick=()=>step
 document.addEventListener('keydown',event=>{if(!$('#previewDialog').open||!['ArrowLeft','ArrowRight'].includes(event.key)||event.target.matches('input,textarea,select'))return;event.preventDefault();stepPreview(event.key==='ArrowLeft'?-1:1);});
 
 function renderSelection(){
+  $('#deleteSelected').disabled=!selectedFiles.size;
   const count=selectedFiles.size;$('#selectionCount').textContent=count+' selected';
   for(const id of ['moveSelected','copySelected','clearSelection'])$('#'+id).disabled=!count;
   const visible=fileEntries.filter(e=>!e.directory);const n=visible.filter(e=>selectedFiles.has(join(filePath,e.name))).length;
@@ -446,10 +450,10 @@ $('#telegramClear').onclick=()=>action(async()=>{await api('settings',{clear_tel
 $('#clearCache').onclick=()=>action(async()=>{const abandon=$('#removeAbandoned').checked;if(abandon&&!await uiMessage('Permanently remove cancelled and orphan partial downloads? Finished files and active jobs are kept.',{danger:true}))return;const r=await api('cache/clear',{remove_abandoned:abandon,confirm:abandon});$('#cacheResult').textContent=`Removed ${r.removed} cached items/folders · ${bytes(r.bytes)} freed`;});
 async function loadUsage(){
   const period=$('#usagePeriod').value,r=await api('usage?period='+period);if($('#usagePeriod').value!==period)return;
-  const peak=Math.max(1,...r.series.map(x=>x.bytes)),barWidth=600/r.series.length;
+  const peak=Math.max(1,...r.series.map(x=>Math.max(x.bytes,x.uploaded||0))),barWidth=600/r.series.length;
   const short=d=>period==='day'?d.slice(11)+':00':period==='year'?new Date(d+'-02').toLocaleString(undefined,{month:'short'}):d.slice(5);
-  const bars=r.series.map((p,i)=>{const height=140*p.bytes/peak,x=i*barWidth+3;return `<g><title>${E(p.label)} UTC: ${bytes(p.bytes)}</title><rect class="usage-bar" x="${x}" y="${160-height}" width="${Math.max(2,barWidth-6)}" height="${Math.max(2,height)}" rx="3"/>${i%Math.ceil(r.series.length/8)===0?`<text x="${x}" y="184">${E(short(p.label))}</text>`:''}</g>`;}).join('');
-  $('#usageReport').innerHTML=`<div class="usage-summary"><div><span>Recorded payload</span><strong>${bytes(r.total)}</strong></div><div><span>Source websites</span><strong>${r.domains.length}</strong></div><div><span>Calendar period</span><strong class="usage-period">${E(r.since)} <small>UTC</small></strong></div></div><div class="usage-chart"><div class="chart-caption"><span>Transfer activity</span><span>Peak ${bytes(peak===1?0:peak)}</span></div><svg viewBox="0 0 600 200" role="img" aria-label="Recorded download payload by ${period==='day'?'hour':period==='year'?'month':'day'}"><line x1="0" y1="162" x2="600" y2="162"/>${bars}</svg></div><h3>By website</h3><div class="domain-list">${r.domains.map((x,i)=>`<div class="domain-row"><span class="domain-rank">${i+1}</span><div><div class="domain-label"><strong>${E(x.domain)}</strong><span>${bytes(x.bytes)}</span></div><div class="domain-track"><i style="width:${100*x.bytes/Math.max(1,r.total)}%"></i></div></div></div>`).join('')||'<p class="hint empty-usage">No recorded downloads in this period yet. Completed transfers with byte progress will appear here.</p>'}</div><p class="hint">${E(r.note)}</p>`;
+  const bars=r.series.map((p,i)=>{const height=140*p.bytes/peak,x=i*barWidth+3;return `<g><title>${E(p.label)} UTC: ↓ ${bytes(p.bytes)} · ↑ ${bytes(p.uploaded||0)}</title><rect class="usage-bar" x="${x}" y="${160-height}" width="${Math.max(1,(barWidth-6)/2)}" height="${Math.max(2,height)}" rx="3"/><rect class="usage-upload" x="${x+(barWidth-6)/2}" y="${160-140*(p.uploaded||0)/peak}" width="${Math.max(1,(barWidth-6)/2)}" height="${140*(p.uploaded||0)/peak}" rx="3"/>${i%Math.ceil(r.series.length/8)===0?`<text x="${x}" y="184">${E(short(p.label))}</text>`:''}</g>`;}).join('');
+  $('#usageReport').innerHTML=`<div class="usage-summary"><div><span>↓ Downloaded</span><strong>${bytes(r.total)}</strong></div><div><span class="upload-color">↑ Uploaded</span><strong>${bytes(r.uploaded||0)}</strong></div><div><span>Calendar period</span><strong class="usage-period">${E(r.since)} <small>UTC</small></strong></div></div><div class="usage-chart"><div class="chart-caption"><span>Blue: download · Amber: upload</span><span>Peak ${bytes(peak===1?0:peak)}</span></div><svg viewBox="0 0 600 200" role="img" aria-label="Recorded download payload by ${period==='day'?'hour':period==='year'?'month':'day'}"><line x1="0" y1="162" x2="600" y2="162"/>${bars}</svg></div><h3>By website</h3><div class="domain-list">${r.domains.map((x,i)=>`<div class="domain-row"><span class="domain-rank">${i+1}</span><div><div class="domain-label"><strong>${E(x.domain)}</strong><span>↓ ${bytes(x.bytes)} · ↑ ${bytes(x.uploaded||0)}</span></div><div class="domain-track"><i style="width:${100*x.bytes/Math.max(1,r.total)}%"></i></div></div></div>`).join('')||'<p class="hint empty-usage">No recorded downloads in this period yet. Completed transfers with byte progress will appear here.</p>'}</div><p class="hint">${E(r.note)}</p>`;
 }
 $('#usagePeriod').onchange=()=>action(loadUsage);
 let packageTimer;
@@ -483,7 +487,8 @@ function reconcileJobs(html){
   }
   for(const node of [...list.children])if(!wanted.has(node.dataset.progressJob))node.remove();
 }
-function updateLinkCount(){const n=$('#downloadForm [name=urls]').value.split(/\r?\n/).filter(s=>s.trim()).length;const output=$('#linkCount');output.textContent=n+' '+(n===1?'link':'links');output.classList.toggle('over-limit',n>100);}
+function cleanLinks(text){const seen=new Set();return (text.match(/https?:\/\/[^\s<>"']+/gi)||[]).map(x=>x.replace(/[.,;!?)\]}]+$/g,'')).filter(x=>{try{const u=new URL(x);u.hash='';if(!u.hostname||u.username||u.password)return false;const key=u.href;if(seen.has(key))return false;seen.add(key);return true;}catch{return false;}});}
+function updateLinkCount(){const n=cleanLinks($('#downloadForm [name=urls]').value).length;const output=$('#linkCount');output.textContent=n+' '+(n===1?'link':'links');output.classList.toggle('over-limit',n>100);}
 $('#downloadForm [name=urls]').addEventListener('input',updateLinkCount);
 for(const dialog of $$('dialog')){
   let outside=false;
@@ -497,6 +502,8 @@ const settingGroups={
     ['simultaneous_downloads','Concurrent downloads','jobs','Browser downloads always run one at a time. Default: 1.'],
     ['reserve_gib','Keep SSD space free','GiB','Pause new downloads before the SSD fills up.'],
     ['media_kib','Website speed limit','speed','Per active website download; 0 means unlimited.'],
+    ['torrent_memory_mib','Torrent memory ceiling','MiB','128–1536 MiB. This is a ceiling, not preallocated memory.'],
+    ['torrent_concurrency','Active torrent downloads','count','Keep low on the 2 GB ZedAir.'],
     ['torrent_down_kib','Torrent download limit','speed','Shared by all torrents.'],
     ['torrent_up_kib','Torrent upload limit','speed','At least 1 KiB/s.'],
     ['seed_ratio','Stop seeding at ratio','×','0 stops seeding after the download.'],

@@ -1,6 +1,6 @@
 # Zedair Download Desk
 
-**v2.1.3** · Ubuntu 24.04 · Python 3.12 · Built for a 2 GB headless laptop + USB SSD
+**v2.2.0** · Ubuntu 24.04 · Python 3.12 · Built for a 2 GB headless laptop + USB SSD
 
 Queue webpage links from your phone or computer. Zedair finds and downloads the media on the laptop, even after you close the browser.
 
@@ -22,9 +22,9 @@ sudo bash upgrade.sh
 - If Git reports local edits or a diverged branch, preserve and review them first. Do not force-reset the checkout.
 - The upgrader backs up app/state under `/var/backups/zedair`, installs into `/opt/zedair`, and checks startup. It restores the backup if its health check fails.
 - SSD downloads, saved cookies, accounts and queue history are preserved. Engine packages are updated separately.
-- Refresh with **Ctrl+F5**; the footer should show **v2.1.3**. Pulling source alone does not update the running app.
+- Refresh with **Ctrl+F5**; the footer should show **v2.2.0**. Pulling source alone does not update the running app.
 
-**This update:** ETA uses remaining bytes and the displayed transfer speed. Stale/unknown estimates are hidden, direct transfers use recent speed, and merging has a separate status. The blue and neutral theme is unchanged.
+**This update:** fixes live-style HLS downloads; adds cloud streaming, scheduled backups/reboots, torrent memory controls and upload accounting, thumbnails, uploads, duplicate cleanup and an activity journal. The blue theme is preserved. [New controls and limits](docs/storage-cloud.md).
 
 ## First installation
 
@@ -73,7 +73,7 @@ After installing a browser or speed-test engine, run `sudo systemctl restart zed
 | Settings | Sliders and switches autosave. Concurrency is **1–20**, default **1**; browser-based downloads always run one at a time. |
 | System / data usage | **Settings → System usage / Data usage**. Data usage is a partial payload estimate, not your ISP’s total. |
 
-**Hold queue** pauses media work and torrents. Pause retains partial downloads; clearing history does not delete completed files. M3U8/HLS is remuxed to MP4; GIF animation is encoded to MP4. Other video conversion copies compatible codecs without reducing resolution. If codecs cannot fit MP4, choose **Keep source container**.
+**Hold queue** pauses media work and torrents. Pause retains partial downloads; clearing history does not delete completed files. M3U8/HLS uses FFmpeg and is remuxed to MP4 when the stream ends; GIF animation is encoded to MP4. Other video conversion copies compatible codecs without reducing resolution. If codecs cannot fit MP4, choose **Keep source container**.
 
 ### Website sessions
 

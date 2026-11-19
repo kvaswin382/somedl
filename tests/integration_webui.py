@@ -65,7 +65,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.1.3')
+            expect(page.locator('#appVersion')).to_have_text('v2.2.0')
             original_theme(page)
             page.locator('[data-open=downloadDialog]').first.click()
             expect(page.locator('#downloadForm [name=container]')).to_have_value('mp4')
@@ -250,6 +250,31 @@ with sync_playwright() as pw:
             page.unroute('**/api/state');page.evaluate('() => refresh()')
             expect(page.locator('#connection')).not_to_have_class(__import__('re').compile('offline'))
             assert page.locator('#connection').evaluate('(el) => getComputedStyle(el).color')=='rgb(105, 215, 165)'
+            # New controls keep the existing palette and work in the real DOM.
+            page.locator('[data-settings-tab=system]').click()
+            page.locator('#showProcesses').check()
+            expect(page.locator('#processList table')).to_be_visible()
+            assert page.locator('#processList [data-stop-task]').count()==0
+            page.locator('[data-settings-tab=activity]').click()
+            expect(page.locator('#activityList')).to_contain_text('web /api/')
+            page.locator('[data-settings-tab=backup]').click()
+            expect(page.locator('#backupForm')).to_be_visible()
+            page.locator('#backupForm [name=repeat]').select_option('weekly')
+            expect(page.locator('#backupForm [name=weekday]')).to_be_visible()
+            no_overflow(page);screenshot(page,'cloud-mobile-dark')
+            page.locator('[data-page=queue]').click()
+            page.locator('[data-open=downloadDialog]').first.click()
+            page.locator('#downloadForm [name=urls]').fill('noise https://example.com/a https://example.com/a and text https://example.com/b.')
+            expect(page.locator('#linkCount')).to_have_text('2 links')
+            page.locator('#downloadDialog [data-close]').click()
+            page.locator('[data-page=files]').click()
+            page.locator('#uploadFiles').set_input_files([{'name':'fixture.txt','mimeType':'text/plain','buffer':b'uploaded bytes'}])
+            expect(page.locator('#uploadProgress')).to_contain_text('Uploaded')
+            assert (desk.root/'fixture.txt').read_bytes()==b'uploaded bytes'
+            page.locator('[data-select-file="fixture.txt"]').check()
+            page.locator('#deleteSelected').click();page.locator('#messageAccept').click()
+            expect(page.locator('[data-select-file="fixture.txt"]')).to_have_count(0)
+            assert not (desk.root/'fixture.txt').exists()
             assert not errors,errors
             print('PASS: original blue/neutral light and dark palettes, centered settings, border-free slider tracks and compact engine rows verified; real UI verified default MP4, live link count, stable single favicon, range autosave 1–20 step 1, masked token, release-aware engine cards, usage chart, exact highlight share, backdrop dismissal and mobile/dark layouts without overflow.')
         finally:
