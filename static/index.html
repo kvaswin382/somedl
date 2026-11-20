@@ -78,5 +78,5 @@ sudo umount /srv/zedair-ssd</pre><p class="hint">Reconnect: follow the “Using 
 <dialog id="remoteDialog"><div class="dialog-heading"><h2>Choose remote folder</h2><button type="button" class="icon-button" data-close>×</button></div><p id="remoteLocation" class="hint"></p><div class="dialog-actions"><button id="remoteUp" class="secondary compact">↑ Parent</button><button id="remoteMkdir" class="secondary compact">New folder</button></div><div id="remoteFolders" class="remote-folders"></div><button id="remoteChoose" class="primary">Use this folder</button></dialog>
 <dialog id="remoteConfigDialog"><form id="remoteConfigForm"><div class="dialog-heading"><h2>Add cloud remote</h2><button type="button" class="icon-button" data-close>×</button></div><div id="remoteConfigFields"></div><p id="remoteConfigError" class="form-error"></p><button type="submit" class="primary">Continue</button></form></dialog>
 <input type="file" id="cookieFile" accept=".txt,text/plain" hidden>
-<div id="toast" role="status" hidden></div>
+<div id="toast" role="status" aria-live="polite" aria-atomic="true" popover="manual" hidden><div class="toast-content"><strong id="toastLabel"></strong><span id="toastText"></span></div><button id="toastClose" type="button" aria-label="Dismiss notification">×</button></div>
 </body></html>

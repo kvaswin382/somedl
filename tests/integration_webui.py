@@ -8,10 +8,10 @@ import platforms
 import maintenance
 
 ARTIFACTS=Path('test-artifacts')
-def screenshot(page,name):
+def screenshot(page,name,keep_toast=False):
     if os.getenv('ZEDAIR_REQUIRE_BROWSER')!='1':return
     ARTIFACTS.mkdir(exist_ok=True)
-    page.locator('#toast').evaluate('(el) => { el.hidden=true; }')
+    if not keep_toast:page.evaluate('() => hideToast()')
     raw=page.screenshot(path=str(ARTIFACTS/(name+'.jpg')),type='jpeg',quality=55,full_page=False,animations='disabled')
     if os.getenv('ZEDAIR_SCREENSHOT_LOGS')=='1':print('ZEDSCREEN '+name+' '+base64.b64encode(raw).decode(),flush=True)
 def no_overflow(page):
@@ -65,8 +65,49 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.2.2')
+            expect(page.locator('#appVersion')).to_have_text('v2.2.3')
             original_theme(page)
+            # Toasts stay at the top and above nested modal backdrops, without stealing focus.
+            for width,dark in [(1360,False),(1360,True),(390,False),(390,True)]:
+                page.set_viewport_size({'width':width,'height':940 if width>760 else 844})
+                page.evaluate('(dark) => document.body.classList.toggle("dark",dark)',dark)
+                page.evaluate('() => openDialog("downloadDialog")')
+                field=page.locator('#downloadForm [name=urls]');field.focus()
+                page.evaluate('() => action(async()=>{throw Error("Fixture download failed")})')
+                notice=page.locator('#toast')
+                expect(notice).to_have_attribute('data-type','error');expect(notice).to_have_attribute('role','alert')
+                expect(field).to_be_focused()
+                def top_notice():
+                    expect(notice).to_be_visible()
+                    geometry=notice.evaluate("""el => {const r=el.getBoundingClientRect(),s=getComputedStyle(el);return {
+                        x:r.x,y:r.y,right:r.right,z:s.zIndex,
+                        above:el.contains(document.elementFromPoint(r.x+12,r.y+12)),
+                        layer:el.matches(':popover-open'),fg:s.color,bg:s.backgroundColor};}""")
+                    assert 0<=geometry['y']<=20 and geometry['x']>=0 and geometry['right']<=width,geometry
+                    assert geometry['z']=='2147483647' and geometry['above'] and geometry['layer'],geometry
+                    assert geometry['fg']!=geometry['bg']
+                    return geometry['bg']
+                top_notice()
+                screenshot(page,f'toast-{width}-{"dark" if dark else "light"}',keep_toast=True)
+                page.evaluate('() => openDialog("messageDialog")');top_notice()
+                assert notice.evaluate('(el)=>el.parentElement.id')=='messageDialog'
+                page.evaluate('() => closeDialog(document.querySelector("#messageDialog"))');top_notice()
+                assert notice.evaluate('(el)=>el.parentElement.id')=='downloadDialog'
+                colours=[]
+                for kind in ['success','error','warning','info']:
+                    page.evaluate('(kind)=>toast("A notification that remains readable over this dialog",kind)',kind)
+                    colours.append(top_notice())
+                    expect(page.locator('#toastLabel')).to_have_text(kind.title())
+                assert len(set(colours))==4
+                page.locator('#toastClose').click();expect(notice).not_to_be_visible()
+                expect(page.locator('#downloadDialog')).to_be_visible()
+                page.locator('#downloadForm button[type=submit]').click()
+                expect(notice).to_have_attribute('data-type','warning');top_notice()
+                page.evaluate('() => closeDialog(document.querySelector("#downloadDialog"))');top_notice()
+                assert notice.evaluate('(el)=>el.parentElement===document.body')
+                page.evaluate('() => hideToast()')
+            page.set_viewport_size({'width':1360,'height':940})
+            page.evaluate('() => {document.body.classList.remove("dark");scrollTo(0,0)}')
             page.locator('[data-open=downloadDialog]').first.click()
             expect(page.locator('#downloadForm [name=container]')).to_have_value('mp4')
             page.locator('#downloadForm [name=urls]').fill('https://files.example.com/photo.jpg\nhttps://example.net/master.m3u8')

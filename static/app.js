@@ -30,22 +30,45 @@ function transferInfo(j){
 }
 const labels = {running:'Downloading',queued:'Queued',retry:'Retry waiting',blocked:'Waiting for SSD',paused:'Paused',done:'Finished',error:'Needs attention',cancelled:'Cancelled'};
 const symbols = {video:'↙',instagram:'▦',threads:'@'};
-function toast(text){ $('#toast').textContent=text; $('#toast').hidden=false; clearTimeout(toastTimer); toastTimer=setTimeout(()=>$('#toast').hidden=true,7000); }
+const toastLabels={success:'Success',error:'Error',warning:'Warning',info:'Info'};
+let toastDialogs=[];
+function hideToast(){
+  const el=$('#toast');clearTimeout(toastTimer);
+  if(typeof el.hidePopover==='function'&&el.matches(':popover-open'))el.hidePopover();
+  el.hidden=true;
+}
+function raiseToast(){
+  const el=$('#toast');if(el.hidden)return;
+  toastDialogs=toastDialogs.filter(dialog=>dialog.open);
+  const parent=toastDialogs.at(-1)||document.body;
+  if(typeof el.hidePopover==='function'&&el.matches(':popover-open'))el.hidePopover();
+  if(el.parentElement!==parent)parent.appendChild(el);
+  if(typeof el.showPopover==='function')el.showPopover();
+  else el.removeAttribute('popover');
+}
+function toast(text,type='success'){
+  const el=$('#toast');type=Object.hasOwn(toastLabels,type)?type:'info';
+  el.dataset.type=type;el.setAttribute('role',type==='error'?'alert':'status');
+  el.setAttribute('aria-live',type==='error'?'assertive':'polite');
+  $('#toastLabel').textContent=toastLabels[type];$('#toastText').textContent=String(text??'');
+  el.hidden=false;raiseToast();clearTimeout(toastTimer);toastTimer=setTimeout(hideToast,7000);
+}
+$('#toastClose').onclick=hideToast;
 async function api(path, data, options={}){
   const response=await fetch('/api/'+path,{signal:options.signal,method:data===undefined?'GET':'POST',cache:'no-store',headers:data===undefined?{}:{'Content-Type':'application/json','X-Zedair-CSRF':csrf},body:data===undefined?undefined:JSON.stringify(data)});
   const result=await response.json();
   if(!response.ok){ if(response.status===401&&!path.startsWith('login')) await showAuth(); throw new Error(result.error||'Request failed'); }
   return result;
 }
-async function action(fn){ try{await fn();}catch(error){toast(error.message);} }
-function openDialog(id){const dialog=$('#'+id);for(const form of $$('form',dialog))form.noValidate=true; if(!dialog.open)dialog.showModal();}
-function closeDialog(dialog){if(dialog.id==='previewDialog')clearPreview();dialog.close();}
+async function action(fn){ try{await fn();}catch(error){toast(error.message,'error');} }
+function openDialog(id){const dialog=$('#'+id);for(const form of $$('form',dialog))form.noValidate=true; if(!dialog.open)dialog.showModal();toastDialogs=toastDialogs.filter(d=>d!==dialog);toastDialogs.push(dialog);raiseToast();}
+function closeDialog(dialog){if(dialog.id==='previewDialog')clearPreview();dialog.close();raiseToast();}
 function uiMessage(text,{title='Confirm',accept='Confirm',input=false,danger=false}={}){
   if($('#messageDialog').open)return Promise.resolve(input?null:false);
   $('#messageTitle').textContent=title;$('#messageText').textContent=text;$('#messageAccept').textContent=accept;
   $('#messageAccept').classList.toggle('danger',danger);$('#messageInputLabel').hidden=!input;$('#messageInput').value='';
   return new Promise(resolve=>{const dialog=$('#messageDialog');let result=input?null:false;
-    $('#messageForm').onsubmit=event=>{event.preventDefault();if(input&&!$('#messageInput').value.trim()){toast('Enter a folder name.');$('#messageInput').focus();return;}result=input?$('#messageInput').value.trim():true;dialog.close();};
+    $('#messageForm').onsubmit=event=>{event.preventDefault();if(input&&!$('#messageInput').value.trim()){toast('Enter a folder name.','warning');$('#messageInput').focus();return;}result=input?$('#messageInput').value.trim():true;dialog.close();};
     $('#messageCancel').onclick=()=>dialog.close();dialog.addEventListener('close',()=>resolve(result),{once:true});
     openDialog('messageDialog');(input?$('#messageInput'):$('#messageCancel')).focus();
   });
@@ -268,7 +291,7 @@ $('#filesUp').onclick=()=>action(async()=>{filePath=parent(filePath);await loadF
 $('#refreshFiles').onclick=()=>action(loadFiles);
 $('#newFileFolder').onclick=()=>action(async()=>{const name=await uiMessage('Create inside Zedair/'+filePath,{title:'New folder',accept:'Create folder',input:true});if(!name)return;await api('folders',{path:join(filePath,name.trim())});await loadFiles();});
 $('#holdBtn').onclick=()=>action(async()=>{await api('hold',{hold:!state.settings.hold});await refresh();});
-$('#unplugBtn').onclick=()=>action(async()=>{await api('hold',{hold:true});await refresh();toast('Queue held. Run the stop and unmount commands before unplugging.');});
+$('#unplugBtn').onclick=()=>action(async()=>{await api('hold',{hold:true});await refresh();toast('Queue held. Run the stop and unmount commands before unplugging.','warning');});
 $('#logoutBtn').onclick=()=>action(async()=>{await api('logout',{});await showAuth();});
 $('#themeBtn').onclick=()=>{document.body.classList.toggle('dark');localStorage.setItem('zedair-theme',document.body.classList.contains('dark')?'dark':'light');};
 if(localStorage.getItem('zedair-theme')==='dark')document.body.classList.add('dark');
@@ -357,7 +380,7 @@ async function showPreview(path,kind){
   element.addEventListener('error',()=>$('#previewError').hidden=false,{once:true});
   $('.preview-stage').appendChild(element);openDialog('previewDialog');fitPreview();
   $('#previewPrev').disabled=true;$('#previewNext').disabled=true;
-  try{const adjacent=await adjacentPreview(path,0);if(request!==previewRequest)return;$('#previewPrev').disabled=!adjacent.previous;$('#previewNext').disabled=!adjacent.next;}catch(error){toast(error.message);}
+  try{const adjacent=await adjacentPreview(path,0);if(request!==previewRequest)return;$('#previewPrev').disabled=!adjacent.previous;$('#previewNext').disabled=!adjacent.next;}catch(error){toast(error.message,'error');}
 }
 function clearPreview(){const media=$('video,audio',$('#previewBody'));if(media){media.pause();media.removeAttribute('src');media.load();}$('#previewBody').replaceChildren();}
 $('#previewDialog').addEventListener('close',()=>{previewRequest++;clearPreview();});
@@ -406,7 +429,7 @@ async function renderSystem(){
 }
 
 async function adjacentPreview(path,direction){return api('folders?path='+encodeURIComponent(parent(path))+'&sort='+fileSort.split('-')[0]+'&order='+fileSort.split('-')[1]+'&adjacent='+encodeURIComponent(path.split('/').pop())+'&direction='+direction);}
-async function stepPreview(direction){if(previewBusy)return;previewBusy=true;try{const path=previewPath;const result=await adjacentPreview(path,direction);if(path!==previewPath||!$('#previewDialog').open)return;if(result.entry)await showPreview(join(parent(path),result.entry.name),result.entry.preview);}catch(error){toast(error.message);}finally{previewBusy=false;}}
+async function stepPreview(direction){if(previewBusy)return;previewBusy=true;try{const path=previewPath;const result=await adjacentPreview(path,direction);if(path!==previewPath||!$('#previewDialog').open)return;if(result.entry)await showPreview(join(parent(path),result.entry.name),result.entry.preview);}catch(error){toast(error.message,'error');}finally{previewBusy=false;}}
 $('#previewPrev').onclick=()=>stepPreview(-1);$('#previewNext').onclick=()=>stepPreview(1);
 document.addEventListener('keydown',event=>{if(!$('#previewDialog').open||!['ArrowLeft','ArrowRight'].includes(event.key)||event.target.matches('input,textarea,select'))return;event.preventDefault();stepPreview(event.key==='ArrowLeft'?-1:1);});
 
@@ -418,7 +441,7 @@ function renderSelection(){
   $('#selectPageFiles').checked=!!visible.length&&n===visible.length;$('#selectPageFiles').indeterminate=n>0&&n<visible.length;$('#selectPageFiles').disabled=!visible.length;
 }
 document.addEventListener('change',event=>{const el=event.target;if(!el.matches('[data-select-file]'))return;
-  if(el.checked&&selectedFiles.size>=100){el.checked=false;toast('Select up to 100 files at a time.');return;}
+  if(el.checked&&selectedFiles.size>=100){el.checked=false;toast('Select up to 100 files at a time.','warning');return;}
   if(el.checked)selectedFiles.set(el.dataset.selectFile,el.dataset.stamp);else selectedFiles.delete(el.dataset.selectFile);
   el.closest('article,.file-entry')?.classList.toggle('is-selected',el.checked);renderSelection();
 });
@@ -456,7 +479,7 @@ function fitPreview(){
 window.addEventListener('resize',fitPreview);
 // Use the application's status UI instead of native validation popups.
 for(const form of $$('form'))form.noValidate=true;
-document.addEventListener('submit',event=>{const form=event.target;form.noValidate=true;if(!form.checkValidity()){event.preventDefault();event.stopImmediatePropagation();const field=$(':invalid',form);toast(field?.validationMessage||'Check the form fields.');field?.focus();}},true);
+document.addEventListener('submit',event=>{const form=event.target;form.noValidate=true;if(!form.checkValidity()){event.preventDefault();event.stopImmediatePropagation();const field=$(':invalid',form);toast(field?.validationMessage||'Check the form fields.','warning');field?.focus();}},true);
 
 // Maintenance uses the same authenticated, CSRF-protected API as other settings.
 $('#retryAll').onclick=()=>action(async()=>{await api('jobs/retry-all',{});toast('Failed downloads queued for retry.');await refresh();});
@@ -494,11 +517,11 @@ async function loadPackages(check=false){
     `</tbody></table>${managed.some(p=>p.has_update)&&!r.update_available?'<p class="notice">Run upgrade.sh on the laptop to enable the managed updater.</p>':''}<details class="package-details"><summary>All Python packages (${r.packages.length})</summary><table><thead><tr><th>Package</th><th>Installed version</th></tr></thead><tbody>${r.packages.map(p=>`<tr><td>${E(p.name)}</td><td>${E(p.version)}</td></tr>`).join('')}</tbody></table></details><h3 class="tools-heading">Ubuntu-managed tools</h3><div class="system-tools">${r.system_tools.map(p=>`<div><strong>${E(p.name)}</strong><span>${E(p.version)}</span></div>`).join('')}</div>`+
     Object.entries(r.updates).map(([k,v])=>`<p class="hint">${E(k)}: ${E(v.status)} — ${E(v.detail)}</p>`).join('');
   renderTelegramStatus(r.telegram);
-  if(packageUpdatePending){const update=r.updates[packageUpdatePending.name];if(update&&update.time>=packageUpdatePending.since&&['done','error'].includes(update.status)){toast(update.detail);packageUpdatePending=null;}}
+  if(packageUpdatePending){const update=r.updates[packageUpdatePending.name];if(update&&update.time>=packageUpdatePending.since&&['done','error'].includes(update.status)){toast(update.detail,update.status==='error'?'error':'success');packageUpdatePending=null;}}
   if((r.checking||packageUpdatePending||Object.values(r.updates).some(x=>x.status==='running'))&&page==='settings'&&settingsTab==='engines')packageTimer=setTimeout(()=>action(()=>loadPackages()),2000);
 }
 $('#loadPackages').onclick=()=>action(()=>loadPackages(true));
-document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.updatePackage)action(async()=>{if(!await uiMessage('Update '+b.dataset.updatePackage+'? Downloads pause while the service updates and restarts.'))return;const name=b.dataset.updatePackage;b.disabled=true;try{const since=Date.now()/1000-2;const r=await api('engines/update',{package:name});packageUpdatePending={name,since};toast(r.message);await loadPackages();}finally{b.disabled=false;}});});
+document.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.updatePackage)action(async()=>{if(!await uiMessage('Update '+b.dataset.updatePackage+'? Downloads pause while the service updates and restarts.'))return;const name=b.dataset.updatePackage;b.disabled=true;try{const since=Date.now()/1000-2;const r=await api('engines/update',{package:name});packageUpdatePending={name,since};toast(r.message,'info');await loadPackages();}finally{b.disabled=false;}});});
 
 // Keep each icon element alive across polling; update only changed row content.
 function reconcileJobs(html){
@@ -521,6 +544,7 @@ for(const dialog of $$('dialog')){
   const isOutside=e=>{const r=dialog.getBoundingClientRect();return e.target===dialog&&(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom);};
   dialog.addEventListener('pointerdown',e=>{outside=isOutside(e);});
   dialog.addEventListener('pointerup',e=>{if(outside&&isOutside(e))closeDialog(dialog);outside=false;});
+  dialog.addEventListener('close',raiseToast);
   dialog.addEventListener('cancel',()=>{if(dialog.id==='previewDialog')clearPreview();});
 }
 const settingGroups={
@@ -572,7 +596,7 @@ $('#settingsForm').addEventListener('change',e=>{
     if(savingSettings.get(name)!==ticket)return;
     const previous=state.settings[name];
     try{await api('settings',{[name]:value});state.settings[name]=value;}
-    catch(error){if(savingSettings.get(name)===ticket){if(field.type==='checkbox')field.checked=previous;else setRange(field,previous);}$('#settingsSaveStatus').classList.add('save-error');toast('Could not save '+name.replaceAll('_',' ')+': '+error.message);}
+    catch(error){if(savingSettings.get(name)===ticket){if(field.type==='checkbox')field.checked=previous;else setRange(field,previous);}$('#settingsSaveStatus').classList.add('save-error');toast('Could not save '+name.replaceAll('_',' ')+': '+error.message,'error');}
     finally{if(savingSettings.get(name)===ticket)savingSettings.delete(name);if(!savingSettings.size)$('#settingsSaveStatus').textContent=$('#settingsSaveStatus').classList.contains('save-error')?'Save failed · try again':'Saved automatically';}
   });
 });

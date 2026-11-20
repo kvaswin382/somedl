@@ -1,3 +1,7 @@
+# v2.2.3 toast visibility
+
+Toasts are fixed at the top with z-index 2147483647 and use the browser top layer above native dialogs. They follow the most recently opened dialog and return to the page when it closes. Success/error/warning/info have distinct green/red/amber/blue palettes in both themes, text labels, live announcements and a dismiss button. Error and validation call sites select their type explicitly. The browser fixture checks foreground hit-testing, nested dialogs, focus preservation, dismissal and distinct colours on desktop/mobile in both themes.
+
 # v2.2.2 stability validation
 
 Regression coverage exercises asynchronous duplicate deletion and progress, cancellation before removal, batch ownership checks, responsive folder/task reads while verification is waiting, concurrency reduction with reserved worker slots, and settings saves independent of Transmission availability. File-browser tests check metadata work is limited to the visible page and preview polling does not rescan directories. Corrupt videos are backed off so later files can get previews. Idle torrent counters no longer cause database writes.
