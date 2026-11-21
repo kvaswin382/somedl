@@ -1,5 +1,5 @@
 """Real browser regression tests with an isolated app, fake sessions and no workers."""
-import base64,os,sys,tempfile,threading,time
+import base64,os,re,sys,tempfile,threading,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from playwright.sync_api import sync_playwright,expect
@@ -65,7 +65,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.2.3')
+            expect(page.locator('#appVersion')).to_have_text('v2.2.4')
             original_theme(page)
             # Toasts stay at the top and above nested modal backdrops, without stealing focus.
             for width,dark in [(1360,False),(1360,True),(390,False),(390,True)]:
@@ -359,9 +359,22 @@ with sync_playwright() as pw:
             expect(page.locator('#linkCount')).to_have_text('2 links')
             page.locator('#downloadDialog [data-close]').click()
             page.locator('[data-page=files]').click()
-            page.locator('#uploadFiles').set_input_files([{'name':'fixture.txt','mimeType':'text/plain','buffer':b'uploaded bytes'}])
-            expect(page.locator('#uploadProgress')).to_contain_text('Uploaded')
+            upload_chunks=[]
+            def capture_upload(request):
+                if request.url.endswith('/api/files/upload') and request.headers.get('content-type')=='application/octet-stream':
+                    upload_chunks.append((int(request.headers['x-zedair-offset']),len(request.post_data_buffer)))
+            page.on('request',capture_upload)
+            binary=bytes(range(256))*(4*1024*1024//256)+b'final chunk'
+            page.locator('#uploadFiles').set_input_files([
+                {'name':'fixture.txt','mimeType':'text/plain','buffer':b'uploaded bytes'},
+                {'name':'binary.bin','mimeType':'application/octet-stream','buffer':binary},
+                {'name':'empty.txt','mimeType':'text/plain','buffer':b''}])
+            expect(page.locator('#uploadProgress .upload-row span')).to_have_text([re.compile(r'^Uploaded · .+/s average$'),re.compile(r'^Uploaded · .+/s average$'),'Uploaded'])
+            expect(page.locator('#uploadFiles')).to_be_enabled()
             assert (desk.root/'fixture.txt').read_bytes()==b'uploaded bytes'
+            assert (desk.root/'binary.bin').read_bytes()==binary and (desk.root/'empty.txt').stat().st_size==0
+            assert upload_chunks==[(0,14),(0,4*1024*1024),(4*1024*1024,11)],upload_chunks
+            page.remove_listener('request',capture_upload)
             page.locator('[data-select-file="fixture.txt"]').check()
             page.locator('#deleteSelected').click();page.locator('#messageAccept').click()
             expect(page.locator('[data-select-file="fixture.txt"]')).to_have_count(0)

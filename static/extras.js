@@ -103,17 +103,59 @@ async function reviewDuplicates(id){
   });
 }
 $('#deleteSelected').onclick=()=>action(async()=>{if(!await uiMessage(`Permanently delete ${selectedFiles.size} selected files?`,{danger:true,accept:'Delete files'}))return;await api('files/delete',{files:[...selectedFiles].map(([path,stamp])=>({path,stamp})),confirm:true});selectedFiles.clear();await loadFiles();});
+function uploadChunk(id,offset,blob,progress){
+  return new Promise((resolve,reject)=>{
+    const xhr=new XMLHttpRequest();
+    xhr.upload.onprogress=e=>progress(Math.min(e.loaded,blob.size));
+    xhr.open('POST','/api/files/upload');xhr.responseType='json';xhr.timeout=120000;
+    xhr.setRequestHeader('Content-Type','application/octet-stream');
+    xhr.setRequestHeader('X-Zedair-CSRF',csrf);xhr.setRequestHeader('X-Zedair-Upload',id);
+    xhr.setRequestHeader('X-Zedair-Offset',String(offset));
+    xhr.onload=()=>{
+      const result=xhr.response;
+      if(xhr.status<200||xhr.status>=300){reject(Error(result?.error||'Upload failed (HTTP '+xhr.status+')'));return;}
+      if(result?.offset!==offset+blob.size){reject(Error('Server acknowledged an unexpected upload offset'));return;}
+      resolve(result);
+    };
+    xhr.onerror=()=>reject(Error('Upload connection lost. Check your connection to ZedAir.'));
+    xhr.ontimeout=()=>reject(Error('Upload timed out waiting for ZedAir.'));
+    xhr.onabort=()=>reject(Error('Upload cancelled.'));
+    xhr.send(blob);
+  });
+}
+let uploadingFiles=false;
 $('#uploadFiles').onchange=e=>action(async()=>{
-  const files=[...e.target.files];e.target.value='';if(files.length>20)throw Error('Upload up to 20 files at a time.');
-  const folder=filePath;$('#uploadProgress').innerHTML=files.map((f,i)=>`<div class="upload-row" id="upload-${i}"><strong>${E(f.name)}</strong><progress max="100" value="0"></progress><span>Waiting</span></div>`).join('');
-  for(let i=0;i<files.length;i++){
-    const file=files[i],row=$('#upload-'+i),label=$('span',row);let id;
-    try{const r=await api('files/upload',{action:'start',folder,name:file.name,size:file.size});id=r.id;
-      for(let offset=0;offset<file.size;){const array=new Uint8Array(await file.slice(offset,offset+1024*1024).arrayBuffer());let binary='';for(let n=0;n<array.length;n+=8192)binary+=String.fromCharCode(...array.subarray(n,n+8192));const result=await api('files/upload',{action:'chunk',id,offset,data:btoa(binary)});offset=result.offset;$('progress',row).value=100*offset/file.size;label.textContent=bytes(offset)+' / '+bytes(file.size);}
-      await api('files/upload',{action:'finish',id});$('progress',row).value=100;label.textContent='Uploaded';
-    }catch(error){label.textContent=error.message;if(id)try{await api('files/upload',{action:'cancel',id});}catch{}}
-  }
-  if(page==='files')await loadFiles();
+  const input=e.target,files=[...input.files];input.value='';
+  if(uploadingFiles)throw Error('Wait for the current uploads to finish.');
+  if(files.length>20)throw Error('Upload up to 20 files at a time.');
+  if(!files.length)return;
+  uploadingFiles=true;input.disabled=true;
+  const folder=filePath;
+  try{
+    $('#uploadProgress').innerHTML=files.map((f,i)=>`<div class="upload-row" id="upload-${i}"><strong>${E(f.name)}</strong><progress max="100" value="0"></progress><span>Waiting</span></div>`).join('');
+    for(let i=0;i<files.length;i++){
+      const file=files[i],row=$('#upload-'+i),label=$('span',row),bar=$('progress',row);let id;
+      try{
+        const r=await api('files/upload',{action:'start',folder,name:file.name,size:file.size});id=r.id;
+        if(!Number.isInteger(r.chunk_bytes)||r.chunk_bytes<1)throw Error('Refresh the page after updating ZedAir to enable binary uploads.');
+        const chunkBytes=Math.min(r.chunk_bytes,4*1024*1024),started=performance.now();
+        const update=sent=>{
+          bar.value=file.size?100*sent/file.size:0;
+          const elapsed=(performance.now()-started)/1000;
+          label.textContent=bytes(sent)+' / '+bytes(file.size)+(elapsed>=0.25?' · '+bytes(sent/elapsed)+'/s':'');
+        };
+        for(let offset=0;offset<file.size;){
+          const blob=file.slice(offset,offset+chunkBytes);
+          const result=await uploadChunk(id,offset,blob,loaded=>update(offset+loaded));
+          offset=result.offset;update(offset);
+        }
+        label.textContent='Saving to SSD…';
+        await api('files/upload',{action:'finish',id});bar.value=100;
+        label.textContent='Uploaded'+(file.size?' · '+bytes(file.size/Math.max(.001,(performance.now()-started)/1000))+'/s average':'');
+      }catch(error){label.textContent=error.message;if(id)try{await api('files/upload',{action:'cancel',id});}catch{}}
+    }
+    if(page==='files')await loadFiles();
+  }finally{uploadingFiles=false;input.disabled=false;}
 });
 async function loadProcesses(){
   if(!$('#showProcesses').checked)return;const r=await api('processes');

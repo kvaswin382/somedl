@@ -14,6 +14,7 @@ from activities import record
 
 VIDEO={'.mp4','.mkv','.webm','.mov','.m4v','.avi','.ts'}
 IMAGE={'.jpg','.jpeg','.png','.webp'}
+UPLOAD_CHUNK_BYTES=4*1024*1024
 
 
 def stamp(p):
@@ -142,7 +143,7 @@ def delete_batch(desk,data):
     return {'removed':len(paths)}
 
 
-def upload(desk,data):
+def upload(desk,data,block=None):
     action=data.get('action');key=data.get('id','')
     with desk.file_lock,desk.lock,desk.tasks.lock:
         if action=='start':
@@ -161,7 +162,7 @@ def upload(desk,data):
             key=secrets.token_hex(16);temp=folder/('.zedair-upload-'+key)
             with temp.open('xb'):pass
             desk.tasks.uploads[key]={'folder':folder,'temp':temp,'name':name,'size':size,'offset':0,'updated':time.time()}
-            record(desk,'upload started',name);return {'id':key,'offset':0}
+            record(desk,'upload started',name);return {'id':key,'offset':0,'chunk_bytes':UPLOAD_CHUNK_BYTES}
         item=desk.tasks.uploads.get(key)
         if not item:raise ValueError('Upload expired; start again')
         temp=item['temp'];desk.destination(item['folder'].relative_to(desk.root).as_posix(),reserve=action=='chunk')
@@ -169,8 +170,9 @@ def upload(desk,data):
             temp.unlink(missing_ok=True);del desk.tasks.uploads[key];return {'cancelled':True}
         if action=='chunk':
             if data.get('offset')!=item['offset']:raise ValueError('Upload offset mismatch; retry from the acknowledged offset')
-            block=base64.b64decode(data.get('data',''),validate=True)
-            if not 0<len(block)<=1024*1024 or item['offset']+len(block)>item['size']:raise ValueError('Invalid upload chunk')
+            limit=UPLOAD_CHUNK_BYTES if block is not None else 1024*1024
+            if block is None:block=base64.b64decode(data.get('data',''),validate=True)
+            if not isinstance(block,bytes) or not 0<len(block)<=limit or item['offset']+len(block)>item['size']:raise ValueError('Invalid upload chunk')
             if temp.is_symlink() or temp.stat().st_size!=item['offset']:raise ValueError('Upload file changed')
             with temp.open('ab') as out:out.write(block)
             item['offset']+=len(block);item['updated']=time.time();return {'offset':item['offset']}

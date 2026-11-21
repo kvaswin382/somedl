@@ -1,3 +1,9 @@
+# v2.2.4 file uploads
+
+Replaced browser Base64/JSON conversion per 1 MiB with raw binary chunks of at most 4 MiB, sent directly from file slices. Uploads show byte progress, average speed, and a separate saving phase; the file picker is disabled during a batch to prevent overlapping progress rows. JSON control requests and legacy 1 MiB chunks remain supported. No transfer sleeps or bandwidth cap are used. Network reads happen before global storage locks, with authentication/CSRF/origin checks and fixed body bounds. Partial chunks are rejected before appending, offsets and free space remain checked, and publication still flushes the file without overwriting an existing filename.
+
+Five real HTTP regressions cover multi-chunk byte integrity/collisions/replayed offsets, authentication and body limits, interrupted reads, responsiveness during a slow read, and free-space rejection. The browser fixture uploads a multi-chunk binary, a text file and an empty file, checks exact saved bytes, request sizes and completed speed labels. These tests do not measure the user's Wi-Fi or Atom laptop throughput.
+
 # v2.2.3 toast visibility
 
 Toasts are fixed at the top with z-index 2147483647 and use the browser top layer above native dialogs. They follow the most recently opened dialog and return to the page when it closes. Success/error/warning/info have distinct green/red/amber/blue palettes in both themes, text labels, live announcements and a dismiss button. Error and validation call sites select their type explicitly. The browser fixture checks foreground hit-testing, nested dialogs, focus preservation, dismissal and distinct colours on desktop/mobile in both themes.

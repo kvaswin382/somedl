@@ -839,7 +839,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'telegram_result':self.get_setting('telegram_last_result',{}), 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.2.3', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.2.4', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def add_stories(self,data):
         from instagram_story import target
@@ -1289,6 +1289,25 @@ class Handler(BaseHTTPRequestHandler):
         if origin and urllib.parse.urlsplit(origin).netloc != self.headers.get('Host'):
             self.close_connection = True
             raise APIError('Cross-origin request refused', 403)
+        if path=='/api/files/upload' and self.headers.get('Content-Type','').split(';')[0].strip()=='application/octet-stream':
+            # Authenticate before accepting a bounded binary body. Never hold desk/file
+            # locks while waiting for the browser to send bytes over a slow connection.
+            from storage_tools import upload,UPLOAD_CHUNK_BYTES
+            keep_alive=not self.close_connection
+            self.close_connection=True  # Rejected/unread bodies must not become the next request.
+            self.require_session(mutation=True)
+            if d.get_setting('reboot_requested_at'):raise APIError('Scheduled reboot in progress; retry after reconnecting',409)
+            if self.headers.get('Transfer-Encoding'):raise APIError('Upload requires a fixed Content-Length',400)
+            lengths=self.headers.get_all('Content-Length',[])
+            if len(lengths)!=1 or not lengths[0].isdigit():raise APIError('Upload requires a valid Content-Length',411)
+            length=int(lengths[0])
+            if not 0<length<=UPLOAD_CHUNK_BYTES:raise APIError('Upload chunk is empty or too large',413)
+            key=self.headers.get('X-Zedair-Upload','');offset=self.headers.get('X-Zedair-Offset','')
+            if not re.fullmatch(r'[0-9a-f]{32}',key) or not re.fullmatch(r'\d{1,16}',offset):raise APIError('Invalid upload id or offset',400)
+            block=self.rfile.read(length)
+            if len(block)!=length:raise APIError('Upload interrupted before the complete chunk arrived',400)
+            self.close_connection=not keep_alive
+            self.reply(upload(d,{'action':'chunk','id':key,'offset':int(offset)},block=block));return
         data = self.read_json()
         if path in ('/api/setup', '/api/login'):
             d.throttle(self.client_address[0])
