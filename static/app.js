@@ -271,7 +271,58 @@ async function showTorrentFiles(id){
 }
 $('#authForm').addEventListener('submit',async event=>{event.preventDefault();const form=event.target;const button=$('button[type=submit]',form);button.disabled=true;$('#authError').textContent='';try{const data=Object.fromEntries(new FormData(form));await api(form.dataset.setup==='true'?'setup':'login',data);form.reset();await showAuth();}catch(error){$('#authError').textContent=error.message;}finally{button.disabled=false;}});
 $('#downloadForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target,data=Object.fromEntries(new FormData(form));data.urls=cleanLinks(data.urls);data.filename=form.filename.value.trim();data.folder_selected=form.folder_selected.checked;data.browser_fallback=form.browser_fallback.checked;data.playlist=form.playlist.checked;data.subtitles=form.subtitles.checked;const result=await api('jobs',data);closeDialog($('#downloadDialog'));form.urls.value='';updateLinkCount();toast(`${result.ids.length} download(s) queued${result.skipped?`; ${result.skipped} duplicate(s) skipped`:''}.`);await refresh();});});
-$('#torrentForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const form=event.target;const data={folder:form.folder.value,magnet:form.magnet.value.trim(),paused:form.paused.checked};if(!data.magnet){const file=form.torrent.files[0];if(!file)throw Error('Paste a magnet link or choose a .torrent file.');if(file.size>8*1024*1024)throw Error('Torrent file must be smaller than 8 MiB.');const array=new Uint8Array(await file.arrayBuffer());let binary='';for(let i=0;i<array.length;i+=8192)binary+=String.fromCharCode(...array.subarray(i,i+8192));data.metainfo=btoa(binary);}await api('torrents',data);closeDialog($('#torrentDialog'));form.reset();toast('Torrent added.');await setPage('torrents');await refresh();});});
+let torrentBatchBusy=false;
+const torrentFileInput=$('#torrentForm [name=torrent]');
+torrentFileInput.onchange=()=>{
+  const count=torrentFileInput.files.length;
+  $('#torrentFileCount').textContent=count?count+' file'+(count===1?'':'s')+' selected (maximum 20)':'No files selected';
+};
+$('#torrentForm').addEventListener('submit',event=>{event.preventDefault();action(async()=>{
+  if(torrentBatchBusy)return;
+  const form=event.target,files=[...form.torrent.files],magnet=form.magnet.value.trim();
+  if(magnet&&files.length)throw Error('Choose torrent files or paste a magnet link, not both.');
+  if(!magnet&&!files.length)throw Error('Paste a magnet link or choose up to 20 .torrent files.');
+  if(files.length>20)throw Error('Select up to 20 torrent files at a time.');
+  const items=magnet?[{name:'Magnet link'}]:files,base={folder:form.folder.value,paused:form.paused.checked};
+  const controls=$$('input,textarea,[data-browse],button[type=submit]',form);
+  torrentBatchBusy=true;controls.forEach(el=>el.disabled=true);
+  $('#torrentBatchResults').innerHTML=items.map((item,i)=>`<div class="torrent-batch-row" id="torrent-batch-${i}"><strong>${E(item.name)}</strong><span>Waiting</span></div>`).join('');
+  let added=0,skipped=0,failed=0;
+  try{
+    for(let i=0;i<items.length;i++){
+      const row=$('#torrent-batch-'+i),status=$('span',row),data={...base};
+      try{
+        row.dataset.status='running';status.textContent='Adding '+(i+1)+' of '+items.length+'…';
+        if(magnet)data.magnet=magnet;
+        else{
+          const file=items[i];
+          if(!/\.torrent$/i.test(file.name)||!file.size||file.size>8*1024*1024)throw Error('Choose a .torrent file between 1 byte and 8 MiB.');
+          const array=new Uint8Array(await file.arrayBuffer());let binary='';
+          for(let n=0;n<array.length;n+=8192)binary+=String.fromCharCode(...array.subarray(n,n+8192));
+          data.metainfo=btoa(binary);
+        }
+        let result=await api('torrents',data);
+        if(result.status==='duplicate'){
+          status.textContent='Already exists · waiting for your decision';
+          const message='“'+result.name+'” already exists. Download a fresh copy into Zedair/'+result.folder+'? This stops the existing torrent and switches its single queue entry to the new folder. Files in Zedair/'+result.old_folder+' are kept untouched. Current file selections are retained.';
+          const confirmed=await uiMessage(message,{title:'Torrent already exists',accept:result.paused?'Create paused copy':'Download fresh copy'});
+          if(!confirmed){
+            try{await api('torrents/duplicate-dismiss',{token:result.token});}catch{}
+            skipped++;row.dataset.status='skipped';status.textContent='Skipped · existing torrent unchanged';continue;
+          }
+          status.textContent='Preparing fresh copy…';
+          result=await api('torrents/fresh-copy',{token:result.token,confirm:true});
+        }
+        if(result.status!=='added')throw Error('Torrent engine did not confirm this addition.');
+        added++;row.dataset.status='done';status.textContent=result.paused?'Added paused':'Added to download queue';
+        if(result.fresh)status.textContent+=' · fresh copy: Zedair/'+result.folder;
+      }catch(error){failed++;row.dataset.status='error';status.textContent='Failed: '+error.message;}
+    }
+    toast(added+' added · '+skipped+' skipped · '+failed+' failed',failed?(added?'warning':'error'):'success');
+    form.torrent.value='';form.magnet.value='';torrentFileInput.onchange();
+    await setPage('torrents');await refresh();
+  }finally{torrentBatchBusy=false;controls.forEach(el=>el.disabled=false);}
+});});
 async function saveConnectionSettings({telegramOnly=false}={}){
   const form=$('#settingsForm'),data={},names=['telegram_bot_token','telegram_chat_id','telegram_admin_id'];
   if(!telegramOnly)names.push('tracker_domains');

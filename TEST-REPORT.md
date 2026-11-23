@@ -1,3 +1,11 @@
+# v2.2.6 torrent batches and duplicate confirmation
+
+Added one-selection batches of up to 20 torrent files, processed sequentially with individual results and continuation after failures/skips. Only one metadata file is encoded and sent at a time. The page must remain open until all additions finish; Transmission then handles leeching independently. New torrents are added paused and started explicitly after a successful addition, respecting the paused option and queue limits. Duplicate responses never automatically restart or relocate existing entries.
+
+A time-limited confirmation token permits a fresh-copy action only for the same existing ZedAir torrent/location. It creates an exclusive empty subfolder, stops the entry, sets its location with move=false, verifies and optionally starts it. Old data stays untouched; file selections are retained. Repeat confirmations return the original result. Errors attempt to stop the entry and require review rather than retrying destructive changes.
+
+Unit tests cover duplicate non-mutation, old-file integrity, explicit confirmation, pause, stale/expired tokens, ownership, hold, folder collisions, replay and failure handling. The browser fixture selects 20 files, rejects 21, skips one duplicate, confirms another, continues after a bad file and verifies individual results. A loopback-only real Transmission fixture verifies completed old bytes are preserved while the confirmed new location starts at zero completion, with one torrent entry. No public torrent swarm is contacted.
+
 # v2.2.5 torrent peer controls
 
 Added autosaving peer sliders, sharing server-side ranges: global 10–1,000 and per torrent 10–150, step 1. Defaults are 64 and 20. Removed the memory-derived global cap and hardcoded per-torrent overrides. Saved values apply to Transmission session settings, new torrent additions and existing ZedAir-owned torrents. Empty ownership lists never send an unscoped torrent-set. The existing monitor retries after connection failures and applies settings at startup.

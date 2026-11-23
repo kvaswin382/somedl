@@ -41,7 +41,7 @@ class PeerTests(Fixture):
     def test_http_save_marks_settings_dirty_and_new_torrents_use_saved_peer_limit(self):
         site=Server(('127.0.0.1',0),Handler);site.desk=self.desk
         thread=threading.Thread(target=site.serve_forever,daemon=True);thread.start()
-        token,csrf=self.desk.new_session();self.desk.rpc.call=Mock(return_value={})
+        token,csrf=self.desk.new_session();self.desk.rpc.call=Mock(return_value={'torrent-added':{'hashString':'a'*40,'name':'Fixture'}})
         def post(path,data):
             conn=http.client.HTTPConnection('127.0.0.1',site.server_port,timeout=5)
             try:
@@ -58,6 +58,6 @@ class PeerTests(Fixture):
             self.assertEqual(post('settings',{'torrent_peers_global':1001})[0],400)
             self.assertEqual(self.desk.get_setting('torrent_peers_global'),1000)
             self.assertEqual(post('torrents',{'magnet':'magnet:?xt=urn:btih:'+'a'*40})[0],200)
-            self.assertEqual(self.desk.rpc.call.call_args.args[0],'torrent-add')
-            self.assertEqual(self.desk.rpc.call.call_args.args[1]['peer-limit'],150)
+            addition=next(c for c in self.desk.rpc.call.call_args_list if c.args[0]=='torrent-add')
+            self.assertEqual(addition.args[1]['peer-limit'],150)
         finally:site.shutdown();site.server_close();thread.join()

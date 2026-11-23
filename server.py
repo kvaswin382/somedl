@@ -236,6 +236,7 @@ class Desk:
             try:self.engine_versions[package]=importlib.metadata.version(package)
             except importlib.metadata.PackageNotFoundError:self.engine_versions[package]='Not installed'
         self.file_lock = threading.RLock()
+        self.torrent_confirmations = {}
         self.stop = threading.Event()
         self.current = None
         self.process = None
@@ -844,7 +845,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'telegram_result':self.get_setting('telegram_last_result',{}), 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.2.5', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.2.6', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def add_stories(self,data):
         from instagram_story import target
@@ -1485,26 +1486,14 @@ class Handler(BaseHTTPRequestHandler):
                     from web_session import forget
                     forget(d.state,data.get('slot'))
         elif path == '/api/torrents':
-            if d.get_setting('hold', False):
-                raise APIError('Resume the queue before adding a torrent', 409)
-            folder = d.destination(data.get('folder', ''), create=True)
-            arguments = {'download-dir': str(folder), 'paused': bool(data.get('paused')), 'peer-limit': d.get_setting('torrent_peers_per_torrent',engine_settings.DEFAULTS['torrent_peers_per_torrent'])}
-            if data.get('magnet'):
-                magnet = data['magnet']
-                if not isinstance(magnet, str) or len(magnet) > 16000 or not magnet.startswith('magnet:?') or 'xt=urn:btih:' not in magnet:
-                    raise APIError('Use a valid BitTorrent v1/hybrid magnet link')
-                arguments['filename'] = magnet
-            else:
-                meta = data.get('metainfo', '')
-                decoded = base64.b64decode(meta, validate=True)
-                if not 1 <= len(decoded) <= 8*1024*1024 or not decoded.startswith(b'd'):
-                    raise APIError('Invalid or oversized .torrent file')
-                arguments['metainfo'] = meta
-            with d.file_lock:
-                d.destination(data.get('folder',''),reserve=False)
-                result=d.rpc.call('torrent-add', arguments)
-            self.reply(result)
-            return
+            from torrent_add import add
+            self.reply(add(d,data));return
+        elif path == '/api/torrents/duplicate-dismiss':
+            from torrent_add import dismiss
+            self.reply(dismiss(d,data));return
+        elif path == '/api/torrents/fresh-copy':
+            from torrent_add import fresh_copy
+            self.reply(fresh_copy(d,data));return
         elif path == '/api/torrent/action':
             tid = data.get('id')
             items = d.rpc.call('torrent-get', {'ids': [tid], 'fields': ['hashString','downloadDir','files']}).get('torrents', [])

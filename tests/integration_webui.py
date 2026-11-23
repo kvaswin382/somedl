@@ -65,7 +65,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.2.5')
+            expect(page.locator('#appVersion')).to_have_text('v2.2.6')
             original_theme(page)
             # Toasts stay at the top and above nested modal backdrops, without stealing focus.
             for width,dark in [(1360,False),(1360,True),(390,False),(390,True)]:
@@ -427,6 +427,51 @@ with sync_playwright() as pw:
                     expect(page.locator('#storageTasks')).to_contain_text('1 / 1 extra copies deleted')
             finally:release_delete.set()
             assert len(list(desk.root.glob('duplicate-*.bin')))==1
+            # One selection of 20 files: sequential additions, skip/fresh-copy prompts and error continuation.
+            submitted=[];torrent_rows={};moves=[]
+            old_folder=desk.root/'Torrents';old_folder.mkdir(exist_ok=True);(old_folder/'preserved.bin').write_bytes(b'old torrent data')
+            def batch_rpc(method,args=None):
+                args=args or {}
+                if method=='torrent-add':
+                    number=int(base64.b64decode(args['metainfo'])[1:-1]);submitted.append(number)
+                    if number==3:raise ValueError('Broken torrent fixture')
+                    key=f'{0 if number in (1,2) else number:040x}'
+                    if key in torrent_rows:return {'torrent-duplicate':dict(torrent_rows[key])}
+                    torrent_rows[key]={'id':number+1,'hashString':key,'name':'Fixture '+str(number),'downloadDir':args['download-dir']}
+                    return {'torrent-added':dict(torrent_rows[key])}
+                if method=='torrent-get':return {'torrents':[dict(v) for k,v in torrent_rows.items() if not args.get('ids') or k in args['ids']]}
+                if method=='torrent-set-location':
+                    moves.append(args);torrent_rows[args['ids'][0]]['downloadDir']=args['location']
+                return {}
+            original_rpc=desk.rpc.call;desk.rpc.call=batch_rpc
+            try:
+                page.evaluate('() => hideToast()');page.locator('[data-page=torrents]').click()
+                page.locator('[data-open=torrentDialog]').first.click()
+                picker=page.locator('#torrentForm [name=torrent]');expect(picker).to_have_attribute('multiple','')
+                files=[{'name':f'item-{i}.torrent','mimeType':'application/x-bittorrent','buffer':b'd'+str(i).encode()+b'e'} for i in range(21)]
+                picker.set_input_files(files);page.locator('#torrentForm button[type=submit]').click()
+                expect(page.locator('#toast')).to_contain_text('up to 20');assert not submitted
+                page.evaluate('() => hideToast()');picker.set_input_files(files[:20])
+                expect(page.locator('#torrentFileCount')).to_contain_text('20 files selected')
+                page.locator('#torrentForm button[type=submit]').click()
+                expect(page.locator('#messageDialog')).to_be_visible();expect(picker).to_be_disabled()
+                assert submitted==[0,1],submitted
+                page.locator('#messageCancel').click()
+                expect(page.locator('#torrent-batch-1')).to_contain_text('Skipped')
+                expect(page.locator('#messageDialog')).to_be_visible()
+                expect(page.locator('#messageText')).to_contain_text('kept untouched')
+                assert submitted==[0,1,2],submitted
+                page.locator('#messageAccept').click()
+                expect(page.locator('#torrent-batch-19')).to_contain_text('Added to download queue')
+                expect(picker).to_be_enabled()
+                assert submitted==list(range(20)),submitted
+                expect(page.locator('.torrent-batch-row[data-status=done]')).to_have_count(18)
+                expect(page.locator('#torrent-batch-3')).to_contain_text('Broken torrent fixture')
+                assert len(moves)==1 and moves[0]['move'] is False
+                assert (old_folder/'preserved.bin').read_bytes()==b'old torrent data'
+                no_overflow(page);screenshot(page,'torrent-batch-mobile-dark')
+                page.locator('#torrentDialog [data-close]').click()
+            finally:desk.rpc.call=original_rpc
             assert not errors,errors
             print('PASS: original blue/neutral light and dark palettes, centered settings, border-free slider tracks and compact engine rows verified; real UI verified default MP4, live link count, stable single favicon, range autosave 1–20 step 1, masked token, release-aware engine cards, usage chart, exact highlight share, backdrop dismissal and mobile/dark layouts without overflow.')
         finally:

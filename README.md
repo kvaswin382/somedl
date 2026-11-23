@@ -1,6 +1,6 @@
 # Zedair Download Desk
 
-**v2.2.5** · Ubuntu 24.04 · Python 3.12 · Built for a 2 GB headless laptop + USB SSD
+**v2.2.6** · Ubuntu 24.04 · Python 3.12 · Built for a 2 GB headless laptop + USB SSD
 
 Queue webpage links from your phone or computer. Zedair finds and downloads the media on the laptop, even after you close the browser.
 
@@ -22,9 +22,9 @@ sudo bash upgrade.sh
 - If Git reports local edits or a diverged branch, preserve and review them first. Do not force-reset the checkout.
 - The upgrader backs up app/state under `/var/backups/zedair`, installs into `/opt/zedair`, and checks startup. It restores the backup if its health check fails.
 - SSD downloads, saved cookies, accounts and queue history are preserved. Engine packages are updated separately.
-- Refresh with **Ctrl+F5**; the footer should show **v2.2.5**. Pulling source alone does not update the running app.
+- Refresh with **Ctrl+F5**; the footer should show **v2.2.6**. Pulling source alone does not update the running app.
 
-**This update:** autosaving torrent peer limits: **10–1,000 globally** and **10–150 per torrent**, applied to existing and new ZedAir torrents. [Storage and cloud controls](docs/storage-cloud.md).
+**This update:** select up to **20 torrent files** at once, with individual results and duplicate confirmation before downloading a fresh copy. Existing files are kept. [Torrent controls](docs/storage-cloud.md#torrent-resources-and-data).
 
 ## First installation
 

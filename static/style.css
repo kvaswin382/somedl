@@ -206,3 +206,5 @@ body.dark #toast{--toast-bg:#1d3048;--toast-ink:#c7e0ff;--toast-edge:#78ade9}
 body.dark #toast[data-type=success]{--toast-bg:#17362a;--toast-ink:#b5edca;--toast-edge:#67bd8b}
 body.dark #toast[data-type=error]{--toast-bg:#432429;--toast-ink:#ffd0d5;--toast-edge:#ee8795}
 body.dark #toast[data-type=warning]{--toast-bg:#40331b;--toast-ink:#ffe1a0;--toast-edge:#dfb14e}
+
+.torrent-batch-results{display:grid;gap:8px;margin-top:16px;max-height:38vh;overflow:auto}.torrent-batch-results:empty{display:none}.torrent-batch-row{padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:var(--paper);overflow-wrap:anywhere}.torrent-batch-row strong,.torrent-batch-row span{display:block;font-size:12px}.torrent-batch-row span{margin-top:4px;color:var(--muted)}.torrent-batch-row[data-status=error] span{color:var(--red)}.torrent-batch-row[data-status=done]{border-left:3px solid #28804e}.torrent-batch-row[data-status=running]{border-left:3px solid var(--blue)}
