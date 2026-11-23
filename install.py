@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Interactive Ubuntu installer. Never formats or partitions a drive."""
 import datetime
+import engine_settings
 import hashlib
 import json
 import os
@@ -182,7 +183,7 @@ def main():
                   'rpc-host-whitelist-enabled': True, 'rpc-host-whitelist': '127.0.0.1,localhost',
                   'download-queue-enabled': True, 'download-queue-size': 1,
                   'seed-queue-enabled': True, 'seed-queue-size': 1, 'queue-stalled-enabled': False,
-                  'peer-limit-global': 40, 'peer-limit-per-torrent': 20, 'cache-size-mb': 16,
+                  'peer-limit-global': engine_settings.DEFAULTS['torrent_peers_global'], 'peer-limit-per-torrent': engine_settings.DEFAULTS['torrent_peers_per_torrent'], 'cache-size-mb': 16,
                   'speed-limit-up-enabled': True, 'speed-limit-up': 256,
                   'ratio-limit-enabled': True, 'ratio-limit': 0, 'port-forwarding-enabled': False,
                   'preallocation': 1, 'umask': 63}

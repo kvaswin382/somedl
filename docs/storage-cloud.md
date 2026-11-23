@@ -24,7 +24,7 @@ Choose daily, weekly, monthly, yearly, or a five-field numeric cron expression a
 
 ## SSD files
 
-- **Upload files** accepts up to 20 files in a batch into the currently open subfolder, with individual progress. Existing filenames receive a number. Uploads stream in 1 MiB chunks.
+- **Upload files** accepts up to 20 files in a batch into the currently open subfolder, with individual progress. Existing filenames receive a number. Uploads use binary chunks of at most 4 MiB with live progress and an average speed.
 - Select multiple files and choose **Delete**. A confirmation and stale-file check protect changed files. Files still owned by a torrent cannot be deleted, moved or rewritten here.
 - Select an image and choose **Set folder cover**. The image stays in that folder; moving/deleting it removes the displayed cover.
 - Video covers are extracted or generated in one size, using one FFmpeg worker. Newly downloaded/uploaded compatible local MP4s receive an attached cover without re-encoding video/audio, if enough space remains for an atomic rewrite. Existing-library and file-browser scans create only the small preview; they do not rewrite entire videos. Visible missing previews are queued first and update automatically in list/grid views. Torrent-owned videos are never rewritten. Other containers still get a browser thumbnail. Automatic scans run in small batches while download workers are idle; **Storage → Scan videos now** also queues a batch.
@@ -34,7 +34,7 @@ Website concurrency reductions return excess active jobs to the queue; their wor
 
 ## Torrent resources and data
 
-The torrent memory ceiling defaults to **1024 MiB**, configurable from **128–1536 MiB**. Concurrency is separate, **1–20**. These are ceilings, not memory reservations. Low peer/cache limits reduce baseline use; 1–2 active torrents is sensible on a 2 GB laptop. Memory pressure can still occur, especially with very large torrent file lists. Lowering the ceiling below current usage is deferred to avoid an immediate OOM: pause torrents, then save again. System usage shows the helper's result.
+The torrent memory ceiling defaults to **1024 MiB**, configurable from **128–1536 MiB**. Concurrency is separate, **1–20**. These are ceilings, not memory reservations. Peer limits autosave in Settings → General: **10–1,000 globally** (default 64) and **10–150 per torrent** (default 20), both step 1. Changes apply to existing ZedAir torrents and new ones on the next monitor cycle (normally within four seconds), and are reapplied after reconnecting to Transmission. The global limit is shared; it can constrain a torrent below its individual limit. Peer limits are not silently reduced by the memory setting. Low peer/cache limits reduce baseline use; 1–2 active torrents is sensible on a 2 GB laptop. Memory pressure can still occur, especially with very large torrent file lists. Lowering the ceiling below current usage is deferred to avoid an immediate OOM: pause torrents, then save again. System usage shows the helper's result.
 
 Tracker details show connected peers and the tracker's reported seeders/leechers; unknown counts remain blank. You can add trackers or request an announcement. Trackers cannot create peers for a dead torrent.
 

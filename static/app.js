@@ -554,6 +554,8 @@ const settingGroups={
     ['media_kib','Website speed limit','speed','Per active website download; 0 means unlimited.'],
     ['torrent_memory_mib','Torrent memory ceiling','MiB','128–1536 MiB. This is a ceiling, not preallocated memory.'],
     ['torrent_concurrency','Active torrent downloads','count','Keep low on the 2 GB ZedAir.'],
+    ['torrent_peers_global','Global torrent peer limit','peers','Total connection ceiling across all torrents. Applied automatically; higher limits use more RAM.'],
+    ['torrent_peers_per_torrent','Peer limit per torrent','peers','Applies to existing and new ZedAir torrents. The global ceiling still applies.'],
     ['torrent_down_kib','Torrent download limit','speed','Shared by all torrents.'],
     ['torrent_up_kib','Torrent upload limit','speed','At least 1 KiB/s.'],
     ['seed_ratio','Stop seeding at ratio','×','0 stops seeding after the download.'],

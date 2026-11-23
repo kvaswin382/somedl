@@ -65,7 +65,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.2.4')
+            expect(page.locator('#appVersion')).to_have_text('v2.2.5')
             original_theme(page)
             # Toasts stay at the top and above nested modal backdrops, without stealing focus.
             for width,dark in [(1360,False),(1360,True),(390,False),(390,True)]:
@@ -170,6 +170,13 @@ with sync_playwright() as pw:
             expect(page.locator('#settingsSaveStatus')).to_have_text('Saved automatically')
             assert desk.get_setting('simultaneous_downloads')==3
             assert slider.evaluate('(el) => getComputedStyle(el).outlineStyle')=='none'
+            for key,maximum in [('torrent_peers_global',1000),('torrent_peers_per_torrent',150)]:
+                peer=page.locator('#settingsForm [name='+key+']')
+                expect(peer).to_have_attribute('min','10');expect(peer).to_have_attribute('max',str(maximum));expect(peer).to_have_attribute('step','1')
+                peer.focus();peer.press('End')
+                expect(page.locator('#settingsSaveStatus')).to_have_text('Saved automatically')
+                assert desk.get_setting(key)==maximum and desk.torrent_settings_dirty
+                expect(page.locator('#value-'+key)).to_have_text(str(maximum)+' peers')
             # Pointer use must not add the old input-focus rectangle either.
             slider.click();expect(page.locator('#settingsSaveStatus')).to_have_text('Saved automatically')
             assert slider.evaluate('(el) => getComputedStyle(el).outlineStyle')=='none'
@@ -189,6 +196,8 @@ with sync_playwright() as pw:
             assert pending, 'Initial status request was not intercepted'
             pending[-1].fulfill(json=desk.snapshot());page.unroute('**/api/state')
             expect(page.locator('#settingsForm [name=simultaneous_downloads]')).to_have_value('3')
+            expect(page.locator('#settingsForm [name=torrent_peers_global]')).to_have_value('1000')
+            expect(page.locator('#settingsForm [name=torrent_peers_per_torrent]')).to_have_value('150')
             page.get_by_text('Telegram connection & diagnostics',exact=True).click()
             page.locator('#settingsForm [name=telegram_bot_token]').fill('123:fixture')
             page.locator('#settingsForm button.primary').click()

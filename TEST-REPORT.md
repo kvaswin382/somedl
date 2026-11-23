@@ -1,3 +1,9 @@
+# v2.2.5 torrent peer controls
+
+Added autosaving peer sliders, sharing server-side ranges: global 10–1,000 and per torrent 10–150, step 1. Defaults are 64 and 20. Removed the memory-derived global cap and hardcoded per-torrent overrides. Saved values apply to Transmission session settings, new torrent additions and existing ZedAir-owned torrents. Empty ownership lists never send an unscoped torrent-set. The existing monitor retries after connection failures and applies settings at startup.
+
+Regression coverage checks both endpoints and invalid values, maximum values under a 128 MiB memory setting without clamping, existing torrent ownership, the settings HTTP API and new torrent arguments. Browser coverage checks slider limits, keyboard autosave and values after reload. RPC payloads are verified with a simulated Transmission service; this does not test live swarm connectivity.
+
 # v2.2.4 file uploads
 
 Replaced browser Base64/JSON conversion per 1 MiB with raw binary chunks of at most 4 MiB, sent directly from file slices. Uploads show byte progress, average speed, and a separate saving phase; the file picker is disabled during a batch to prevent overlapping progress rows. JSON control requests and legacy 1 MiB chunks remain supported. No transfer sleeps or bandwidth cap are used. Network reads happen before global storage locks, with authentication/CSRF/origin checks and fixed body bounds. Partial chunks are rejected before appending, offsets and free space remain checked, and publication still flushes the file without overwriting an existing filename.

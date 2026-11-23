@@ -1,5 +1,6 @@
 """Shared, validated configuration; one location for operational limits."""
 DEFAULTS = {
+    'torrent_peers_global':64, 'torrent_peers_per_torrent':20,
     'torrent_memory_mib':1024, 'torrent_concurrency':1, 'browser_memory_wait':120,
     'simultaneous_downloads': 1, 'browser_timeout': 90, 'browser_settle': 6,
     'browser_min_memory_mib': 350, 'browser_max_frames': 16, 'browser_candidates': 160,
@@ -11,7 +12,8 @@ DEFAULTS = {
     'alert_temperature_c':80, 'alert_sustain_seconds':60, 'alert_cooldown_minutes':15,
     'tracker_domains':'doubleclick.net,google-analytics.com,googlesyndication.com,exoclick.com,popads.net',
 }
-RANGES = {'torrent_memory_mib':(128,1536), 'torrent_concurrency':(1,20), 'browser_memory_wait':(10,600), 'simultaneous_downloads':(1,20), 'browser_timeout':(20,180), 'browser_settle':(2,15),
+RANGES = {'torrent_peers_global':(10,1000), 'torrent_peers_per_torrent':(10,150),
+          'torrent_memory_mib':(128,1536), 'torrent_concurrency':(1,20), 'browser_memory_wait':(10,600), 'simultaneous_downloads':(1,20), 'browser_timeout':(20,180), 'browser_settle':(2,15),
           'browser_min_memory_mib':(200,1000), 'browser_max_frames':(1,32), 'browser_candidates':(20,300),
           'refresh_attempts':(0,5), 'http_timeout':(10,90),
           'alert_cpu_percent':(50,99), 'alert_ram_percent':(50,99), 'alert_disk_percent':(70,99),

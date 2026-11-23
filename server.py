@@ -758,15 +758,20 @@ class Desk:
 
     def apply_torrent_settings(self):
         s = self.settings()
-        return self.rpc.call('session-set', {
+        result = self.rpc.call('session-set', {
             'download-queue-enabled': True, 'download-queue-size': s['torrent_concurrency'],
             'seed-queue-enabled': True, 'seed-queue-size': 1, 'queue-stalled-enabled': False,
             'speed-limit-down-enabled': bool(s['torrent_down_kib']), 'speed-limit-down': s['torrent_down_kib'],
             'speed-limit-up-enabled': True, 'speed-limit-up': max(1, s['torrent_up_kib']),
             'seedRatioLimited': True, 'seedRatioLimit': s['seed_ratio'],
-            'peer-limit-global': min(80,max(20,s['torrent_memory_mib']//16)), 'peer-limit-per-torrent': 12,
+            'peer-limit-global': s['torrent_peers_global'], 'peer-limit-per-torrent': s['torrent_peers_per_torrent'],
             'cache-size-mb': min(16,max(2,s['torrent_memory_mib']//64)), 'port-forwarding-enabled': False, 'preallocation': 0,
         })
+        # Session defaults alone do not replace limits stored on existing torrents.
+        torrents=self.rpc.call('torrent-get',{'fields':['id','downloadDir']}).get('torrents',[])
+        ids=[t['id'] for t in torrents if self.owned_torrent(t)]
+        if ids:self.rpc.call('torrent-set',{'ids':ids,'peer-limit':s['torrent_peers_per_torrent']})
+        return result
 
     def owned_torrent(self, torrent):
         try:
@@ -839,7 +844,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'telegram_result':self.get_setting('telegram_last_result',{}), 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.2.4', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.2.5', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def add_stories(self,data):
         from instagram_story import target
@@ -1434,7 +1439,7 @@ class Handler(BaseHTTPRequestHandler):
             if data.get('clear_telegram_token') is True:values['telegram_bot_token']=''
             for key,value in values.items():d.set_setting(key,value)
             if 'simultaneous_downloads' in values:d.enforce_media_limit()
-            if values.keys() & {'torrent_down_kib','torrent_up_kib','seed_ratio','torrent_concurrency','torrent_memory_mib'}:
+            if values.keys() & {'torrent_down_kib','torrent_up_kib','seed_ratio','torrent_concurrency','torrent_memory_mib','torrent_peers_global','torrent_peers_per_torrent'}:
                 d.torrent_settings_dirty=True
             if 'torrent_memory_mib' in values and values['torrent_memory_mib']!=prior_memory:
                 result=subprocess.run(['/usr/bin/systemctl','--no-ask-password','start','--no-block','zedair-memory.service'],capture_output=True,text=True,timeout=10)
@@ -1483,7 +1488,7 @@ class Handler(BaseHTTPRequestHandler):
             if d.get_setting('hold', False):
                 raise APIError('Resume the queue before adding a torrent', 409)
             folder = d.destination(data.get('folder', ''), create=True)
-            arguments = {'download-dir': str(folder), 'paused': bool(data.get('paused')), 'peer-limit': 20}
+            arguments = {'download-dir': str(folder), 'paused': bool(data.get('paused')), 'peer-limit': d.get_setting('torrent_peers_per_torrent',engine_settings.DEFAULTS['torrent_peers_per_torrent'])}
             if data.get('magnet'):
                 magnet = data['magnet']
                 if not isinstance(magnet, str) or len(magnet) > 16000 or not magnet.startswith('magnet:?') or 'xt=urn:btih:' not in magnet:
