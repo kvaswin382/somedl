@@ -428,20 +428,21 @@ with sync_playwright() as pw:
             finally:release_delete.set()
             assert len(list(desk.root.glob('duplicate-*.bin')))==1
             # One selection of 20 files: sequential additions, skip/fresh-copy prompts and error continuation.
-            submitted=[];torrent_rows={};moves=[]
+            submitted=[];torrent_rows={};removals=[]
             old_folder=desk.root/'Torrents';old_folder.mkdir(exist_ok=True);(old_folder/'preserved.bin').write_bytes(b'old torrent data')
             def batch_rpc(method,args=None):
                 args=args or {}
                 if method=='torrent-add':
-                    number=int(base64.b64decode(args['metainfo'])[1:-1]);submitted.append(number)
+                    number=int(base64.b64decode(args['metainfo'])[1:-1])
+                    if not removals or number!=2:submitted.append(number)
                     if number==3:raise ValueError('Broken torrent fixture')
                     key=f'{0 if number in (1,2) else number:040x}'
                     if key in torrent_rows:return {'torrent-duplicate':dict(torrent_rows[key])}
                     torrent_rows[key]={'id':number+1,'hashString':key,'name':'Fixture '+str(number),'downloadDir':args['download-dir']}
                     return {'torrent-added':dict(torrent_rows[key])}
                 if method=='torrent-get':return {'torrents':[dict(v) for k,v in torrent_rows.items() if not args.get('ids') or k in args['ids']]}
-                if method=='torrent-set-location':
-                    moves.append(args);torrent_rows[args['ids'][0]]['downloadDir']=args['location']
+                if method=='torrent-remove':
+                    removals.append(args);torrent_rows.pop(args['ids'][0],None)
                 return {}
             original_rpc=desk.rpc.call;desk.rpc.call=batch_rpc
             try:
@@ -467,7 +468,7 @@ with sync_playwright() as pw:
                 assert submitted==list(range(20)),submitted
                 expect(page.locator('.torrent-batch-row[data-status=done]')).to_have_count(18)
                 expect(page.locator('#torrent-batch-3')).to_contain_text('Broken torrent fixture')
-                assert len(moves)==1 and moves[0]['move'] is False
+                assert len(removals)==1 and removals[0]['delete-local-data'] is False
                 assert (old_folder/'preserved.bin').read_bytes()==b'old torrent data'
                 no_overflow(page);screenshot(page,'torrent-batch-mobile-dark')
                 page.locator('#torrentDialog [data-close]').click()

@@ -1,5 +1,7 @@
 """Serial torrent submission and explicit, non-destructive fresh-copy confirmation."""
 import base64
+import hashlib
+import hmac
 import re
 import secrets
 import time
@@ -17,7 +19,7 @@ def ready(desk):
 
 def torrent(desk,key):
     from server import APIError
-    items=desk.rpc.call('torrent-get',{'ids':[key],'fields':['hashString','name','downloadDir']}).get('torrents',[])
+    items=desk.rpc.call('torrent-get',{'ids':[key],'fields':['hashString','name','downloadDir','fileStats']}).get('torrents',[])
     if len(items)!=1 or not desk.owned_torrent(items[0]):raise APIError('Existing torrent is unavailable or is outside Zedair',409)
     return items[0]
 
@@ -52,6 +54,8 @@ def add(desk,data):
             return {'status':'added','paused':paused,'hash':key,'name':item.get('name','Torrent')}
         # Duplicate additions never stop, move, restart or overwrite an existing torrent.
         existing=torrent(desk,key)
+        if 'metainfo' not in arguments:
+            return {'status':'duplicate','can_fresh':False,'name':existing.get('name','Torrent')}
         confirmations=desk.torrent_confirmations
         for token,pending in list(confirmations.items()):
             if pending['expires']<time.time():del confirmations[token]
@@ -61,8 +65,8 @@ def add(desk,data):
         relative=proposed.relative_to(desk.root).as_posix()
         desk.destination(relative,reserve=False)
         confirmations[token]={'hash':key,'old_folder':str(Path(existing['downloadDir']).resolve()),'folder':relative,
-                              'paused':paused,'expires':time.time()+1800}
-        return {'status':'duplicate','token':token,'name':existing.get('name','Torrent'),'folder':relative,
+                              'paused':paused,'expires':time.time()+1800,'source_hash':hashlib.sha256(arguments['metainfo'].encode()).hexdigest()}
+        return {'status':'duplicate','can_fresh':True,'token':token,'name':existing.get('name','Torrent'),'folder':relative,
                 'old_folder':Path(existing['downloadDir']).resolve().relative_to(desk.root.resolve()).as_posix(),'paused':paused}
 
 
@@ -76,22 +80,47 @@ def fresh_copy(desk,data):
         if not pending or pending['expires']<time.time():raise APIError('Confirmation expired; submit this torrent again',409)
         if 'result' in pending:return pending['result']
         if pending.get('failed'):raise APIError('This attempt failed. Check the torrent location before submitting again.',409)
+        meta=data.get('metainfo')
+        if not isinstance(meta,str) or len(meta)>4*((8*1024*1024+2)//3) or not hmac.compare_digest(hashlib.sha256(meta.encode()).hexdigest(),pending['source_hash']):
+            raise APIError('The original torrent file is required for this confirmation',409)
         ready(desk)
         key=pending['hash'];existing=torrent(desk,key)
         if str(Path(existing['downloadDir']).resolve())!=pending['old_folder']:raise APIError('Torrent location changed; submit it again to review a fresh confirmation',409)
         folder=desk.destination(pending['folder'])
-        folder.mkdir()  # An exclusive empty directory: never reuse or overwrite a previous copy.
+        arguments={'metainfo':meta,'paused':True,'peer-limit':desk.get_setting('torrent_peers_per_torrent',engine_settings.DEFAULTS['torrent_peers_per_torrent'])}
+        stats=existing.get('fileStats',[])
+        if stats:
+            arguments['files-wanted']=[i for i,f in enumerate(stats) if f.get('wanted',True)]
+            arguments['files-unwanted']=[i for i,f in enumerate(stats) if not f.get('wanted',True)]
+            for level,label in ((-1,'low'),(0,'normal'),(1,'high')):
+                arguments['priority-'+label]=[i for i,f in enumerate(stats) if f.get('priority',0)==level]
+        folder.mkdir()  # Never reuse or overwrite an earlier copy.
         try:
             desk.rpc.call('torrent-stop',{'ids':[key]})
-            desk.rpc.call('torrent-set-location',{'ids':[key],'location':str(folder),'move':False})
+            # Transmission deliberately refuses to re-download a completed entry whose
+            # files disappear. Re-add its validated metadata, never delete its payload.
+            desk.rpc.call('torrent-remove',{'ids':[key],'delete-local-data':False})
+            added=desk.rpc.call('torrent-add',{**arguments,'download-dir':str(folder)})
+            if added.get('torrent-added',{}).get('hashString')!=key:raise APIError('Fresh torrent registration was not confirmed',502)
             desk.rpc.call('torrent-verify',{'ids':[key]})
             if not pending['paused']:
                 ready(desk);desk.rpc.call('torrent-start',{'ids':[key]})
         except Exception as exc:
             pending['failed']=True
-            try:desk.rpc.call('torrent-stop',{'ids':[key]})
+            recovery='Previous queue entry could not be restored; inspect the torrent list.'
+            try:
+                rows=desk.rpc.call('torrent-get',{'ids':[key],'fields':['hashString','downloadDir']}).get('torrents',[])
+                if rows and str(Path(rows[0]['downloadDir']).resolve())==str(folder.resolve()):
+                    desk.rpc.call('torrent-stop',{'ids':[key]})
+                    desk.rpc.call('torrent-remove',{'ids':[key],'delete-local-data':False});rows=[]
+                if not rows:
+                    desk.rpc.call('torrent-add',{**arguments,'download-dir':pending['old_folder']})
+                    rows=desk.rpc.call('torrent-get',{'ids':[key],'fields':['hashString','downloadDir']}).get('torrents',[])
+                if rows and str(Path(rows[0]['downloadDir']).resolve())==pending['old_folder']:
+                    desk.rpc.call('torrent-stop',{'ids':[key]})
+                    recovery='Previous queue entry restored and paused.'
             except Exception:pass
-            raise APIError('Fresh-copy setup failed; old files were kept. Check the torrent location and status before retrying: '+str(exc),502) from exc
+            raise APIError('Fresh-copy setup failed; old files were kept. '+recovery+' '+str(exc),502) from exc
         result={'status':'added','fresh':True,'paused':pending['paused'],'hash':key,'folder':pending['folder']}
         pending['result']=result
         record(desk,'torrent fresh copy',pending['folder'])

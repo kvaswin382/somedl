@@ -59,20 +59,22 @@ with tempfile.TemporaryDirectory() as temp:
             info={b'length':len(content),b'name':b'fixture.bin',b'piece length':16384,b'pieces':hashlib.sha1(content).digest(),b'private':1}
             meta=base64.b64encode(encode({b'announce':f'http://127.0.0.1:{port}/announce'.encode(),b'info':info})).decode()
             first=add(desk,{'folder':'Old','metainfo':meta,'paused':True});key=first['hash']
-            def current():return desk.rpc.call('torrent-get',{'ids':[key],'fields':['status','percentDone','downloadDir']})['torrents'][0]
+            def current():return desk.rpc.call('torrent-get',{'ids':[key],'fields':['status','percentDone','downloadDir','error','errorString']})['torrents'][0]
             desk.rpc.call('torrent-verify',{'ids':[key]})
             until(lambda:current()['status']==0 and current()['percentDone']==1)
             duplicate=add(desk,{'folder':'New copies','metainfo':meta})
             assert duplicate['status']=='duplicate' and current()['status']==0
             assert Path(current()['downloadDir'])==old and (old/'fixture.bin').read_bytes()==content
             assert not (desk.root/duplicate['folder']).exists()
-            result=fresh_copy(desk,{'token':duplicate['token'],'confirm':True})
-            until(lambda:current()['status'] in (3,4) and current()['percentDone']==0)
+            result=fresh_copy(desk,{'token':duplicate['token'],'confirm':True,'metainfo':meta})
+            try:until(lambda:current()['status'] in (3,4) and current()['percentDone']==0)
+            except AssertionError:
+                print('Fresh torrent state:',current());raise
             assert Path(current()['downloadDir'])==desk.root/result['folder']
             assert (old/'fixture.bin').read_bytes()==content
-            assert fresh_copy(desk,{'token':duplicate['token'],'confirm':True})==result
+            assert fresh_copy(desk,{'token':duplicate['token'],'confirm':True,'metainfo':meta})==result
             assert len(desk.rpc.call('torrent-get',{'fields':['id']})['torrents'])==1
-            print('PASS: real Transmission left an unconfirmed duplicate paused, verified a confirmed fresh empty location, started the same queue entry at zero completion, kept the old exact bytes, and handled confirmation replay without a second copy.')
+            print('PASS: real Transmission left an unconfirmed duplicate paused, verified a confirmed fresh empty location, replaced the queue entry at zero completion, kept the old exact bytes, and handled confirmation replay without a second copy.')
         except BaseException:
             log.flush();log.seek(0);print(log.read()[-5000:]);raise
         finally:

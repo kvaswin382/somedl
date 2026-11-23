@@ -303,15 +303,19 @@ $('#torrentForm').addEventListener('submit',event=>{event.preventDefault();actio
         }
         let result=await api('torrents',data);
         if(result.status==='duplicate'){
+          if(result.can_fresh===false){
+            await uiMessage('This magnet already exists. Upload its .torrent file to download a fresh copy; the existing torrent is unchanged.',{title:'Torrent already exists',accept:'OK'});
+            skipped++;row.dataset.status='skipped';status.textContent='Skipped · upload the .torrent file for a fresh copy';continue;
+          }
           status.textContent='Already exists · waiting for your decision';
-          const message='“'+result.name+'” already exists. Download a fresh copy into Zedair/'+result.folder+'? This stops the existing torrent and switches its single queue entry to the new folder. Files in Zedair/'+result.old_folder+' are kept untouched. Current file selections are retained.';
+          const message='“'+result.name+'” already exists. Download a fresh copy into Zedair/'+result.folder+'? This stops and replaces the existing queue entry, then downloads again in the new folder. Files in Zedair/'+result.old_folder+' are kept untouched. Current file selections are retained.';
           const confirmed=await uiMessage(message,{title:'Torrent already exists',accept:result.paused?'Create paused copy':'Download fresh copy'});
           if(!confirmed){
             try{await api('torrents/duplicate-dismiss',{token:result.token});}catch{}
             skipped++;row.dataset.status='skipped';status.textContent='Skipped · existing torrent unchanged';continue;
           }
           status.textContent='Preparing fresh copy…';
-          result=await api('torrents/fresh-copy',{token:result.token,confirm:true});
+          result=await api('torrents/fresh-copy',{token:result.token,confirm:true,metainfo:data.metainfo});
         }
         if(result.status!=='added')throw Error('Torrent engine did not confirm this addition.');
         added++;row.dataset.status='done';status.textContent=result.paused?'Added paused':'Added to download queue';
