@@ -21,50 +21,85 @@ def status_path(name):
     return state/('update-'+name+'.json')
 
 
-def report(status,value,detail):
-    tmp=status.with_suffix('.tmp');tmp.write_text(json.dumps({'status':value,'detail':detail,'time':time.time()}));tmp.chmod(0o644);os.replace(tmp,status)
+def report(status,value,detail,**extra):
+    try:previous=json.loads(status.read_text())
+    except (OSError,ValueError):previous={}
+    previous.update(status=value,detail=detail,time=time.time(),**extra)
+    tmp=status.with_suffix('.tmp');tmp.write_text(json.dumps(previous));tmp.chmod(0o644);os.replace(tmp,status)
+
+
+def command(args,timeout=60):
+    from notifications import sanitized
+    try:
+        result=subprocess.run(args,check=True,timeout=timeout,capture_output=True,text=True)
+        if isinstance(result.stdout,str) and result.stdout:print(result.stdout[-6000:],flush=True)
+        return result
+    except subprocess.CalledProcessError as exc:
+        detail=sanitized((exc.stderr or exc.stdout or str(exc))[-4000:])
+        raise RuntimeError(detail) from None
+    except subprocess.TimeoutExpired:
+        raise RuntimeError('Timed out after '+str(timeout)+' seconds') from None
+
+
+def restart(status):
+    command(['systemctl','start','zedair'])
+    saved=json.loads(status.read_text()) if status.exists() else {}
+    if saved.get('restore_local_socket'):
+        command(['systemctl','start','zedair-local.socket'])
+        report(status,saved.get('status','error'),saved.get('detail',''),restore_local_socket=False)
 
 
 def recover(name):
-    """systemd invokes this even if the updater was killed or timed out."""
+    """ExecStopPost also runs after SIGKILL/timeouts; restore the saved socket state."""
     if os.geteuid()!=0 or name not in ALLOWED:raise ValueError('Unsupported recovery request')
     status=status_path(name)
     with UPDATE_LOCK.open('a') as guard:
         UPDATE_LOCK.chmod(0o600)
         try:fcntl.flock(guard,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        except BlockingIOError:return  # Another engine update still owns the environment.
-        try:
-            if status.exists() and json.loads(status.read_text()).get('status')=='running':
-                report(status,'error','Update was interrupted. Service restarted; inspect the system journal and engine versions.')
-        finally:subprocess.run(['systemctl','start','zedair'],check=True)
+        except BlockingIOError:return
+        saved=json.loads(status.read_text()) if status.exists() else {}
+        if saved.get('status')=='running':
+            result=os.environ.get('SERVICE_RESULT','interrupted')
+            report(status,'error','Update '+result+' during '+saved.get('phase','startup')+'. '+saved.get('detail',''))
+        try:restart(status)
+        except Exception as exc:report(status,'error','Service restart failed: '+str(exc))
 
 
 def update(name):
     status=status_path(name)
-    def progress(value,detail):report(status,value,detail)
     with UPDATE_LOCK.open('a') as guard:
-        UPDATE_LOCK.chmod(0o600)
-        fcntl.flock(guard,fcntl.LOCK_EX)
+        UPDATE_LOCK.chmod(0o600);fcntl.flock(guard,fcntl.LOCK_EX)
         try:old=importlib.metadata.version(name)
         except importlib.metadata.PackageNotFoundError:old=None
-        progress('running','Updating '+name+'; downloads will recover after restart')
-        subprocess.run(['systemctl','stop','zedair'],check=True)
+        # Port 80 is socket-activated. Stop the socket BEFORE the app; otherwise
+        # the browser's reconnect polling cancels systemctl stop with a start job.
+        socket=subprocess.run(['systemctl','is-active','--quiet','zedair-local.socket'],check=False)
+        report(status,'running','Pausing downloads',phase='stop services',restore_local_socket=socket.returncode==0)
+        changed=False
         try:
-            subprocess.run([sys.executable,'-m','pip','install','--no-cache-dir','--upgrade','--index-url','https://pypi.org/simple',ALLOWED[name]],check=True,timeout=500)
-            if name=='playwright':
-                # Installer uses the selected installed version and refreshes its sandbox profile.
-                subprocess.run(['bash','/opt/zedair/install-browser.sh','--installed'],check=True,timeout=300)
-            else:
-                subprocess.run([sys.executable,'-m','yt_dlp' if name=='yt-dlp' else 'gallery_dl','--version'],check=True,timeout=20)
-            progress('done','Updated '+name)
+            if socket.returncode==0:
+                command(['systemctl','stop','zedair-local.socket','zedair-local.service'])
+            command(['systemctl','stop','zedair'])
+            report(status,'running','Installing '+name,phase='package installation')
+            changed=True
+            command([sys.executable,'-m','pip','install','--no-cache-dir','--disable-pip-version-check','--upgrade','--index-url','https://pypi.org/simple',ALLOWED[name]],500)
+            report(status,'running','Checking installed engine',phase='validation')
+            if name=='playwright':command(['bash','/opt/zedair/install-browser.sh','--installed'],600)
+            else:command([sys.executable,'-m','yt_dlp' if name=='yt-dlp' else 'gallery_dl','--version'],20)
+            report(status,'done','Updated '+name,phase='complete')
         except Exception as exc:
-            try:
-                if old is None:raise ValueError('No previous installation to restore')
-                subprocess.run([sys.executable,'-m','pip','install','--no-cache-dir',ALLOWED[name]+'=='+old],check=True,timeout=180)
-                if name=='playwright':subprocess.run(['bash','/opt/zedair/install-browser.sh','--installed'],check=True,timeout=180)
-                progress('error','Update failed; previous engine version restored. '+type(exc).__name__)
-            except Exception:progress('error','Update and rollback failed. Run the engine installer through SSH; see system journal.')
-        finally:subprocess.run(['systemctl','start','zedair'],check=True)
+            message=str(exc)
+            if changed and old:
+                try:
+                    report(status,'running','Restoring previous version after: '+message,phase='rollback')
+                    command([sys.executable,'-m','pip','install','--no-cache-dir',ALLOWED[name]+'=='+old],180)
+                    if name=='playwright':command(['bash','/opt/zedair/install-browser.sh','--installed'],300)
+                    message+=' Previous version restored.'
+                except Exception as rollback:message+=' Rollback failed: '+str(rollback)
+            report(status,'error',message)
+        finally:
+            try:restart(status)
+            except Exception as exc:report(status,'error','Service restart failed: '+str(exc))
 
 
 if __name__=='__main__':

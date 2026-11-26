@@ -208,3 +208,9 @@ body.dark #toast[data-type=error]{--toast-bg:#432429;--toast-ink:#ffd0d5;--toast
 body.dark #toast[data-type=warning]{--toast-bg:#40331b;--toast-ink:#ffe1a0;--toast-edge:#dfb14e}
 
 .torrent-batch-results{display:grid;gap:8px;margin-top:16px;max-height:38vh;overflow:auto}.torrent-batch-results:empty{display:none}.torrent-batch-row{padding:10px 12px;border:1px solid var(--line);border-radius:6px;background:var(--paper);overflow-wrap:anywhere}.torrent-batch-row strong,.torrent-batch-row span{display:block;font-size:12px}.torrent-batch-row span{margin-top:4px;color:var(--muted)}.torrent-batch-row[data-status=error] span{color:var(--red)}.torrent-batch-row[data-status=done]{border-left:3px solid #28804e}.torrent-batch-row[data-status=running]{border-left:3px solid var(--blue)}
+
+.file-breadcrumbs{display:flex;align-items:center;gap:.35rem;flex:1;min-width:0;flex-wrap:wrap}.file-breadcrumbs button{overflow-wrap:anywhere}.file-toolbar input[type=search]{flex:1;min-width:150px;max-width:320px}.thumbnail-queue{margin-top:1rem}.thumbnail-queue summary{cursor:pointer;font-weight:600;padding:.6rem 0}.folder-entry>.file-row{flex:1;min-width:0}
+
+.cloud-nav{display:flex;gap:.5rem;flex-wrap:wrap;margin:1rem 0 1.5rem}.cloud-nav .selected{box-shadow:inset 0 -3px var(--accent);font-weight:700}#cloudLocation{flex:1;min-width:0;overflow-wrap:anywhere}#cloudFiles .file-row{flex:1;min-width:0}#remoteConfigPath{overflow-wrap:anywhere}#cloudFiles{max-height:65vh;overflow:auto}#streamStatus a{overflow-wrap:anywhere}
+
+@media(max-width:700px){.folder-entry>.file-row{grid-column:1/-1}.folder-entry>.file-actions{grid-column:1/-1}.file-toolbar #fileSearch{grid-column:1/-1;max-width:none;width:100%;min-width:0}.cloud-nav button{flex:1 1 120px}.file-breadcrumbs{flex-basis:100%;order:2}}

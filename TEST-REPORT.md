@@ -1,3 +1,13 @@
+# v2.3.0 maintenance, rclone and file management
+
+The updater now quiesces the socket-activated `zed.local` forwarder before stopping the app, and restores its previous listener state after success, failure or recovery. Service-stop errors are inside recovery handling and retain their actual message. The systemd integration fixture runs on isolated temporary units under reconnect polling; no engine packages or real Zedair units are changed.
+
+Rclone config import merges new remotes without overwriting existing credentials. Upgrade can import the invoking sudo user’s regular config; encrypted files can be imported with a transient password in the UI. HTTP/WebDAV streaming runs behind an authenticated LAN listener with two response slots, a shared 8–512 MiB read-ahead budget and disabled rclone disk/file buffers. Password hashes are private and omitted from APIs. Actual rclone tests check unauthenticated rejection, full reads, exact range reads, WebDAV listing, write rejection and shutdown without SSD cache. These are protocol tests; VLC itself and Google Drive authorization are not exercised.
+
+Gallery-dl payload metering includes ordinary HTTP and native yt-dlp downloads; archived files do not count again. Torrent counters use owned torrent downloadedEver/uploadedEver deltas with fresh-add baselines, excluding totalSize/haveValid and historical daemon counters. Global IANA timezone controls schedules, display dates and usage aggregation, including half-hour day boundaries. Old hourly/daily measurements remain approximate. Folder rename checks ownership/workers and recovers metadata from an atomic-rename journal; covers and recorded dates follow the new path. User-specified filenames still take precedence over Facebook creator/caption metadata.
+
+Validation includes unit tests, actual gallery/rclone fixtures, the required sandboxed browser UI suite and the isolated systemd integration in CI. No claim is made of testing the physical Atom laptop, live social accounts or the user’s private cloud.
+
 # v2.2.6 torrent batches and duplicate confirmation
 
 Added one-selection batches of up to 20 torrent files, processed sequentially with individual results and continuation after failures/skips. Only one metadata file is encoded and sent at a time. The page must remain open until all additions finish; Transmission then handles leeching independently. New torrents are added paused and started explicitly after a successful addition, respecting the paused option and queue limits. Duplicate responses never automatically restart or relocate existing entries.

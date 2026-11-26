@@ -39,6 +39,8 @@ with tempfile.TemporaryDirectory() as folder:
         with patch('gallery_dl.extractor.find',side_effect=find),contextlib.redirect_stdout(output):
             assert instagram_story.run(spec)==0
             assert instagram_story.run(spec)==0
+        metered=sum(int(line.split()[1]) for line in output.getvalue().splitlines() if line.startswith('ZEDBYTES '))
+        assert metered==2*len(photo),(metered,output.getvalue())
         assert Handler.count==2,Handler.count
         assert len(list(dest.glob('*.jpg')))==2
         assert all(p.read_bytes()==photo for p in dest.glob('*.jpg'))

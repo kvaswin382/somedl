@@ -17,18 +17,25 @@ APP=Path('/opt/zedair')
 STATE=Path('/var/lib/zedair')
 CONFIG=Path('/etc/zedair')
 BACKUPS=Path('/var/backups/zedair')
-FILES=('torrent_add.py','activities.py','storage_tools.py','remotes.py','remote_download.py','schedules.py','backups.py','system_control.py','reddit_media.py','url_input.py','download_http.py','engine_settings.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-browser.sh','install-speedtest.py','install-speedtest.sh','README.md','TEST-REPORT.md','LICENSE','requirements.txt','update.sh','upgrade.sh','upgrade.py')
+FILES=('remote_serve.py','app_time.py','gallery_meter.py','torrent_add.py','activities.py','storage_tools.py','remotes.py','remote_download.py','schedules.py','backups.py','system_control.py','reddit_media.py','url_input.py','download_http.py','engine_settings.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-browser.sh','install-speedtest.py','install-speedtest.sh','README.md','TEST-REPORT.md','LICENSE','requirements.txt','update.sh','upgrade.sh','upgrade.py')
 
 def run(*args):
     subprocess.run([str(x) for x in args],check=True)
 
+LOCAL_SOCKET_ACTIVE=None
+
 def stop():
+    global LOCAL_SOCKET_ACTIVE
+    if LOCAL_SOCKET_ACTIVE is None:
+        LOCAL_SOCKET_ACTIVE=subprocess.run(['systemctl','is-active','--quiet','zedair-local.socket'],check=False).returncode==0
+    if LOCAL_SOCKET_ACTIVE:run('systemctl','stop','zedair-local.socket','zedair-local.service')
     run('systemctl','stop','zedair','zedair-transmission')
 
 def start():
     # Web UI still starts if the SSD is absent and Transmission cannot start.
     subprocess.run(['systemctl','start','zedair-transmission'],check=False)
     run('systemctl','start','zedair')
+    if LOCAL_SOCKET_ACTIVE:run('systemctl','start','zedair-local.socket')
 
 def backup():
     stamp=datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')
@@ -98,7 +105,7 @@ def main():
         for name in FILES:
             if not (BASE/name).is_file():raise SystemExit('Missing package file: '+name)
         with tempfile.TemporaryDirectory() as temp:
-            for name in ('torrent_add.py','activities.py','storage_tools.py','remotes.py','remote_download.py','schedules.py','backups.py','system_control.py','reddit_media.py','url_input.py','download_http.py','engine_settings.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py','profiles.py','facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py','setup-local.py','install-speedtest.py','upgrade.py'):
+            for name in ('remote_serve.py','app_time.py','gallery_meter.py','torrent_add.py','activities.py','storage_tools.py','remotes.py','remote_download.py','schedules.py','backups.py','system_control.py','reddit_media.py','url_input.py','download_http.py','engine_settings.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py','profiles.py','facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py','setup-local.py','install-speedtest.py','upgrade.py'):
                 import py_compile
                 py_compile.compile(str(BASE/name),cfile=str(Path(temp)/(name+'c')),doraise=True)
         run(APP/'venv/bin/python','-c','import yt_dlp, gallery_dl')
@@ -130,6 +137,9 @@ def main():
             from system_control import install as install_system_control
             install_system_control()
             run('apt-get','install','-y','rclone')
+            if not args.rollback:
+                from remotes import import_login_config
+                import_login_config(STATE)
         start()
         healthy()
     except Exception:

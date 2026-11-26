@@ -10,6 +10,57 @@ import threading
 from pathlib import Path
 from notifications import sanitized
 
+def remote_name(value):
+    return isinstance(value,str) and bool(re.fullmatch(r'[\w.][\w .-]{0,127}',value)) and value not in ('.','..')
+
+def merge_config(destination,content):
+    """Merge new named remotes without replacing existing credentials."""
+    import io
+    if not isinstance(content,str) or len(content.encode())>1024*1024:raise ValueError('Config must be smaller than 1 MiB')
+    source=configparser.RawConfigParser();existing=configparser.RawConfigParser()
+    try:
+        source.read_string(content)
+        if destination.exists():existing.read_string(destination.read_text())
+    except configparser.Error:raise ValueError('Invalid rclone config. For encrypted config, supply its password.') from None
+    if source.defaults() or not source.sections():raise ValueError('No named remotes found in this config')
+    for name in source.sections():
+        if not remote_name(name) or not source.get(name,'type',fallback=''):raise ValueError('Invalid remote name or missing backend type')
+    added=[];skipped=[]
+    for name in source.sections():
+        if existing.has_section(name):skipped.append(name);continue
+        existing.add_section(name)
+        for key,value in source.items(name):existing.set(name,key,value)
+        added.append(name)
+    if added:
+        if destination.is_symlink():raise ValueError('Config must not be a symlink')
+        temp=destination.with_name('.rclone-import-'+secrets.token_hex(6))
+        try:
+            with temp.open('x') as stream:
+                temp.chmod(0o600);existing.write(stream);stream.flush();os.fsync(stream.fileno())
+            os.replace(temp,destination)
+        finally:temp.unlink(missing_ok=True)
+    return {'added':added,'skipped':skipped}
+
+def import_login_config(state):
+    """Installer imports only the invoking sudo user's own regular config."""
+    import pwd,stat
+    user=os.environ.get('SUDO_USER','')
+    if not user or user=='root':return
+    account=pwd.getpwnam(user);source=Path(account.pw_dir)/'.config/rclone/rclone.conf'
+    try:
+        # No arbitrary path from the browser and no root-owned credential file.
+        fd=os.open(source,os.O_RDONLY|os.O_NOFOLLOW)
+    except FileNotFoundError:return
+    try:
+        st=os.fstat(fd)
+        if st.st_uid!=account.pw_uid or not stat.S_ISREG(st.st_mode) or st.st_size>1024*1024:raise ValueError('Unsafe login-user rclone config')
+        with os.fdopen(fd,'r',closefd=False) as stream:content=stream.read(1024*1024+1)
+        result=merge_config(state/'rclone.conf',content)
+        owner=pwd.getpwnam('zedair');os.chown(state/'rclone.conf',owner.pw_uid,owner.pw_gid)
+        print('Imported rclone remotes: '+(', '.join(result['added']) or 'none new')+'. Existing app remotes preserved.')
+    except (ValueError,UnicodeError):print('Rclone config could not be imported automatically. Use Settings → Rclone → Import config.')
+    finally:os.close(fd)
+
 
 def relative(value):
     if not isinstance(value,str) or len(value)>1024 or any(ord(c)<32 for c in value) or '\\' in value or ':' in value or value.startswith('/'):
@@ -43,7 +94,64 @@ class Remotes:
         return json.loads(p.stdout or '{}') if json_output else p.stdout
 
     def names(self):
-        return [s[:-1] for s in self.run('listremotes',json_output=False).splitlines() if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_. -]{0,63}:',s)]
+        return [s[:-1] for s in self.run('listremotes',json_output=False).splitlines() if s.endswith(':') and remote_name(s[:-1])]
+
+    def import_config(self,data):
+        with self.lock:
+            if self.desk.workers or self.desk.tasks.busy() or getattr(self.desk,'remote_servers',None) and self.desk.remote_servers.active():raise ValueError('Finish cloud work and stop streaming before importing config')
+            content=data.get('content','')
+            if not isinstance(content,str) or len(content.encode())>1024*1024:raise ValueError('Config must be smaller than 1 MiB')
+            if content.startswith('RCLONE_ENCRYPT_V0:'):
+                password=data.get('password','')
+                if not isinstance(password,str) or not password or len(password)>4096:raise ValueError('Enter the encrypted config password')
+                temp=self.desk.state/('.rclone-encrypted-'+secrets.token_hex(6))
+                try:
+                    with temp.open('x') as stream:temp.chmod(0o600);stream.write(content)
+                    env={**os.environ,'RCLONE_CONFIG_PASS':password}
+                    p=subprocess.run([shutil.which('rclone'),'--config',str(temp),'config','dump'],env=env,capture_output=True,text=True,timeout=15)
+                    if p.returncode:raise ValueError('Could not decrypt config; check its password')
+                    raw=json.loads(p.stdout);parser=configparser.RawConfigParser()
+                    for name,values in raw.items():parser[name]={k:str(v) for k,v in values.items()}
+                    import io
+                    stream=io.StringIO();parser.write(stream);content=stream.getvalue()
+                finally:temp.unlink(missing_ok=True)
+            result=merge_config(self.config,content)
+            from activities import record
+            record(self.desk,'rclone config imported',', '.join(result['added']))
+            return result
+
+    def files(self,name,path=''):
+        entries=self.run('lsjson',self.target(name,path),'--max-depth','1','--no-mimetype','--no-modtime')
+        safe=[]
+        for e in entries:
+            n=e.get('Name','')
+            try:valid=relative(n)==n and '/' not in n and bool(n)
+            except ValueError:valid=False
+            if valid:safe.append({'name':n,'directory':bool(e.get('IsDir')),'size':max(0,int(e.get('Size',0)))})
+        return {'remote':name,'path':relative(path),'entries':sorted(safe,key=lambda e:(not e['directory'],e['name'].casefold()))}
+
+    def copy(self,job,data):
+        source=self.target(data.get('remote'),data.get('path',''))
+        destination=self.target(data.get('target_remote'),data.get('target_path',''))
+        if source==destination:raise ValueError('Choose a different destination')
+        if data.get('directory') is True:
+            if not data.get('path'):raise ValueError('Select a folder, not the whole remote')
+            if data.get('remote')==data.get('target_remote') and data.get('target_path','').startswith(data['path']+'/'):raise ValueError('Cannot copy a folder into itself')
+        args=self.args('copy' if data.get('directory') is True else 'copyto',source,destination,'--immutable','--transfers','1','--checkers','1','--buffer-size','1M','--stats','1s','--use-json-log','--retries','1')
+        p=self.desk.tasks.process(job,args,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+        tail=[]
+        def monitor():
+            for line in p.stderr:
+                try:
+                    entry=json.loads(line);stats=entry.get('stats',{})
+                    if 'bytes' in stats:job['bytes']=stats['bytes'];job['detail']='Copying · '+str(stats.get('transfers',0))+' files completed'
+                    elif entry.get('level')=='error':tail.append(sanitized(entry.get('msg','')));del tail[:-3]
+                except (ValueError,TypeError):pass
+        thread=threading.Thread(target=monitor,daemon=True);thread.start()
+        try:self.desk.tasks.wait(job,p)
+        except ValueError:raise ValueError('; '.join(tail) or 'Remote copy failed; completed files kept') from None
+        finally:thread.join(timeout=2)
+        return {'remote':data.get('target_remote'),'path':data.get('target_path')}
 
     def target(self,name,path=''):
         if not isinstance(name,str) or name not in self.names():raise ValueError('Select a configured rclone remote')
@@ -98,6 +206,8 @@ class Remotes:
         tmp=self.session_path.with_suffix('.tmp');tmp.write_text(json.dumps(self.responses));tmp.chmod(0o600);os.replace(tmp,self.session_path)
 
     def delete(self,name,confirm=False):
+        if self.desk.remote_servers.active():raise ValueError('Stop remote streaming before removing a remote')
+        if any(j['kind']=='remote-copy' and j['status'] in ('running','queued') for j in self.desk.tasks.public()):raise ValueError('Wait for remote copies to finish')
         if confirm is not True or name not in self.names():raise ValueError('Confirm removing this configured remote')
         if self.desk.rows("SELECT id FROM jobs WHERE remote=? AND status IN ('running','queued','retry','blocked','paused')",(name,)):
             raise ValueError('Cancel or remove downloads using this remote first')
@@ -112,6 +222,19 @@ class Remotes:
             self.run('config','delete',name,json_output=False)
             self.questions.pop(name,None);self.responses.pop(name,None);self.save_sessions()
         return {'ok':True}
+
+    def read_target(self,name,path=''):
+        target=self.target(name,path);config=self.run('config','dump')
+        def check(remote,seen):
+            if remote in seen:raise ValueError('Circular remote configuration')
+            entry=config.get(remote,{})
+            if entry.get('type')=='cache':raise ValueError('Use the underlying remote or crypt remote; the legacy cache backend writes to disk')
+            for key in ('remote','remotes','upstreams'):
+                for ref in str(entry.get(key,'')).split():
+                    if ':' in ref:
+                        child=ref.split(':',1)[0].split('=',1)[-1]
+                        if child in config:check(child,seen|{remote})
+        check(name,set());return target
 
     def streaming_target(self,name,path,size=None):
         target=self.target(name,path)

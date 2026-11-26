@@ -131,7 +131,7 @@ def build_command(job, dest, cookie, settings, state):
         config_path = state / ('gallery-' + job['id'] + '.json')
         config_path.write_text(json.dumps(config))
         config_path.chmod(0o600)
-        args = [sys.executable, '-m', 'gallery_dl', '--config-ignore', '--config', str(config_path),
+        args = [sys.executable, str(Path(__file__).with_name('gallery_meter.py')), '--config-ignore', '--config', str(config_path),
                 '--directory', str(dest), '--write-metadata']
         if job.get('profile_mode'):
             # Lowercase --print disables downloads AND can populate the archive.

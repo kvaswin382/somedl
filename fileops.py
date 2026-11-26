@@ -6,6 +6,71 @@ from pathlib import Path
 from publishing import filename, MEDIA
 
 
+def finish_folder_rename(desk):
+    """Complete metadata after an interrupted atomic directory rename."""
+    import json
+    journal=desk.state/'folder-rename.json'
+    if not journal.exists():return
+    data=json.loads(journal.read_text())
+    old=data['source'];new=data['target']
+    source=desk.destination(old,reserve=False);target=desk.destination(new,reserve=False)
+    if source.exists():
+        if target.exists():raise ValueError('Folder rename recovery conflict; both names exist')
+        journal.unlink();return
+    if not target.is_dir() or [target.stat().st_dev,target.stat().st_ino]!=data['identity']:
+        raise ValueError('Folder rename recovery requires the original SSD folder')
+    with desk.lock:
+        try:
+            for table in ('file_dates','covers'):
+                for row in desk.rows('SELECT DISTINCT folder FROM '+table):
+                    folder=row['folder']
+                    if folder==old or folder.startswith(old+'/'):
+                        desk.db.execute('UPDATE '+table+' SET folder=? WHERE folder=?',(new+folder[len(old):],folder))
+            for row in desk.rows('SELECT id,folder,subdir FROM jobs'):
+                path='/'.join(p for p in (row['folder'],row['subdir']) if p)
+                if path==old or path.startswith(old+'/'):
+                    desk.db.execute("UPDATE jobs SET folder=?,subdir='' WHERE id=?",(new+path[len(old):],row['id']))
+            desk.db.commit()
+        except Exception:desk.db.rollback();raise
+    journal.unlink()
+
+
+def rename_folder(desk,data):
+    import json
+    from server import safe_relative
+    from activities import record
+    with desk.file_lock,desk.lock,desk.tasks.lock:
+        finish_folder_rename(desk)
+        old=safe_relative(data.get('path',''));name=safe_relative(data.get('name',''))
+        if not old or not name or '/' in name:raise ValueError('Choose a folder and one valid new name')
+        source=desk.destination(old,reserve=False)
+        if not source.is_dir():raise ValueError('Folder not found')
+        from storage_tools import stamp
+        if data.get('stamp')!=stamp(source):raise ValueError('Folder changed; refresh and try again')
+        if source.name==name:return {'path':old}
+        target=source.with_name(name)
+        if any(p.name.casefold()==name.casefold() for p in source.parent.iterdir()):raise ValueError('A file or folder already uses that name')
+        if any(j['status'] in ('queued','running') for j in desk.tasks.jobs.values()):raise ValueError('Wait for background storage/backup work to finish before renaming a folder')
+        if any(u['folder'].is_relative_to(source) for u in desk.tasks.uploads.values()):raise ValueError('Finish uploads into this folder first')
+        for job in desk.rows("SELECT * FROM jobs WHERE status IN ('queued','running','paused','blocked','retry')"):
+            if (desk.root/job['folder']/job['subdir']).is_relative_to(source):raise ValueError('A queued download uses this folder; cancel or finish it first')
+        for jid in set(desk.workers)|set(desk.processes):
+            job=desk.job(jid)
+            if (desk.root/job['folder']/job['subdir']).is_relative_to(source):raise ValueError('Wait for this folder’s download worker to stop')
+        for path in protection(desk)['torrents']:
+            if path.is_relative_to(source):raise ValueError('Remove the torrent using this folder first; keep its files')
+        folder_inventory(desk,source)  # Refuse symlinks, nested mounts and special files.
+        new=target.relative_to(desk.root).as_posix();st=source.stat()
+        journal=desk.state/'folder-rename.json';temp=journal.with_suffix('.tmp')
+        with temp.open('w') as stream:
+            json.dump({'source':old,'target':new,'identity':[st.st_dev,st.st_ino]},stream);stream.flush();os.fsync(stream.fileno())
+        temp.chmod(0o600);os.replace(temp,journal)
+        os.rename(source,target)
+        finish_folder_rename(desk)
+        record(desk,'folder renamed',old+' → '+new)
+        return {'path':new}
+
+
 def protection(desk):
     """One fresh ownership snapshot per batch; fail closed when RPC is unavailable."""
     torrents=desk.rpc.call('torrent-get',{'fields':['downloadDir','files']}).get('torrents',[])

@@ -1,10 +1,19 @@
 # Zedair Download Desk
 
-**v2.2.6** · Ubuntu 24.04 · Python 3.12 · Built for a 2 GB headless laptop + USB SSD
+**v2.3.0** · Ubuntu 24.04 · Python 3.12 · Built for a 2 GB headless laptop + USB SSD
 
 Queue webpage links from your phone or computer. Zedair finds and downloads the media on the laptop, even after you close the browser.
 
 [Install](#first-installation) · [Upgrade](#upgrade-an-existing-installation) · [Use](#everyday-use) · [Telegram](#telegram) · [Troubleshoot](#troubleshooting) · [Detailed guides](#guides)
+
+## What changed in v2.3.0
+
+- Engine updates pause the `zed.local` socket first, preventing browser polling from restarting the app during installation. Failures identify the actual step.
+- **Settings → Rclone** has separate Remotes, Browse & copy, URL downloads, Streaming and Backups tabs. Upgrade imports new remotes from the account running `sudo bash upgrade.sh`; existing app remotes are preserved. You can also import `rclone.conf` in the UI, including password-encrypted configs.
+- Streaming serves a selected remote folder over **read-only HTTP and WebDAV**, with a separate username/password. Select the laptop’s LAN address and start hosting. Open the HTTP file URL in VLC’s **Open Network Stream**; enter credentials when prompted. Two simultaneous requests share an adjustable **8–512 MiB** read-ahead budget (default 64 MiB). No SSD cache; hosting stops when the app restarts. Keep these HTTP ports on your trusted LAN.
+- Global timezone is under **General & transfers** (default Asia/Kolkata). Schedules, usage charts and UI dates follow it. Saved instants remain UTC; old usage buckets are approximate at timezone boundaries.
+- Gallery transfers count received payload; torrent usage tracks only new network bytes for Zedair torrents, excluding existing files and verification. Missing/incorrect old measurements cannot be reconstructed.
+- Files now have folder rename, breadcrumbs, back/forward and search. Active work/torrents protect their folders. Thumbnail task history is collapsible. Facebook filenames use the available creator/caption metadata.
 
 ## Upgrade an existing installation
 
@@ -22,7 +31,7 @@ sudo bash upgrade.sh
 - If Git reports local edits or a diverged branch, preserve and review them first. Do not force-reset the checkout.
 - The upgrader backs up app/state under `/var/backups/zedair`, installs into `/opt/zedair`, and checks startup. It restores the backup if its health check fails.
 - SSD downloads, saved cookies, accounts and queue history are preserved. Engine packages are updated separately.
-- Refresh with **Ctrl+F5**; the footer should show **v2.2.6**. Pulling source alone does not update the running app.
+- Refresh with **Ctrl+F5**; the footer should show **v2.3.0**. Pulling source alone does not update the running app.
 
 **This update:** select up to **20 torrent files** at once, with individual results and duplicate confirmation before downloading a fresh copy. Existing files are kept. [Torrent controls](docs/storage-cloud.md#torrent-resources-and-data).
 

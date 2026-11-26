@@ -130,6 +130,8 @@ def feeds_for(mode,images_only):
 
 
 def run(spec, slice_seconds=900):
+    from gallery_meter import install
+    install()
     from gallery_dl import config,extractor,job
     logging.basicConfig(level=logging.INFO,format='%(levelname)s %(message)s')
     conf=spec['config'];dest=Path(spec['dest']);checkpoint=dest/'.profile-checkpoint-v1.json'

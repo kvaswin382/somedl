@@ -182,6 +182,10 @@ def capture(url,jar,state,quality='best',settings=None,dest=None):
                         try:page.goto(url,wait_until='domcontentloaded',timeout=min(timeout*1000,35000))
                         except Exception as exc:errors.append('navigation: '+type(exc).__name__)
                         title=page.title()
+                        if __import__('platforms').platform_for(url)=='facebook':
+                            from publishing import facebook_title
+                            meta=page.evaluate("() => Object.fromEntries([...document.querySelectorAll('meta')].map(m=>[m.getAttribute('property')||m.name,m.content]))")
+                            title=facebook_title({'title':meta.get('og:title') or title,'description':meta.get('og:description'),'author':meta.get('author'),'id':__import__('urllib.parse',fromlist=['urlsplit']).urlsplit(url).path.strip('/').split('/')[-1]})
                         print('ZEDPROFILE Browser inspecting rendered players, frames and network variants…',flush=True)
                         iteration=0
                         while time.monotonic()<deadline:

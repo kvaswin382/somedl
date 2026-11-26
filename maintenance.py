@@ -160,7 +160,7 @@ After=network-online.target
 Type=oneshot
 ExecStart=/opt/zedair/venv/bin/python /opt/zedair/engine_update.py %i
 ExecStopPost=/opt/zedair/venv/bin/python /opt/zedair/engine_update.py --recover %i
-TimeoutStartSec=1500
+TimeoutStartSec=1800
 UMask=0077
 ''')
     unit.chmod(0o644)

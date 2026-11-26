@@ -11,6 +11,12 @@ from publishing import filename
 from activities import record
 
 
+def baseline(desk,key):
+    with desk.lock:
+        pending=desk.get_setting('new_torrent_usage',[])
+        desk.set_setting('new_torrent_usage',list(dict.fromkeys([*pending,key]))[-1000:])
+
+
 def ready(desk):
     from server import APIError
     if desk.get_setting('hold',False):raise APIError('Resume the queue before adding a torrent',409)
@@ -49,6 +55,7 @@ def add(desk,data):
         if not isinstance(item,dict) or not re.fullmatch(r'(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})',str(item.get('hashString',''))):raise APIError('Torrent engine returned no valid torrent identifier',502)
         key=item['hashString']
         if 'torrent-duplicate' not in result:
+            baseline(desk,key)
             if not paused:
                 ready(desk);desk.rpc.call('torrent-start',{'ids':[key]})
             return {'status':'added','paused':paused,'hash':key,'name':item.get('name','Torrent')}
@@ -102,6 +109,7 @@ def fresh_copy(desk,data):
             desk.rpc.call('torrent-remove',{'ids':[key],'delete-local-data':False})
             added=desk.rpc.call('torrent-add',{**arguments,'download-dir':str(folder)})
             if added.get('torrent-added',{}).get('hashString')!=key:raise APIError('Fresh torrent registration was not confirmed',502)
+            baseline(desk,key)
             desk.rpc.call('torrent-verify',{'ids':[key]})
             if not pending['paused']:
                 ready(desk);desk.rpc.call('torrent-start',{'ids':[key]})

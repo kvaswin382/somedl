@@ -64,7 +64,7 @@ def parse_result(data):
     return result
 
 
-def history_csv(history):
+def history_csv(history,timezone="UTC"):
     out=io.StringIO(newline='')
     fields=['finished','status','engine','download_mbps','upload_mbps','latency_ms','jitter_ms','server','location','isp','detail']
     writer=csv.writer(out);writer.writerow(fields)
@@ -73,7 +73,9 @@ def history_csv(history):
         for key in fields:
             value=row.get(key,'legacy-http' if key=='engine' else '')
             if key=='finished' and isinstance(value,(float,int)):
-                value=time.strftime('%Y-%m-%dT%H:%M:%SZ',time.gmtime(value))
+                import datetime
+                from zoneinfo import ZoneInfo
+                value=datetime.datetime.fromtimestamp(value,ZoneInfo(timezone)).isoformat().replace('+00:00','Z')
             if isinstance(value,str) and value.lstrip().startswith(('=','+','-','@')):
                 value="'"+value
             values.append(value)

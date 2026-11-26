@@ -65,7 +65,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.2.6')
+            expect(page.locator('#appVersion')).to_have_text('v2.3.0')
             original_theme(page)
             # Toasts stay at the top and above nested modal backdrops, without stealing focus.
             for width,dark in [(1360,False),(1360,True),(390,False),(390,True)]:
@@ -226,6 +226,12 @@ with sync_playwright() as pw:
             screenshot(page,'engines-desktop')
             page.locator('#themeBtn').click();original_theme(page,True);screenshot(page,'engines-desktop-dark')
             page.locator('#themeBtn').click()
+            page.locator('[data-settings-tab=general]').click()
+            page.locator('#globalTimezone').select_option('Europe/London')
+            page.wait_for_function("() => state.settings.timezone === 'Europe/London'")
+            assert desk.get_setting('timezone')=='Europe/London'
+            page.locator('#globalTimezone').select_option('Asia/Kolkata')
+            page.wait_for_function("() => state.settings.timezone === 'Asia/Kolkata'")
             page.locator('[data-settings-tab=usage]').click()
             expect(page.locator('#usageReport svg')).to_be_visible()
             expect(page.locator('#usageReport')).to_contain_text('files.example.com')
@@ -324,11 +330,14 @@ with sync_playwright() as pw:
             page.route('**/api/remotes',lambda route:pending_cloud.append(route))
             with page.expect_request('**/api/remotes'):
                 page.locator('[data-settings-tab=backup]').click()
+            page.locator('[data-cloud-tab=downloads]').click()
             expect(page.locator('#remoteDownloadForm')).to_be_visible()
             expect(page.locator('#remoteDownloadForm button[type=submit]')).to_be_disabled()
             expect(page.locator('#remoteDownloadEmpty')).to_be_visible()
             page.route('**/api/remotes',lambda route:route.fulfill(json={'remotes':['fixture-drive'],'pending':[]}))
+            page.locator('[data-cloud-tab=remotes]').click()
             page.locator('#refreshRemotes').click()
+            page.locator('[data-cloud-tab=downloads]').click()
             expect(page.locator('#remoteDownloadForm [name=remote]')).to_have_value('fixture-drive')
             assert len(pending_cloud)==1
             with page.expect_response('**/api/remotes') as old_cloud_response:
@@ -358,6 +367,7 @@ with sync_playwright() as pw:
             assert cloud_submissions[0]['urls']==['https://example.com/video']
             assert cloud_submissions[0]['quality']=='best' and cloud_submissions[0]['container']=='mp4'
             page.unroute('**/api/jobs');page.unroute('**/api/remotes/browse?*');page.unroute('**/api/remotes')
+            page.locator('[data-cloud-tab=backups]').click()
             expect(page.locator('#backupForm')).to_be_visible()
             page.locator('#backupForm [name=repeat]').select_option('weekly')
             expect(page.locator('#backupForm [name=weekday]')).to_be_visible()
@@ -368,6 +378,23 @@ with sync_playwright() as pw:
             expect(page.locator('#linkCount')).to_have_text('2 links')
             page.locator('#downloadDialog [data-close]').click()
             page.locator('[data-page=files]').click()
+            # Rename folders without changing covers/files; explorer history and search.
+            explorer=desk.root/'Explorer fixture';explorer.mkdir();(explorer/'kept.txt').write_bytes(b'kept')
+            page.locator('#refreshFiles').click()
+            page.locator('[data-rename-folder="Explorer fixture"]').click()
+            page.locator('#organizeForm [name=name]').fill('Renamed fixture')
+            page.locator('#organizeSubmit').click();expect(page.locator('#organizeDialog')).not_to_be_visible()
+            assert (desk.root/'Renamed fixture/kept.txt').read_bytes()==b'kept'
+            page.locator('#fileList [data-file-folder="Renamed fixture"]').click()
+            expect(page.locator('#filePath')).to_contain_text('Renamed fixture')
+            expect(page.locator('#fileList')).to_contain_text('kept.txt')
+            page.locator('#filesBack').click();expect(page.locator('#fileList [data-file-folder="Renamed fixture"]')).to_be_visible()
+            page.locator('#filesForward').click();expect(page.locator('#fileList')).to_contain_text('kept.txt')
+            page.locator('#filePath [data-file-folder=""]').click()
+            page.locator('#fileSearch').fill('Renamed fixture')
+            expect(page.locator('#filesCount')).to_have_text('1 items')
+            page.locator('#fileSearch').fill('');expect(page.locator('#fileList [data-file-folder="Travel photos"]')).to_be_visible()
+            no_overflow(page);screenshot(page,'explorer-mobile-dark')
             upload_chunks=[]
             def capture_upload(request):
                 if request.url.endswith('/api/files/upload') and request.headers.get('content-type')=='application/octet-stream':
@@ -407,6 +434,10 @@ with sync_playwright() as pw:
             # Real button -> asynchronous deletion, visible verification progress -> completed count.
             for name in ('duplicate-a.bin','duplicate-b.bin'):(desk.root/name).write_bytes(b'identical fixture bytes')
             page.locator('[data-page=settings]').click();page.locator('[data-settings-tab=storage]').click()
+            expect(page.locator('#thumbnailTasks')).not_to_be_visible()
+            page.locator('#thumbnailQueueLabel').click();expect(page.locator('#thumbnailTasks')).to_be_visible()
+            page.evaluate('() => pollTasks()');expect(page.locator('#thumbnailTasks')).to_be_visible()
+            page.locator('#thumbnailQueueLabel').click()
             page.locator('#scanDuplicates').click()
             expect(page.locator('[data-review-duplicates]')).to_be_visible(timeout=15000)
             page.locator('[data-review-duplicates]').click()

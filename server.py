@@ -218,6 +218,13 @@ class Desk:
         for table in ('usage','usage_hourly'):
             if 'uploaded' not in {r[1] for r in self.db.execute('PRAGMA table_info('+table+')')}:
                 self.db.execute('ALTER TABLE '+table+' ADD COLUMN uploaded INTEGER DEFAULT 0')
+        if not self.db.execute("SELECT 1 FROM settings WHERE key='usage_bucket_reconcile_v227'").fetchone():
+            # Older installations may have daily totals from before hourly
+            # accounting existed. Preserve those bytes as noon-UTC legacy buckets.
+            legacy=self.db.execute('SELECT u.day,u.domain,u.bytes-coalesce(h.b,0),u.uploaded-coalesce(h.up,0) FROM usage u LEFT JOIN (SELECT substr(hour,1,10) day,domain,sum(bytes) b,sum(uploaded) up FROM usage_hourly GROUP BY day,domain) h ON u.day=h.day AND u.domain=h.domain').fetchall()
+            for day,domain,down,up in legacy:
+                if down>0 or up>0:self.db.execute('INSERT INTO usage_hourly VALUES(?,?,?,?) ON CONFLICT(hour,domain) DO UPDATE SET bytes=bytes+excluded.bytes,uploaded=uploaded+excluded.uploaded',(day+'T12',domain,max(0,down),max(0,up)))
+            self.db.execute("INSERT INTO settings VALUES('usage_bucket_reconcile_v227','true')")
         self.db.execute('CREATE TABLE IF NOT EXISTS covers(folder TEXT PRIMARY KEY,name TEXT)')
         self.db.execute('CREATE TABLE IF NOT EXISTS backups(remote TEXT,path TEXT,created REAL,owner TEXT,PRIMARY KEY(remote,path))')
         self.db.commit()
@@ -259,6 +266,8 @@ class Desk:
         from activities import Tasks
         from remotes import Remotes
         self.tasks=Tasks(self);self.remotes=Remotes(self)
+        from remote_serve import RemoteServers
+        self.remote_servers=RemoteServers(self)
 
 
     def rows(self, sql, args=()):
@@ -529,7 +538,9 @@ class Desk:
             if line.startswith('ZEDENGINE '):
                 engine=line[10:].strip()
                 if engine in ('video','page','browser','direct','gallery'):
-                    live.update(engine=engine,speed=0,eta=None,transfer_state='connecting');live.pop('progress_at',None);self.update_job(jid,engine=engine)
+                    live.update(engine=engine,speed=0,eta=None,transfer_state='connecting');live.pop('progress_at',None)
+                    for key in ('exact_bytes','counted_bytes','counted_file'):live.pop(key,None)
+                    self.update_job(jid,engine=engine)
             elif line.startswith('ZEDOWNER '):
                 owner=line[9:].strip()
                 if re.fullmatch(r'[A-Za-z0-9_.]{1,30}',owner):live['owner']=owner
@@ -789,10 +800,9 @@ class Desk:
                     self.apply_torrent_settings()
                     configured = True
                 result = self.rpc.call('torrent-get', {'fields': ['id','hashString','name','status','percentDone',
-                    'rateDownload','rateUpload','eta','totalSize','errorString','uploadRatio','downloadDir','metadataPercentComplete','queuePosition','peersConnected','peersSendingToUs','peersGettingFromUs','trackerStats']})
+                    'rateDownload','rateUpload','eta','totalSize','errorString','uploadRatio','downloadDir','metadataPercentComplete','queuePosition','peersConnected','peersSendingToUs','peersGettingFromUs','trackerStats','downloadedEver','uploadedEver','addedDate']})
                 items = [t for t in result.get('torrents', []) if self.owned_torrent(t)]
-                stats=self.rpc.call('session-stats').get('cumulative-stats',{})
-                self.record_torrent_usage(stats)
+                self.record_owned_torrent_usage(items)
                 with self.lock:
                     self.torrents = items
                     self.torrent_error = ''
@@ -820,6 +830,7 @@ class Desk:
             self.threads.append(thread)
 
     def close(self):
+        self.remote_servers.close()
         self.speedtest.close()
         self.stop.set()
         for thread in self.threads:
@@ -845,7 +856,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'telegram_result':self.get_setting('telegram_last_result',{}), 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.2.6', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.3.0', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def add_stories(self,data):
         from instagram_story import target
@@ -865,7 +876,7 @@ class Desk:
         if count<=0:return
         try:domain=urllib.parse.urlsplit(self.job(jid)['url']).hostname or 'unknown'
         except APIError:return
-        hour=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H')
+        hour=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M')
         with self.lock:
             key=(hour,domain);self.usage_pending[key]=self.usage_pending.get(key,0)+count
         self.flush_usage()
@@ -883,28 +894,11 @@ class Desk:
             self.db.commit();self.usage_pending.clear();self.upload_pending.clear();self.usage_flushed=now()
 
     def usage_summary(self,period):
-        today=datetime.datetime.now(datetime.timezone.utc).date()
-        starts={'day':today,'week':today-datetime.timedelta(days=today.weekday()),'month':today.replace(day=1),'year':today.replace(month=1,day=1)}
-        if period not in starts:raise APIError('Choose day, week, month or year')
-        self.flush_usage(force=True)
-        since=starts[period].isoformat()
-        domains=self.rows('SELECT domain,sum(bytes) AS bytes,sum(uploaded) AS uploaded FROM usage WHERE day>=? AND day<=? GROUP BY domain ORDER BY bytes DESC',(since,today.isoformat()))
-        if period=='day':
-            points=self.rows('SELECT hour AS label,sum(bytes) AS bytes,sum(uploaded) AS uploaded FROM usage_hourly WHERE hour LIKE ? GROUP BY hour',(since+'%',))
-            labels=[since+'T'+str(h).zfill(2) for h in range(24)]
-        elif period=='year':
-            points=self.rows('SELECT substr(day,1,7) AS label,sum(bytes) AS bytes,sum(uploaded) AS uploaded FROM usage WHERE day>=? AND day<=? GROUP BY label',(since,today.isoformat()))
-            labels=[f'{today.year}-{m:02}' for m in range(1,13)]
-        else:
-            points=self.rows('SELECT day AS label,sum(bytes) AS bytes,sum(uploaded) AS uploaded FROM usage WHERE day>=? AND day<=? GROUP BY day',(since,today.isoformat()))
-            labels=[(starts[period]+datetime.timedelta(days=n)).isoformat() for n in range((today-starts[period]).days+1)]
-        values={r['label']:r['bytes'] for r in points};uploads={r['label']:r['uploaded'] for r in points}
-        return {'period':period,'timezone':'UTC','since':since,'domains':domains,
-            'uploaded':sum(r['uploaded'] for r in domains),'total':sum(r['bytes'] for r in domains),'series':[{'label':k,'bytes':values.get(k,0),'uploaded':uploads.get(k,0)} for k in labels],
-            'note':'Website payload, torrent download/upload counters and rclone streamed upload bytes. Browser traffic and protocol overhead are excluded. Retransfers count again; upload/torrent history starts with this upgrade.'}
+        from app_time import summary
+        return summary(self,period)
 
     def record_direction(self,domain,downloaded=0,uploaded=0):
-        hour=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H')
+        hour=datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M')
         with self.lock:
             key=(hour,domain)
             if downloaded>0:self.usage_pending[key]=self.usage_pending.get(key,0)+downloaded
@@ -922,6 +916,27 @@ class Desk:
         with self.lock:
             self.db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',('torrent_usage_cursor',json.dumps(stats)))
             self.flush_usage(force=True)
+
+    def record_owned_torrent_usage(self,items):
+        # downloadedEver is wire payload, not haveValid/totalSize/percentDone.
+        # Baseline an unseen torrent; never import historical daemon counters.
+        with self.lock:
+            old=self.get_setting('owned_torrent_usage',{});current={};fresh=self.get_setting('new_torrent_usage',[])
+            remaining=set(fresh)
+            for item in items:
+                key=str(item.get('hashString',''))+':'+str(item.get('addedDate',''))
+                pair=[item.get('downloadedEver'),item.get('uploadedEver')]
+                if not all(type(n) is int and n>=0 for n in pair):continue
+                current[key]=pair
+                if item.get('hashString') in remaining:
+                    old[key]=[0,0];remaining.discard(item['hashString'])
+                if key in old:
+                    delta=[n-p if n>=p else n for n,p in zip(pair,old[key])]
+                    self.record_direction('BitTorrent',*delta)
+            if current!=old or set(fresh)!=remaining:
+                self.db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',('new_torrent_usage',json.dumps(sorted(remaining))))
+                self.db.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',('owned_torrent_usage',json.dumps(current)))
+                self.flush_usage(force=True)
 
     def queue_notice(self,job,error):
         settings=self.settings()
@@ -1107,11 +1122,18 @@ class Handler(BaseHTTPRequestHandler):
             from activities import processes
             self.reply({'processes':processes(d)})
         elif p.path == '/api/remotes':
-            self.reply({'remotes':d.remotes.names(),'pending':[name for name,value in dict(d.remotes.questions).items() if value]})
+            self.reply({'remotes':d.remotes.names(),'config_path':str(d.remotes.config),'pending':[name for name,value in dict(d.remotes.questions).items() if value]})
+        elif p.path == '/api/remotes/serve':
+            self.reply(d.remote_servers.public())
+        elif p.path == '/api/remotes/files':
+            self.reply(d.remotes.files(query.get('remote',[''])[0],query.get('path',[''])[0]))
         elif p.path == '/api/remotes/providers':
             self.reply({'providers':d.remotes.providers()})
         elif p.path == '/api/remotes/browse':
             self.reply(d.remotes.browse(query.get('remote',[''])[0],query.get('path',[''])[0]))
+        elif p.path == '/api/timezones':
+            from zoneinfo import available_timezones
+            self.reply({'timezones':sorted(available_timezones())})
         elif p.path == '/api/schedules':
             self.reply({k:d.get_setting(k+'_schedule',{}) for k in ('backup','reboot')})
         elif p.path == '/api/system/control':
@@ -1168,6 +1190,9 @@ class Handler(BaseHTTPRequestHandler):
             self.reply({'jobs':jobs})
         elif p.path == '/api/folders':
             relative = query.get('path', [''])[0]
+            from fileops import finish_folder_rename
+            if (d.state/'folder-rename.json').exists():
+                with d.file_lock:finish_folder_rename(d)
             path = d.destination(relative, reserve=False)
             if not path.is_dir():
                 raise APIError('Folder not found', 404)
@@ -1186,6 +1211,7 @@ class Handler(BaseHTTPRequestHandler):
                 for child in listing:
                     item=path/child.name
                     if child.is_symlink() or child.name.startswith('.') or item in reserved:continue
+                    if query.get('search',[''])[0].casefold() not in child.name.casefold():continue
                     try:
                         stat=child.stat(follow_symlinks=False);directory=stat_mode.S_ISDIR(stat.st_mode)
                         if not directory and not stat_mode.S_ISREG(stat.st_mode):continue
@@ -1226,7 +1252,7 @@ class Handler(BaseHTTPRequestHandler):
             if pending:queue_thumbnails(d,pending)
             self.reply({'path':relative,'entries':entries,'limit':limit,'offset':offset,'total':total,'more':offset+len(entries)<total,'sort':sort,'order':order})
         elif p.path == '/api/speedtest/history.csv':
-            raw=history_csv(d.speedtest.history())
+            raw=history_csv(d.speedtest.history(),d.get_setting('timezone','Asia/Kolkata'))
             self.send_response(200);self.headers_common()
             self.send_header('Content-Type','text/csv; charset=utf-8')
             self.send_header('Content-Disposition','attachment; filename="zedair-speed-tests.csv"')
@@ -1353,6 +1379,15 @@ class Handler(BaseHTTPRequestHandler):
             self.reply({'ok': True}, cookie='')
             return
         if d.get_setting('reboot_requested_at') and path not in ('/api/logout',):raise APIError('Scheduled reboot in progress; retry after reconnecting',409)
+        if path == '/api/remotes/serve':
+            if data.get('action')=='stop':d.remote_servers.close();self.reply(d.remote_servers.public())
+            else:self.reply(d.remote_servers.start(data))
+            return
+        if path == '/api/remotes/import':
+            self.reply(d.remotes.import_config(data));return
+        if path == '/api/remotes/copy':
+            d.remotes.target(data.get('remote'),data.get('path',''));d.remotes.target(data.get('target_remote'),data.get('target_path',''))
+            self.reply(d.tasks.submit('remote-copy',lambda job:d.remotes.copy(job,data)));return
         if path == '/api/remotes/delete':
             self.reply(d.remotes.delete(data.get('remote'),data.get('confirm')));return
         if path == '/api/remotes/mkdir':
@@ -1414,6 +1449,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == '/api/files/manage':
             from fileops import manage_batch
             self.reply(manage_batch(d,data));return
+        elif path == '/api/folders/rename':
+            from fileops import rename_folder
+            self.reply(rename_folder(d,data));return
         elif path == '/api/folders/inspect':
             from fileops import inspect_folder
             self.reply(inspect_folder(d,data));return

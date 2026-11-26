@@ -1,4 +1,4 @@
-"""In-process cron calendar in Asia/Kolkata; no shell expressions or crontab edits."""
+"""In-process cron calendar in the global application timezone; no shell expressions or crontab edits."""
 import datetime
 import re
 from zoneinfo import ZoneInfo
@@ -24,9 +24,9 @@ def fields(expression):
     return parts,output
 
 
-def matches(expression,when):
+def matches(expression,when,zone=ZONE):
     parts,sets=fields(expression);minute,hour,day,month,weekday=sets
-    dt=when.astimezone(ZONE)
+    dt=when.astimezone(zone)
     dom=dt.day in day;dow=(dt.weekday()+1)%7 in weekday
     calendar=(dom or dow) if parts[2]!='*' and parts[4]!='*' else dom and dow
     return dt.minute in minute and dt.hour in hour and dt.month in month and calendar
@@ -37,7 +37,7 @@ def save(desk,data):
     if kind not in ('backup','reboot'):raise ValueError('Unknown schedule')
     enabled=data.get('enabled') is True;cron=str(data.get('cron','0 3 * * *'))
     fields(cron)
-    value={'enabled':enabled,'cron':cron,'timezone':'Asia/Kolkata'}
+    value={'enabled':enabled,'cron':cron,'timezone':desk.get_setting('timezone','Asia/Kolkata')}
     if kind=='backup':
         value.update(backup_options(desk,data))
     desk.set_setting(kind+'_schedule',value)
@@ -57,6 +57,7 @@ def busy(desk):
     # Include seed uploads, uploads to folders, backup streams, speed tests and
     # workers that are still exiting after pause.
     if desk.workers or desk.processes or desk.tasks.busy() or desk.speedtest.snapshot().get('status')=='running':return True
+    if desk.remote_servers.readers:return True
     if desk.torrent_error:return True  # Cannot prove idle while RPC is unavailable.
     return any(t.get('status') in (1,2,3,4,5,6) for t in desk.torrents)
 
@@ -69,10 +70,11 @@ def loop(desk):
     while not desk.stop.wait(15):
         if desk.get_setting('reboot_requested_at') and __import__('time').time()-desk.get_setting('reboot_requested_at')>60:
             desk.set_setting('hold',desk.get_setting('reboot_restore_hold',False));desk.write("DELETE FROM settings WHERE key IN ('reboot_restore_hold','reboot_requested_at')");record(desk,'reboot did not occur','Queue state restored; inspect system control status')
-        when=datetime.datetime.now(ZONE);key=when.strftime('%Y-%m-%dT%H:%M')
+        from app_time import zone
+        tz=zone(desk);when=datetime.datetime.now(tz);key=when.strftime('%Y-%m-%dT%H:%M')
         for kind in ('backup','reboot'):
             s=desk.get_setting(kind+'_schedule',{})
-            if not s.get('enabled') or not matches(s['cron'],when) or desk.get_setting(kind+'_last_tick')==key:continue
+            if not s.get('enabled') or not matches(s['cron'],when,tz) or desk.get_setting(kind+'_last_tick')==key:continue
             desk.set_setting(kind+'_last_tick',key)
             try:
                 if kind=='backup':
@@ -85,7 +87,7 @@ def loop(desk):
                         old=desk.get_setting('hold',False);desk.set_setting('hold',True)
                         try:
                             desk.set_setting('reboot_restore_hold',old);desk.set_setting('reboot_requested_at',when.timestamp())
-                            record(desk,'scheduled reboot','Asia/Kolkata '+key)
+                            record(desk,'scheduled reboot',str(tz)+' '+key)
                             p=subprocess.run(['/usr/bin/systemctl','--no-ask-password','start','--no-block','zedair-reboot.service'],capture_output=True,text=True,timeout=10)
                             if p.returncode:raise ValueError('Reboot integration unavailable; run upgrade.sh')
                             # Hold is restored by startup, after the OS has restarted.

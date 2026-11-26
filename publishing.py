@@ -24,11 +24,27 @@ def fingerprint(path):
         last = stream.read(65536)
     return hashlib.sha256(str(size).encode()+first+last).hexdigest()
 
-def title_for(path):
+def facebook_title(data, fallback='Facebook'):
+    """Use only metadata exposed for this post; never invent a creator/caption."""
+    creator=data.get('uploader') or data.get('creator') or data.get('channel') or data.get('author')
+    if isinstance(creator,dict):creator=creator.get('name')
+    if not isinstance(creator,str):creator=''
+    caption=data.get('description') or data.get('title') or ''
+    if not isinstance(caption,str):caption=''
+    caption=re.sub(r'\s*[|–-]\s*Facebook\s*$','',caption,flags=re.I).strip()
+    if caption.lower() in ('facebook','log in or sign up','watch'):caption=''
+    creator=creator.strip()
+    value=(creator+' - '+caption) if creator and caption and creator!=caption else creator or caption
+    return filename(value or (fallback+' - '+str(data.get('id','video'))))
+
+
+def title_for(path,platform=''):
     for meta in (path.with_suffix('.info.json'),path.with_suffix('.json'),Path(str(path)+'.json')):
         if meta.is_file() and meta.stat().st_size < 16*1024*1024:
             try:
                 data=json.loads(meta.read_text())
+                if platform=='facebook' or str(data.get('extractor','')).lower().startswith('facebook'):
+                    return facebook_title(data)
                 value=data.get('title') or data.get('description')
                 if value:
                     return filename(value)
@@ -53,7 +69,8 @@ def _publish(desk, job, stage, destination):
             continue
         desk.destination(str(destination.relative_to(desk.root)),reserve=False)
         custom=job.get('filename','')
-        stem=filename(Path(custom).stem if Path(custom).suffix.lower() in MEDIA or Path(custom).suffix.lower()==source.suffix.lower() else custom) if custom else title_for(source)
+        import platforms
+        stem=filename(Path(custom).stem if Path(custom).suffix.lower() in MEDIA or Path(custom).suffix.lower()==source.suffix.lower() else custom) if custom else title_for(source,platforms.platform_for(job.get('url','')))
         marker=('ZEDAIR-RESERVED:'+jid+':'+source.name).encode()
         for index in range(100000):
             target=destination/(stem+(f' ({index})' if index else '')+source.suffix.lower())

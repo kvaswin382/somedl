@@ -1,5 +1,6 @@
 """Shared, validated configuration; one location for operational limits."""
 DEFAULTS = {
+    'timezone':'Asia/Kolkata',
     'torrent_peers_global':64, 'torrent_peers_per_torrent':20,
     'torrent_memory_mib':1024, 'torrent_concurrency':1, 'browser_memory_wait':120,
     'simultaneous_downloads': 1, 'browser_timeout': 90, 'browser_settle': 6,
@@ -23,7 +24,10 @@ RANGES = {'torrent_peers_global':(10,1000), 'torrent_peers_per_torrent':(10,150)
 def checked(data):
     result={}
     for key,value in data.items():
-        if key in RANGES:
+        if key=='timezone':
+            from app_time import checked as check_timezone
+            result[key]=check_timezone(value)
+        elif key in RANGES:
             if isinstance(value,bool):raise ValueError('Invalid '+key)
             n=int(value);lo,hi=RANGES[key]
             if str(value).strip()!=str(n) or not lo<=n<=hi:raise ValueError(f'{key} must be {lo}–{hi}')

@@ -17,7 +17,9 @@ def backup(desk,job,options):
     name=options['remote'];root=relative(options.get('path',''));scope=options['scope']
     appid=desk.get_setting('backup_app_id')
     if not appid:appid=secrets.token_hex(16);desk.set_setting('backup_app_id',appid)
-    target='/'.join(p for p in (root,'zedair-'+appid,time.strftime('%Y%m%dT%H%M%SZ',time.gmtime())+'-'+job['id']+'.tar') if p)
+    import datetime
+    from app_time import zone
+    target='/'.join(p for p in (root,'zedair-'+appid,datetime.datetime.now(zone(desk)).strftime('%Y%m%dT%H%M%S%z')+'-'+job['id']+'.tar') if p)
     remote=desk.remotes
     args=remote.stream_args(name,target)
     snapshot=desk.state/('.backup-'+job['id']+'.sqlite3')
@@ -50,7 +52,7 @@ def backup(desk,job,options):
             if (before.st_size,before.st_mtime_ns)!=(after.st_size,after.st_mtime_ns):raise ValueError('File changed during backup: '+arc+'; retry while idle')
             job['detail']='Uploading '+arc
         with tarfile.open(fileobj=Writer(),mode='w|',bufsize=64*1024) as tar:
-            manifest=json.dumps({'app':'zedair','format':1,'owner':appid,'scope':scope,'created':time.time(),'timezone':'Asia/Kolkata'}).encode()
+            manifest=json.dumps({'app':'zedair','format':1,'owner':appid,'scope':scope,'created':time.time(),'timezone':desk.get_setting('timezone','Asia/Kolkata')}).encode()
             info=tarfile.TarInfo('zedair-backup.json');info.size=len(manifest);info.mode=0o600;tar.addfile(info,io.BytesIO(manifest))
             if scope in ('system','both'):
                 add(tar,snapshot,'system/state/desk.sqlite3')

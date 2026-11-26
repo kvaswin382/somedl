@@ -11,11 +11,12 @@ class EngineUpdateTests(unittest.TestCase):
             def run(args,**kwargs):
                 calls.append(args)
                 if '--upgrade' in args:raise subprocess.CalledProcessError(1,args)
-                return subprocess.CompletedProcess(args,0)
+                return subprocess.CompletedProcess(args,0,stdout='',stderr='')
             with patch.object(engine_update,'status_path',return_value=status),patch.object(engine_update,'UPDATE_LOCK',root/'lock'),patch.object(engine_update.importlib.metadata,'version',return_value='1.2.3'),patch.object(engine_update.subprocess,'run',side_effect=run):
                 engine_update.update('yt-dlp')
-            self.assertEqual(calls[0],['systemctl','stop','zedair'])
-            self.assertEqual(calls[-1],['systemctl','start','zedair'])
+            self.assertEqual(calls[0],['systemctl','is-active','--quiet','zedair-local.socket'])
+            self.assertLess(calls.index(['systemctl','stop','zedair-local.socket','zedair-local.service']),calls.index(['systemctl','stop','zedair']))
+            self.assertEqual(calls[-2:], [['systemctl','start','zedair'],['systemctl','start','zedair-local.socket']])
             self.assertTrue(any('yt-dlp[default]==1.2.3' in c for c in calls))
             self.assertEqual(json.loads(status.read_text())['status'],'error')
     def test_timeout_recovery_restarts_service_and_updates_status(self):
@@ -23,7 +24,7 @@ class EngineUpdateTests(unittest.TestCase):
             root=Path(tmp);status=root/'status.json';status.write_text('{"status":"running"}')
             with patch.object(engine_update,'status_path',return_value=status),patch.object(engine_update,'UPDATE_LOCK',root/'lock'),patch.object(engine_update.os,'geteuid',return_value=0),patch.object(engine_update.subprocess,'run') as run:
                 engine_update.recover('yt-dlp')
-                run.assert_called_once_with(['systemctl','start','zedair'],check=True)
+                run.assert_called_once_with(['systemctl','start','zedair'],check=True,timeout=60,capture_output=True,text=True)
             self.assertEqual(json.loads(status.read_text())['status'],'error')
     def test_recovery_never_restarts_during_another_engine_update(self):
         with tempfile.TemporaryDirectory() as tmp:

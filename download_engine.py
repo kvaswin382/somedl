@@ -94,7 +94,7 @@ def gallery_args(spec,url,cookie):
          'downloader':{'http':{'rate':str(spec['settings'].get('media_kib',0))+'k' if spec['settings'].get('media_kib') else None},
                        'ytdl':{'options':{'format':'bv*+ba/b','concurrent_fragment_downloads':1}}}}
     path=Path(spec['dest'])/'.gallery-config.json';http.atomic_json(path,cfg)
-    return [sys.executable,'-m','gallery_dl','--config-ignore','--config',str(path),'--cookies',str(cookie),'--',url]
+    return [sys.executable,str(Path(__file__).with_name('gallery_meter.py')),'--config-ignore','--config',str(path),'--cookies',str(cookie),'--',url]
 
 
 def media_args(spec,url,cookie,headers=None,stable=False):
@@ -200,7 +200,14 @@ def run(spec):
             # HLS/DASH segments become a normal MP4, with original codecs.
             if '--remux-video' in args:args[args.index('--remux-video')+1]='mp4'
             else:args[args.index('--'):args.index('--')]=['--remux-video','mp4']
-        return execute(args)[0]
+        result=execute(args)[0]
+        if result==0 and platforms.platform_for(source)=='facebook':
+            for meta in dest.glob('*.info.json'):
+                try:
+                    info=json.loads(meta.read_text());info['title']=title;info['description']=title
+                    http.atomic_json(meta,info)
+                except (ValueError,OSError):pass
+        return result
     try:
         for attempt in range(settings['refresh_attempts']+1):
             save_jar()

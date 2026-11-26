@@ -35,6 +35,8 @@ def target(value,mode):
 
 
 def run(spec):
+    from gallery_meter import install
+    install()
     from gallery_dl import config,extractor,job
     dest=Path(spec['dest']);settings=spec['settings']
     config.clear()

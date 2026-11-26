@@ -28,6 +28,7 @@ function transferInfo(j){
   const known=Number.isFinite(j.eta)&&j.eta>=0&&Number.isFinite(j.speed)&&j.speed>0;
   return `${bytes(j.speed)}/s · ETA ${known?eta(j.eta)+' · current file':'—'}`;
 }
+const appDate = n => new Date(n*1000).toLocaleString(undefined,{timeZone:state?.settings?.timezone||'Asia/Kolkata'});
 const labels = {running:'Downloading',queued:'Queued',retry:'Retry waiting',blocked:'Waiting for SSD',paused:'Paused',done:'Finished',error:'Needs attention',cancelled:'Cancelled'};
 const symbols = {video:'↙',instagram:'▦',threads:'@'};
 const toastLabels={success:'Success',error:'Error',warning:'Warning',info:'Info'};
@@ -154,14 +155,18 @@ async function setPage(next){
   if(!state)return;
   if(next==='queue')renderJobs();if(next==='torrents')renderTorrents();if(next==='files')await loadFiles();if(next==='settings')renderSettings();if(next==='speed')renderSpeed();if(next==='tools'){renderTools();renderProfileJobs();}
 }
-let fileLoadController,previewPoll,previewAttempts=0;
+let fileLoadController,previewPoll,previewAttempts=0,fileHistory=[''],fileHistoryIndex=0,fileSearchTimer;
+function fileNavigate(path,history=true){if(history&&fileHistory[fileHistoryIndex]!==path){fileHistory.splice(fileHistoryIndex+1);fileHistory.push(path);fileHistoryIndex=fileHistory.length-1;}filePath=path;$('#fileSearch').value='';return loadFiles();}
+$('#filesBack').onclick=()=>action(()=>{if(fileHistoryIndex>0)return fileNavigate(fileHistory[--fileHistoryIndex],false);});
+$('#filesForward').onclick=()=>action(()=>{if(fileHistoryIndex+1<fileHistory.length)return fileNavigate(fileHistory[++fileHistoryIndex],false);});
+$('#fileSearch').oninput=()=>{clearTimeout(fileSearchTimer);fileSearchTimer=setTimeout(()=>{fileOffset=0;action(loadFiles);},250);};
 async function loadFiles(){
   clearTimeout(previewPoll);previewAttempts=0;
   if(fileLoadController)fileLoadController.abort();fileLoadController=new AbortController();
   if(loadedFilePath!==filePath){fileOffset=0;loadedFilePath=filePath;selectedFiles.clear();}
   const request=++fileRequest;
-  $('#filePath').textContent='Zedair/'+filePath;$('#filesUp').disabled=!filePath;
-  try{const result=await api('folders?path='+encodeURIComponent(filePath)+'&offset='+fileOffset+'&limit='+filePageSize+'&sort='+fileSort.split('-')[0]+'&order='+fileSort.split('-')[1],undefined,{signal:fileLoadController.signal});if(request!==fileRequest)return;
+  const bits=filePath?filePath.split('/'):[];$('#filePath').innerHTML=['<button class="text-button" data-file-folder="">Zedair</button>',...bits.map((n,i)=>`<span>/</span><button class="text-button" data-file-folder="${E(bits.slice(0,i+1).join('/'))}">${E(n)}</button>`)].join('');$('#filesUp').disabled=!filePath;$('#filesBack').disabled=fileHistoryIndex===0;$('#filesForward').disabled=fileHistoryIndex+1>=fileHistory.length;
+  try{const result=await api('folders?path='+encodeURIComponent(filePath)+'&search='+encodeURIComponent($('#fileSearch').value)+'&offset='+fileOffset+'&limit='+filePageSize+'&sort='+fileSort.split('-')[0]+'&order='+fileSort.split('-')[1],undefined,{signal:fileLoadController.signal});if(request!==fileRequest)return;
     fileEntries=result.entries;fileTotal=result.total??result.entries.length;
     if(!fileEntries.length&&fileOffset){fileOffset=Math.max(0,fileOffset-filePageSize);return loadFiles();}
     for(const entry of fileEntries){const key=join(filePath,entry.name);if(selectedFiles.has(key)&&selectedFiles.get(key)!==entry.stamp)selectedFiles.delete(key);}
@@ -201,13 +206,13 @@ function renderFiles(){
     const path=join(filePath,entry.name),attrs=entry.directory?`data-file-folder="${E(path)}"`:`data-preview-file="${E(path)}" data-preview-kind="${E(entry.preview)}"`;
     const icon=entry.thumbnail?`<img class="row-thumbnail" src="/api/thumbnail?path=${encodeURIComponent(path)}&v=${encodeURIComponent(entry.thumbnail_version||entry.stamp)}" loading="lazy" alt="">`:entry.directory?'▰':entry.preview==='video'?'<small title="Preview pending">…</small>':entry.preview==='image'?'▧':entry.preview==='audio'?'♫':'▤';
     const selection=entry.directory?'':`<label class="file-select"><input type="checkbox" data-select-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Select ${E(entry.name)}" ${selectedFiles.has(path)?'checked':''}></label>`;
-    const actions=entry.directory?'':`<div class="file-actions">${entry.preview==='image'?`<button class="secondary compact" data-set-cover="${E(path)}" data-stamp="${E(entry.stamp)}">Set folder cover</button>`:''}<button class="secondary compact" data-rename-file="${E(path)}" data-stamp="${E(entry.stamp)}">Rename</button><a class="secondary compact" href="/api/file?path=${encodeURIComponent(path)}" download aria-label="Download ${E(entry.name)}">Download</a><button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div>`;
+    const actions=entry.directory?`<div class="file-actions"><button class="secondary compact" data-rename-folder="${E(path)}" data-stamp="${E(entry.stamp)}">Rename</button></div>`:`<div class="file-actions">${entry.preview==='image'?`<button class="secondary compact" data-set-cover="${E(path)}" data-stamp="${E(entry.stamp)}">Set folder cover</button>`:''}<button class="secondary compact" data-rename-file="${E(path)}" data-stamp="${E(entry.stamp)}">Rename</button><a class="secondary compact" href="/api/file?path=${encodeURIComponent(path)}" download aria-label="Download ${E(entry.name)}">Download</a><button class="secondary compact danger" data-delete-file="${E(path)}" data-stamp="${E(entry.stamp)}" aria-label="Delete ${E(entry.name)}">Delete</button></div>`;
     if(fileView==='grid'){
       const media=entry.thumbnail?`<span class="file-thumb"><img src="/api/thumbnail?path=${encodeURIComponent(path)}&v=${encodeURIComponent(entry.thumbnail_version||entry.stamp)}" loading="lazy" decoding="async" alt="${E(entry.name)}"></span>`:entry.preview==='image'?`<span class="file-thumb"><span class="thumb-fallback">▧</span><img src="/api/preview?path=${encodeURIComponent(path)}" loading="lazy" decoding="async" alt="${E(entry.name)}"></span>`:`<span class="file-thumb placeholder"><span>${icon}</span><small>${entry.directory?'FOLDER':entry.preview==='video'?(entry.thumbnail_state==='unavailable'?'PREVIEW UNAVAILABLE':'CREATING PREVIEW…'):entry.preview==='audio'?'AUDIO':'FILE'}</small></span>`;
       const tag=entry.directory||entry.preview?'button':'div';
       return `<article class="file-card ${selectedFiles.has(path)?'is-selected':''}">${selection}<${tag} class="file-tile" ${tag==='button'?attrs:''}>${media}<strong>${E(entry.name)}</strong><small>${entry.directory?'Open folder':bytes(entry.size)}</small></${tag}>${actions}</article>`;
     }
-    if(entry.directory)return `<button class="file-row" ${attrs}><span>${icon}</span><strong>${E(entry.name)}</strong><small>Open folder →</small></button>`;
+    if(entry.directory)return `<div class="file-entry folder-entry"><button class="file-row" ${attrs}><span>${icon}</span><strong>${E(entry.name)}</strong><small>Open folder →</small></button>${actions}</div>`;
     const tag=entry.preview?'button':'div';return `<div class="file-entry ${selectedFiles.has(path)?'is-selected':''}">${selection}<${tag} class="file-row" ${tag==='button'?attrs:''}><span>${icon}</span><strong>${E(entry.name)}${entry.preview?'<span class="file-preview-label"> · Preview</span>':''}</strong><small>${bytes(entry.size)}</small></${tag}>${actions}</div>`;
   }).join(''):empty('▤','This folder is empty.','');
   renderSelection();
@@ -231,6 +236,8 @@ function selectSettingsTab(tab){
   $$('[data-settings-panel]').forEach(p=>p.hidden=p.dataset.settingsPanel!==tab);
 }
 function renderSettings(){
+  action(loadTimezone);if(timezoneLoaded)$('#globalTimezone').value=state.settings.timezone;
+  $$('.schedule-zone').forEach(el=>el.textContent='Time · '+state.settings.timezone);
   $('#engineVersions').innerHTML=Object.entries(state.engine_versions||{}).map(([key,value])=>`<p><strong>${E(key)}</strong> · ${E(value)}</p>`).join('');
   buildSettingControls();
   Object.entries(state.settings).forEach(([k,v])=>{const field=$(`[name="${k}"]`,$('#settingsForm'));if(field&&!savingSettings.has(k)&&field!==document.activeElement){if(field.type==='checkbox')field.checked=Boolean(v);else if(field.type==='range')setRange(field,v);else field.value=v;}});
@@ -255,7 +262,7 @@ function renderPlatform(){
   if(key==='other')fields+='<p class="hint">Supported video sites, including supported adult sites, use yt-dlp. Availability varies; DRM media is not supported. An empty folder uses the source hostname.</p>';
   const raw=key==='instagram'?['sessionid','csrftoken','ds_user_id']:key==='facebook'?['c_user','xs','datr','fr']:key==='x'?['auth_token','ct0']:[];
   const manual=raw.length?`<form id="sessionForm" novalidate autocomplete="off"><h3>Paste session values</h3><p class="hint">From your browser’s cookies for ${key==='x'?'x.com':key==='facebook'?'facebook.com':'instagram.com'}. Paste the value only. Saving replaces this platform’s cookie file.</p>${raw.map(n=>`<label>${n}${(key==='instagram'&&n!=='sessionid')||(key==='facebook'&&['datr','fr'].includes(n))?' (optional)':''}<input type="password" name="${n}" autocomplete="new-password" spellcheck="false" maxlength="8192" ${key==='x'||n==='sessionid'||['c_user','xs'].includes(n)?'required':''}></label>`).join('')}<button class="secondary" type="submit">Save private session</button></form>`:'';
-  $('#platformEditor').innerHTML=`<div class="platform-editor"><form id="platformForm" novalidate><h3>${platformNames[key]} defaults</h3>${fields}<button class="primary" type="submit">Save platform settings</button></form><div><h3>Website authentication</h3><div class="cookie-status"><strong>${c.usable?'Session stored':c.present?'Cookies need attention':'No session stored'}</strong><small>${c.present?`${c.count} cookies · ${c.expired} expired`:'Public downloads may work without cookies.'}${c.updated?' · Saved '+E(new Date(c.updated*1000).toLocaleString()):''} This checks file contents, not live login validity.</small></div><div class="cookie-actions"><button class="secondary" data-cookie="${key}">${c.present?'Replace':'Import'} cookies.txt</button>${c.present?`<button class="secondary danger" data-cookie-delete="${key}">Remove session</button>`:''}</div>${manual}${key==='instagram'?'<p class="hint">Automatic session updates: after a successful download, cookies refreshed by Instagram are saved for the next job. Session cookies with no fixed expiry remain valid locally; only Instagram can renew or revoke the login.</p>':''}<p class="hint">Cookie values stay private on the laptop and are never returned to this page. They expire independently of your 35-day desk login. After replacing them, retry the affected job from Attention. See README for Firefox instructions.</p></div></div>`;
+  $('#platformEditor').innerHTML=`<div class="platform-editor"><form id="platformForm" novalidate><h3>${platformNames[key]} defaults</h3>${fields}<button class="primary" type="submit">Save platform settings</button></form><div><h3>Website authentication</h3><div class="cookie-status"><strong>${c.usable?'Session stored':c.present?'Cookies need attention':'No session stored'}</strong><small>${c.present?`${c.count} cookies · ${c.expired} expired`:'Public downloads may work without cookies.'}${c.updated?' · Saved '+E(appDate(c.updated)):''} This checks file contents, not live login validity.</small></div><div class="cookie-actions"><button class="secondary" data-cookie="${key}">${c.present?'Replace':'Import'} cookies.txt</button>${c.present?`<button class="secondary danger" data-cookie-delete="${key}">Remove session</button>`:''}</div>${manual}${key==='instagram'?'<p class="hint">Automatic session updates: after a successful download, cookies refreshed by Instagram are saved for the next job. Session cookies with no fixed expiry remain valid locally; only Instagram can renew or revoke the login.</p>':''}<p class="hint">Cookie values stay private on the laptop and are never returned to this page. They expire independently of your 35-day desk login. After replacing them, retry the affected job from Attention. See README for Firefox instructions.</p></div></div>`;
 }
 async function showDetail(id){
   const j=await api('job?id='+encodeURIComponent(id));$('#detailTitle').textContent=j.name;
@@ -342,7 +349,7 @@ $('#passwordForm').addEventListener('submit',event=>{event.preventDefault();acti
 $('#folderCreate').addEventListener('submit',event=>{event.preventDefault();action(async()=>{const path=join(folderPath,event.target.elements.name.value.trim());await api('folders',{path});event.target.reset();folderPath=path;await loadFolders();});});
 $('#folderUp').onclick=()=>action(async()=>{folderPath=parent(folderPath);await loadFolders();});
 $('#chooseFolder').onclick=()=>{if(folderTarget==='downloadForm')$('#downloadForm [name=folder_selected]').checked=true;$('#'+folderTarget+' [name=folder]').value=folderPath;closeDialog($('#folderDialog'));};
-$('#filesUp').onclick=()=>action(async()=>{filePath=parent(filePath);await loadFiles();});
+$('#filesUp').onclick=()=>action(async()=>{await fileNavigate(parent(filePath));});
 $('#refreshFiles').onclick=()=>action(loadFiles);
 $('#newFileFolder').onclick=()=>action(async()=>{const name=await uiMessage('Create inside Zedair/'+filePath,{title:'New folder',accept:'Create folder',input:true});if(!name)return;await api('folders',{path:join(filePath,name.trim())});await loadFiles();});
 $('#holdBtn').onclick=()=>action(async()=>{await api('hold',{hold:!state.settings.hold});await refresh();});
@@ -364,6 +371,7 @@ document.addEventListener('click',event=>{
     if(el.dataset.platform){selectedPlatform=el.dataset.platform;renderPlatform();}
     if(el.hasAttribute('data-open-platforms')){closeDialog($('#detailDialog'));settingsTab='platforms';await setPage('settings');}
     if(el.dataset.deleteFile){if(!await uiMessage('Permanently delete Zedair/'+el.dataset.deleteFile+' from the SSD? This cannot be undone.'))return;await api('file/delete',{path:el.dataset.deleteFile,stamp:el.dataset.stamp,confirm:true});selectedFiles.delete(el.dataset.deleteFile);await loadFiles();toast('File deleted.');}
+    if(el.dataset.renameFolder)openOrganize('rename',[{path:el.dataset.renameFolder,stamp:el.dataset.stamp,directory:true}]);
     if(el.dataset.renameFile)openOrganize('rename',[{path:el.dataset.renameFile,stamp:el.dataset.stamp}]);
     if(el.dataset.previewFile)showPreview(el.dataset.previewFile,el.dataset.previewKind);
     if(el.dataset.speedReport)showSpeedReport(el.dataset.speedReport);
@@ -375,7 +383,7 @@ document.addEventListener('click',event=>{
     if(el.dataset.filter){queueOffset=0;filter=el.dataset.filter;$$('[data-filter]').forEach(b=>b.classList.toggle('selected',b===el));renderJobs();}
     if(el.dataset.browse){folderTarget=el.dataset.browse;folderPath=$('#'+folderTarget+' [name=folder]').value.trim();try{await loadFolders();}catch(_){folderPath='';await loadFolders();}openDialog('folderDialog');}
     if(el.dataset.folder!==undefined){folderPath=el.dataset.folder;await loadFolders();}
-    if(el.dataset.fileFolder!==undefined){filePath=el.dataset.fileFolder;await loadFiles();}
+    if(el.dataset.fileFolder!==undefined){await fileNavigate(el.dataset.fileFolder);}
     if(el.dataset.jobFolder!==undefined){$$('dialog[open]').forEach(closeDialog);filePath=el.dataset.jobFolder;await setPage('files');}
     if(el.dataset.detail)await showDetail(el.dataset.detail);
     if(el.dataset.job){if(el.dataset.action==='remove'&&!await uiMessage('Remove this item from the queue? Its transfer will stop. Downloaded files stay on the SSD.',{title:'Remove download',accept:'Remove',danger:true}))return;await api('job/action',{id:el.dataset.job,action:el.dataset.action});if($('#detailDialog').open)closeDialog($('#detailDialog'));await refresh();}
@@ -405,7 +413,7 @@ function renderSpeed(){
   $('#speedDown').textContent=display.download_mbps??'—';$('#speedUp').textContent=display.upload_mbps??'—';$('#speedLatency').textContent=display.latency_ms??'—';$('#speedJitter').textContent=display.jitter_ms??'—';
   $('#speedLive').textContent=active?(s.live_mbps??'—'):(display.download_mbps??'—');
   const phase={starting:'Connecting',latency:'Ping',download:'Download',upload:'Upload',done:'Complete',error:'Failed',cancelled:'Cancelled',idle:'Ready'};
-  $('#speedPhase').textContent=s.status==='idle'&&display!==s?'Last result':phase[s.phase]||'Ready';$('#speedStatus').textContent=s.status==='idle'&&display!==s?'Last completed test · '+new Date(display.finished*1000).toLocaleString():s.detail;
+  $('#speedPhase').textContent=s.status==='idle'&&display!==s?'Last result':phase[s.phase]||'Ready';$('#speedStatus').textContent=s.status==='idle'&&display!==s?'Last completed test · '+appDate(display.finished):s.detail;
   $('#speedProgress').style.width=(active?s.progress||0:s.status==='done'?100:0)+'%';$('#speedTrack').setAttribute('aria-valuenow',String(active?s.progress||0:s.status==='done'?100:0));
   $('#startSpeed').disabled=active||!s.installed;$('#startSpeed').textContent=active?'Testing…':'Start test';$('#cancelSpeed').hidden=!active;
   $('#speedSetup').hidden=s.installed;$('#speedAgreement').hidden=s.consent||!s.installed;
@@ -413,13 +421,13 @@ function renderSpeed(){
   const transfers=state.jobs.some(j=>j.status==='running')||state.torrents.some(t=>[4,6].includes(t.status));
   $('#speedWarning').hidden=!transfers;$('#speedWarning').textContent='Transfers are active on the laptop. Hold the queue and wait for them to stop before testing.';
   const value=v=>v===undefined||v===null?'—':E(v);
-  $('#speedHistory').innerHTML=s.history.length?`<div class="table-scroll"><table><thead><tr><th>Time</th><th>Download</th><th>Upload</th><th>Ping</th><th>Status / method</th><th>Report</th></tr></thead><tbody>${s.history.map(r=>`<tr><td>${E(new Date(r.finished*1000).toLocaleString())}</td><td>${value(r.download_mbps)} Mbps</td><td>${value(r.upload_mbps)} Mbps</td><td>${value(r.latency_ms)} ms</td><td>${r.engine==='legacy-http'?'<span class="legacy-label">Legacy estimate · unreliable</span>':E(r.status==='done'?'Completed · Ookla':r.status)}</td><td><button class="secondary compact" data-speed-report="${E(r.id)}">View</button></td></tr>`).join('')}</tbody></table></div>`:'<p class="hint">No tests yet. Your reports will appear here.</p>';
+  $('#speedHistory').innerHTML=s.history.length?`<div class="table-scroll"><table><thead><tr><th>Time</th><th>Download</th><th>Upload</th><th>Ping</th><th>Status / method</th><th>Report</th></tr></thead><tbody>${s.history.map(r=>`<tr><td>${E(appDate(r.finished))}</td><td>${value(r.download_mbps)} Mbps</td><td>${value(r.upload_mbps)} Mbps</td><td>${value(r.latency_ms)} ms</td><td>${r.engine==='legacy-http'?'<span class="legacy-label">Legacy estimate · unreliable</span>':E(r.status==='done'?'Completed · Ookla':r.status)}</td><td><button class="secondary compact" data-speed-report="${E(r.id)}">View</button></td></tr>`).join('')}</tbody></table></div>`:'<p class="hint">No tests yet. Your reports will appear here.</p>';
 }
 function showSpeedReport(id){
   const r=state.speedtest.history.find(x=>x.id===id);if(!r)return;
   $('#detailTitle').textContent='Speed test report';
   const metric=(label,value,unit)=>`<div><span>${label}</span><strong>${value??'—'} <small>${unit}</small></strong></div>`;
-  $('#detailBody').innerHTML=`<p class="detail-value">${E(new Date(r.finished*1000).toLocaleString())} · ${E(r.status||'done')}</p>${r.engine==='legacy-http'?'<p class="notice">This report used the old short HTTP test. Its speeds are not reliable and are not used as the latest result.</p>':''}<div class="speed-report-grid">${metric('Download',E(r.download_mbps??'—'),'Mbps')}${metric('Upload',E(r.upload_mbps??'—'),'Mbps')}${metric('Ping',E(r.latency_ms??'—'),'ms')}${metric('Jitter',E(r.jitter_ms??'—'),'ms')}</div><p class="detail-label">SERVER / NETWORK</p><p class="detail-value">${E([r.server,r.location,r.isp].filter(Boolean).join(' · ')||'Not recorded')}</p><p class="detail-label">TEST DETAILS</p><p class="detail-value">Duration: ${E(r.duration_seconds??'—')} s · Download data: ${bytes(r.download_bytes)} · Upload data: ${bytes(r.upload_bytes)}${r.packet_loss!==undefined?' · Packet loss: '+E(r.packet_loss)+'%':''}</p><p class="hint">${E(r.detail||'')}</p>${r.result_url?`<a class="secondary" href="${E(r.result_url)}" target="_blank" rel="noopener noreferrer">Open Ookla result</a>`:''}`;
+  $('#detailBody').innerHTML=`<p class="detail-value">${E(appDate(r.finished))} · ${E(r.status||'done')}</p>${r.engine==='legacy-http'?'<p class="notice">This report used the old short HTTP test. Its speeds are not reliable and are not used as the latest result.</p>':''}<div class="speed-report-grid">${metric('Download',E(r.download_mbps??'—'),'Mbps')}${metric('Upload',E(r.upload_mbps??'—'),'Mbps')}${metric('Ping',E(r.latency_ms??'—'),'ms')}${metric('Jitter',E(r.jitter_ms??'—'),'ms')}</div><p class="detail-label">SERVER / NETWORK</p><p class="detail-value">${E([r.server,r.location,r.isp].filter(Boolean).join(' · ')||'Not recorded')}</p><p class="detail-label">TEST DETAILS</p><p class="detail-value">Duration: ${E(r.duration_seconds??'—')} s · Download data: ${bytes(r.download_bytes)} · Upload data: ${bytes(r.upload_bytes)}${r.packet_loss!==undefined?' · Packet loss: '+E(r.packet_loss)+'%':''}</p><p class="hint">${E(r.detail||'')}</p>${r.result_url?`<a class="secondary" href="${E(r.result_url)}" target="_blank" rel="noopener noreferrer">Open Ookla result</a>`:''}`;
   openDialog('detailDialog');
 }
 async function showPreview(path,kind){
@@ -478,7 +486,7 @@ async function renderSystem(){
     $('#systemGauges').innerHTML=gauge('CPU',data.cpu_percent,data.cpu_percent===null?'Waiting for next sample':`${data.cores} logical cores · whole laptop`,state.settings.alert_cpu_percent)+gauge('RAM',data.memory?.percent,size(data.memory),state.settings.alert_ram_percent)+gauge('Swap',data.swap?.percent,data.swap?.total?size(data.swap):'No swap configured')+gauge('System disk',data.system_disk?.percent,size(data.system_disk),state.settings.alert_disk_percent)+gauge('External SSD',data.ssd?.percent,data.ssd?size(data.ssd):'SSD unavailable');
     $('#systemDetails').innerHTML=`<div><span>Uptime</span><strong>${data.uptime_seconds===null?'Unavailable':Math.floor(data.uptime_seconds/86400)+'d '+Math.floor(data.uptime_seconds%86400/3600)+'h '+Math.floor(data.uptime_seconds%3600/60)+'m'}</strong></div><div><span>Load average · 1 / 5 / 15 min</span><strong>${data.load?.map(x=>x.toFixed(2)).join(' / ')||'Unavailable'}</strong></div><div><span>CPU temperature</span><strong>${data.temperature_c===null?'Sensor unavailable':data.temperature_c.toFixed(1)+' °C'}</strong></div><div><span>RAM available</span><strong>${data.memory?bytes(data.memory.available):'Unavailable'}</strong></div>`;
     if($('#showProcesses').checked)await loadProcesses();
-    $('#systemUpdated').textContent='Updated '+new Date(data.sampled_at*1000).toLocaleTimeString();$('#systemError').hidden=true;
+    $('#systemUpdated').textContent='Updated '+appDate(data.sampled_at);$('#systemError').hidden=true;
   }catch(error){$('#systemError').textContent='Unable to read laptop usage: '+error.message;$('#systemError').hidden=false;$('#systemUpdated').textContent='Readings may be stale';}
   finally{systemBusy=false;}
 }
@@ -504,19 +512,19 @@ $('#selectPageFiles').onchange=event=>{for(const e of fileEntries.filter(e=>!e.d
 $('#clearSelection').onclick=()=>{selectedFiles.clear();renderFiles();};
 function openOrganize(action,items){
   organizeItems=items;const form=$('#organizeForm');form.elements.action.value=action;form.elements.name.value=items[0].path.split('/').pop();form.folder.value=parent(items[0].path);
-  $('#organizeTitle').textContent=action==='rename'?'Rename file':action==='move'?'Move files':'Copy files';$('#organizeSource').textContent=items.length===1?items[0].path:items.length+' selected files';
-  $('#renameField').hidden=action!=='rename';$('#moveField').hidden=action==='rename';$('#organizeResult').hidden=true;$('#organizeSubmit').textContent=action==='rename'?'Rename':action==='move'?'Move':'Copy';openDialog('organizeDialog');
+  $('#organizeTitle').textContent=action==='rename'?(items[0].directory?'Rename folder':'Rename file'):action==='move'?'Move files':'Copy files';$('#organizeSource').textContent=items.length===1?items[0].path:items.length+' selected files';
+  $('#renameField small').hidden=!!items[0].directory;$('#renameField').hidden=action!=='rename';$('#moveField').hidden=action==='rename';$('#organizeResult').hidden=true;$('#organizeSubmit').textContent=action==='rename'?'Rename':action==='move'?'Move':'Copy';openDialog('organizeDialog');
 }
 for(const action of ['move','copy'])$('#'+action+'Selected').onclick=()=>openOrganize(action,[...selectedFiles].map(([path,stamp])=>({path,stamp})));
 $('#organizeForm').onsubmit=event=>{event.preventDefault();action(async()=>{
   const form=event.target,submit=$('#organizeSubmit'),label=submit.textContent;submit.disabled=true;submit.textContent='Working…';
   try{
     const data=Object.fromEntries(new FormData(form));let result;
-    if(data.action==='rename'){result=await api('file/manage',{...data,...organizeItems[0]});selectedFiles.delete(organizeItems[0].path);}
+    if(data.action==='rename'){result=await api(organizeItems[0].directory?'folders/rename':'file/manage',{...data,...organizeItems[0]});selectedFiles.delete(organizeItems[0].path);}
     else{result=await api('files/manage',{...data,files:organizeItems});for(const item of result.results)selectedFiles.delete(item.source);}
     await loadFiles();
     if(result.error){organizeItems=organizeItems.filter(item=>!result.results.some(r=>r.source===item.path));$('#organizeResult').hidden=false;$('#organizeResult').textContent=result.results.length+' completed; '+result.remaining+' remaining. '+result.error;}
-    else{closeDialog($('#organizeDialog'));toast(data.action==='rename'?'File renamed.':result.results.length+' files '+(data.action==='move'?'moved.':'copied.'));}
+    else{closeDialog($('#organizeDialog'));toast(data.action==='rename'?'Renamed.':result.results.length+' files '+(data.action==='move'?'moved.':'copied.'));}
   }finally{submit.disabled=false;submit.textContent=label;}
 });};
 $('#deleteFolder').onclick=()=>action(async()=>{
@@ -566,7 +574,7 @@ async function loadPackages(check=false){
   const order=['yt-dlp','gallery-dl','playwright'],managed=r.packages.filter(p=>order.includes(p.name.toLowerCase())).sort((a,b)=>order.indexOf(a.name)-order.indexOf(b.name));
   const descriptions={'yt-dlp':'Site-specific video & audio extraction','gallery-dl':'Images, galleries & Instagram collections','playwright':'Rendered playback detection with Chromium'};
   const status=p=>p.has_update?'New release available':p.version==='Not installed'?'Not installed':p.latest_version?'Up to date':p.check_error?'Check unavailable':'Checking…';
-  $('#packageInventory').innerHTML=`<p class="hint">Python ${E(r.python)} · ${r.checking?'Checking stable releases…':r.checked_at?'Checked '+new Date(r.checked_at*1000).toLocaleString():'Release check unavailable'}</p>
+  $('#packageInventory').innerHTML=`<p class="hint">Python ${E(r.python)} · ${r.checking?'Checking stable releases…':r.checked_at?'Checked '+appDate(r.checked_at):'Release check unavailable'}</p>
     <table class="engine-table"><thead><tr><th>Engine</th><th>Installed</th><th>Latest</th><th>Status</th></tr></thead><tbody>`+
     managed.map(p=>`<tr><td><strong>${E(p.name)}</strong><small>${E(descriptions[p.name])}</small></td><td data-label="Installed">${E(p.version)}</td><td data-label="Latest">${E(p.latest_version||'—')}</td><td><div class="engine-actions"><span class="engine-status ${p.has_update?'available':''}">${E(status(p))}</span>${p.has_update&&r.update_available?`<button type="button" class="primary compact" data-update-package="${E(p.name)}">Update</button>`:''}</div></td></tr>`).join('')+
     `</tbody></table>${managed.some(p=>p.has_update)&&!r.update_available?'<p class="notice">Run upgrade.sh on the laptop to enable the managed updater.</p>':''}<details class="package-details"><summary>All Python packages (${r.packages.length})</summary><table><thead><tr><th>Package</th><th>Installed version</th></tr></thead><tbody>${r.packages.map(p=>`<tr><td>${E(p.name)}</td><td>${E(p.version)}</td></tr>`).join('')}</tbody></table></details><h3 class="tools-heading">Ubuntu-managed tools</h3><div class="system-tools">${r.system_tools.map(p=>`<div><strong>${E(p.name)}</strong><span>${E(p.version)}</span></div>`).join('')}</div>`+
