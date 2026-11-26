@@ -195,21 +195,16 @@ class SettingsAndTools(Fixture):
         session=Session(self.desk.state,'https://a.test')
         session.jar.set_cookie(http.cookiejar.Cookie(0,'session','private',None,False,'a.test',False,False,'/',True,True,None,True,None,None,{},False));session.save()
         self.assertFalse(list(Session(self.desk.state,'https://a.test',enabled=False).jar))
-    def test_update_rejects_arbitrary_package_before_command(self):
+    def test_engine_commands_never_execute(self):
         with patch('maintenance.subprocess.run') as run:
             for package in ('requests','yt-dlp;reboot','https://evil.test/pkg','--upgrade'):
-                with self.assertRaises(ValueError):maintenance.request_update(self.desk,package)
+                with self.assertRaises(ValueError):maintenance.engine_command(package)
+            for package in maintenance.UPDATES:
+                self.assertIn('/opt/zedair/venv/bin/python -m pip',maintenance.engine_command(package))
             run.assert_not_called()
-    def test_managed_update_keeps_no_new_privileges(self):
-        with patch('maintenance.subprocess.run',return_value=subprocess.CompletedProcess([],0)) as run:
-            maintenance.request_update(self.desk,'yt-dlp')
-        self.assertEqual(run.call_args.args[0],['/usr/bin/systemctl','--no-ask-password','start','--no-block','zedair-update@yt-dlp.service'])
-    def test_inventory_survives_inaccessible_optional_integration(self):
-        blocked=MagicMock();blocked.__truediv__.return_value.read_text.side_effect=PermissionError('private')
-        blocked.__truediv__.return_value.is_file.side_effect=PermissionError('private')
-        with patch.object(maintenance,'UPDATE_STATE',blocked),patch.object(maintenance.shutil,'which',return_value=None):
-            result=maintenance.inventory(self.desk)
-        self.assertFalse(result['update_available']);self.assertTrue(result['packages'])
+    def test_inventory_has_no_legacy_update_state(self):
+        with patch.object(maintenance.shutil,'which',return_value=None):result=maintenance.inventory(self.desk)
+        self.assertNotIn('updates',result);self.assertNotIn('update_available',result);self.assertTrue(result['packages'])
     def test_cleanup_keeps_resumable_partials_and_active_stage(self):
         jid=self.create_job();stage=self.desk.staging(jid);(stage/'movie.part').write_bytes(b'partial');(stage/'.browser-error.jpg').write_bytes(b'private')
         maintenance.clear_cache(self.desk,{})
@@ -270,6 +265,11 @@ class EngineHTTP(Fixture):
             self.assertEqual(self.request(path,cookie=False)[0],401)
         self.login()
         self.assertEqual(self.request('/api/jobs/retry-all',{},csrf=False)[0],403)
+    def test_retired_update_endpoint_cannot_launch_process(self):
+        self.login()
+        with patch('maintenance.subprocess.run') as run:
+            code,body,_=self.request('/api/engines/update',{'package':'playwright'})
+            self.assertEqual(code,410);self.assertIn('removed',str(body));run.assert_not_called()
     def test_retry_all_leaves_paused_and_finished_jobs_untouched(self):
         self.login();ids=[]
         for i,status in enumerate(('error','error','paused','done')):

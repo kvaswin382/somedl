@@ -30,7 +30,7 @@ No extractor can promise every website. Ambiguous unrelated players, protected c
 | Scoped sessions and global browser slot | `web_session.py` |
 | Instagram profile and story/highlight collectors | `instagram_profile.py`, `instagram_story.py`, `profiles.py` |
 | Safe publication and file operations | `publishing.py`, `fileops.py` |
-| Settings, notifications and managed maintenance | `engine_settings.py`, `notifications.py`, `maintenance.py`, `engine_update.py` |
+| Settings, notifications and managed maintenance | `engine_settings.py`, `notifications.py`, `maintenance.py` (read-only engine inventory and commands) |
 | Web interface | `static/index.html`, `static/app.js`, `static/style.css` |
 | Installation and recoverable app upgrades | `install.py`, `upgrade.py`, `install-browser.sh` |
 

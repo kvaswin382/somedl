@@ -121,7 +121,7 @@ class ReleaseTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             desk=SimpleNamespace(get_setting=lambda *a:{})
             dist=SimpleNamespace(metadata={'Name':'gallery_dl'},version='1.32.19')
-            with patch('maintenance.check_releases',return_value={}),patch('maintenance.importlib.metadata.distributions',return_value=[dist]),patch('maintenance.shutil.which',return_value=None),patch('maintenance.UPDATE_STATE',Path(tmp)):
+            with patch('maintenance.check_releases',return_value={}),patch('maintenance.importlib.metadata.distributions',return_value=[dist]),patch('maintenance.shutil.which',return_value=None):
                 packages=maintenance.inventory(desk)['packages']
             gallery=[p for p in packages if p['name']=='gallery-dl']
             self.assertEqual(len(gallery),1);self.assertEqual(gallery[0]['version'],'1.32.19')

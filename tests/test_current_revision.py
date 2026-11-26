@@ -8,7 +8,6 @@ from storage_tools import stamp,set_cover
 from remotes import merge_config
 from publishing import facebook_title
 from gallery_meter import Meter
-import engine_update
 
 class RevisionTests(Fixture):
     def setUp(self):
@@ -77,11 +76,3 @@ class RevisionTests(Fixture):
         self.assertEqual(facebook_title({'uploader':'Sample Creator','description':'A lovely day','title':'Facebook'}),'Sample Creator - A lovely day')
         self.assertEqual(facebook_title({'title':'Facebook','id':'123'}),'Facebook - 123')
         self.assertEqual(facebook_title({'title':'Caption | Facebook'}),'Caption')
-    def test_updater_stop_failure_is_reported_without_pip_or_false_rollback(self):
-        calls=[];status=self.base/'update.json'
-        def run(args,**kwargs):
-            calls.append(args)
-            if args==['systemctl','stop','zedair']:raise subprocess.CalledProcessError(1,args,stderr='Job for zedair.service canceled.')
-            return subprocess.CompletedProcess(args,0,stdout='',stderr='')
-        with patch.object(engine_update,'status_path',return_value=status),patch.object(engine_update,'UPDATE_LOCK',self.base/'update-lock'),patch.object(engine_update.importlib.metadata,'version',return_value='1.0'),patch.object(engine_update.subprocess,'run',side_effect=run):engine_update.update('yt-dlp')
-        saved=json.loads(status.read_text());self.assertEqual(saved['status'],'error');self.assertIn('canceled',saved['detail']);self.assertFalse(any('pip' in c for c in calls));self.assertEqual(calls[-1],['systemctl','start','zedair-local.socket'])

@@ -17,7 +17,7 @@ APP=Path('/opt/zedair')
 STATE=Path('/var/lib/zedair')
 CONFIG=Path('/etc/zedair')
 BACKUPS=Path('/var/backups/zedair')
-FILES=('remote_serve.py','app_time.py','gallery_meter.py','torrent_add.py','activities.py','storage_tools.py','remotes.py','remote_download.py','schedules.py','backups.py','system_control.py','reddit_media.py','url_input.py','download_http.py','engine_settings.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-browser.sh','install-speedtest.py','install-speedtest.sh','README.md','TEST-REPORT.md','LICENSE','requirements.txt','update.sh','upgrade.sh','upgrade.py')
+FILES=('remote_serve.py','app_time.py','gallery_meter.py','torrent_add.py','activities.py','storage_tools.py','remotes.py','remote_download.py','schedules.py','backups.py','system_control.py','reddit_media.py','url_input.py','download_http.py','engine_settings.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py', 'profiles.py', 'facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py', 'setup-local.py', 'setup-local.sh', 'install-facebook.sh', 'install-browser.sh','install-speedtest.py','install-speedtest.sh','README.md','TEST-REPORT.md','LICENSE','requirements.txt','update.sh','upgrade.sh','upgrade.py')
 
 def run(*args):
     subprocess.run([str(x) for x in args],check=True)
@@ -105,7 +105,7 @@ def main():
         for name in FILES:
             if not (BASE/name).is_file():raise SystemExit('Missing package file: '+name)
         with tempfile.TemporaryDirectory() as temp:
-            for name in ('remote_serve.py','app_time.py','gallery_meter.py','torrent_add.py','activities.py','storage_tools.py','remotes.py','remote_download.py','schedules.py','backups.py','system_control.py','reddit_media.py','url_input.py','download_http.py','engine_settings.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','engine_update.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py','profiles.py','facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py','setup-local.py','install-speedtest.py','upgrade.py'):
+            for name in ('remote_serve.py','app_time.py','gallery_meter.py','torrent_add.py','activities.py','storage_tools.py','remotes.py','remote_download.py','schedules.py','backups.py','system_control.py','reddit_media.py','url_input.py','download_http.py','engine_settings.py','web_session.py','notifications.py','health_alerts.py','browser_capture.py','download_engine.py','instagram_story.py','maintenance.py','server.py','media.py','platforms.py','publishing.py','speedcheck.py','systemstats.py','profiles.py','facebook_profile.py', 'instagram_profile.py', 'browser_video.py', 'page_media.py', 'fileops.py','setup-local.py','install-speedtest.py','upgrade.py'):
                 import py_compile
                 py_compile.compile(str(BASE/name),cfile=str(Path(temp)/(name+'c')),doraise=True)
         run(APP/'venv/bin/python','-c','import yt_dlp, gallery_dl')
@@ -116,6 +116,9 @@ def main():
         raise SystemExit('Not enough internal disk space for a safe backup. Free space before updating.')
     os.umask(0o077)
     BACKUPS.mkdir(parents=True,exist_ok=True,mode=0o700)
+    if APP==Path('/opt/zedair'):
+        from maintenance import retire_update_service
+        retire_update_service()
     stop()
     saved=None
     try:
@@ -132,8 +135,6 @@ def main():
                 item.chmod(0o755 if item.is_dir() else 0o644)
             (APP/'static').chmod(0o755)
         if APP==Path('/opt/zedair'):
-            from maintenance import install_update_service
-            install_update_service()
             from system_control import install as install_system_control
             install_system_control()
             run('apt-get','install','-y','rclone')

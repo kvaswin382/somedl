@@ -14,7 +14,9 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 UPDATES={'yt-dlp','gallery-dl','playwright'}
-UPDATE_STATE=Path('/var/lib/zedair-updates')
+LEGACY_STATE=Path('/var/lib/zedair-updates')
+UPDATE_UNIT=Path('/etc/systemd/system/zedair-update@.service')
+LEGACY_SCRIPT=Path('/opt/zedair/engine_update.py')
 UPDATE_RULE=Path('/etc/polkit-1/rules.d/49-zedair-updates.rules')
 
 
@@ -31,22 +33,27 @@ def inventory(desk,check=False):
             version=((result.stdout or result.stderr).splitlines() or ['Unknown'])[0] if result else 'Not installed'
         except (OSError,subprocess.TimeoutExpired):version='Version check unavailable'
         binaries.append({'name':name,'version':version,'path':path})
-    status={}
-    for name in UPDATES:
-        path=UPDATE_STATE/('update-'+name+'.json')
-        try:status[name]=json.loads(path.read_text())
-        except (OSError,ValueError):pass
-    # Ubuntu's polkit rules directory is intentionally inaccessible to the web
-    # user. Read the root-owned public installation marker instead.
-    try:update_available=(UPDATE_STATE/'integration.json').is_file()
-    except OSError:update_available=False
     for package in packages:
         current=releases.get('packages',{}).get(package['name'].lower(),{})
         package.update(current)
         package['has_update']=newer(current.get('latest_version'),package['version'])
-    return {'checking':releases.get('checking',False),'checked_at':releases.get('checked_at'), 'python':sys.version.split()[0],'packages':packages,'system_tools':binaries,'updates':status,
-            'update_available':update_available,
-            'telegram':desk.get_setting('telegram_last_result',{})}
+        package['command']=engine_command(package['name']) if package['name'] in UPDATES and (package['has_update'] or package['version']=='Not installed') else ''
+    managed={p['name']:p for p in packages if p['name'] in UPDATES}
+    all_command=engine_command('all') if all(managed[n]['has_update'] for n in UPDATES) else ''
+    return {'checking':releases.get('checking',False),'checked_at':releases.get('checked_at'),
+            'python':sys.version.split()[0],'packages':packages,'system_tools':binaries,
+            'all_command':all_command,'telegram':desk.get_setting('telegram_last_result',{})}
+
+
+def engine_command(name):
+    """Display-only, fixed allowlist. No subprocess or service operations."""
+    if name not in UPDATES|{'all'}:raise ValueError('Unsupported engine')
+    packages={'yt-dlp':"'yt-dlp[default]'",'gallery-dl':'gallery-dl','playwright':'playwright'}
+    names=['yt-dlp','gallery-dl','playwright'] if name=='all' else [name]
+    command='sudo /opt/zedair/venv/bin/python -m pip install --no-cache-dir --upgrade '+' '.join(packages[n] for n in names)
+    if 'playwright' in names:command+=' &&\nsudo bash /opt/zedair/install-browser.sh --installed'
+    return command
+
 
 
 def newer(latest,installed):
@@ -97,16 +104,6 @@ def check_releases(desk,force=False):
         return {**desk.release_cache,'checking':desk.release_checking}
 
 
-def request_update(desk,package):
-    if package not in UPDATES:raise ValueError('Only yt-dlp, gallery-dl and Playwright are managed by this updater')
-    # No URL, shell expression, arbitrary package name or user-defined command is accepted.
-    result=subprocess.run(['/usr/bin/systemctl','--no-ask-password','start','--no-block',f'zedair-update@{package}.service'],capture_output=True,text=True,timeout=10)
-    if result.returncode:
-        from notifications import sanitized
-        raise ValueError('Managed update could not start: '+sanitized(result.stderr.strip())[:800]+'. Run upgrade.sh to repair the restricted systemd/polkit integration.')
-    return {'ok':True,'message':'Update scheduled. The service will pause, update and restart; refresh after reconnecting.'}
-
-
 def clear_cache(desk,data):
     removed=0;freed=0
     with desk.file_lock,desk.lock:
@@ -149,34 +146,19 @@ def favicon(desk,jid):
         path.write_bytes(b'');return b'','image/x-icon'
 
 
-def install_update_service():
-    """Called by the root installer/upgrader only; the web process cannot edit it."""
-    if os.geteuid()!=0:raise ValueError('Root is required to install updater integration')
-    unit=Path('/etc/systemd/system/zedair-update@.service')
-    unit.write_text('''[Unit]
-Description=Zedair managed engine update (%i)
-After=network-online.target
-[Service]
-Type=oneshot
-ExecStart=/opt/zedair/venv/bin/python /opt/zedair/engine_update.py %i
-ExecStopPost=/opt/zedair/venv/bin/python /opt/zedair/engine_update.py --recover %i
-TimeoutStartSec=1800
-UMask=0077
-''')
-    unit.chmod(0o644)
-    # Authorization is performed by systemd, retaining NoNewPrivileges=true.
-    if not shutil.which('polkitd') and not Path('/usr/lib/polkit-1/polkitd').exists():
-        subprocess.run(['apt-get','install','-y','polkitd'],check=True)
-    UPDATE_RULE.parent.mkdir(parents=True,exist_ok=True)
-    units=json.dumps(['zedair-update@'+name+'.service' for name in sorted(UPDATES)])
-    UPDATE_RULE.write_text('polkit.addRule(function(action, subject) {\n'
-        '  if (subject.user === "zedair" && action.id === "org.freedesktop.systemd1.manage-units" &&\n'
-        '      action.lookup("verb") === "start" && '+units+'.indexOf(action.lookup("unit")) !== -1) {\n'
-        '    return polkit.Result.YES;\n  }\n});\n')
-    UPDATE_RULE.chmod(0o644)
-    UPDATE_STATE.mkdir(mode=0o755,exist_ok=True)
-    os.chown(UPDATE_STATE,0,0);UPDATE_STATE.chmod(0o755)
-    subprocess.run(['/usr/bin/systemctl','daemon-reload'],check=True)
-    subprocess.run(['/usr/bin/systemctl','start','polkit.service'],check=True)
-    marker=UPDATE_STATE/'integration.json'
-    marker.write_text(json.dumps({'version':1,'packages':sorted(UPDATES)}));marker.chmod(0o644)
+def retire_update_service():
+    """Root installer only: revoke access and mask the retired GUI updater."""
+    if os.geteuid()!=0:raise ValueError('Root is required to remove updater integration')
+    UPDATE_RULE.unlink(missing_ok=True)
+    # Never interrupt pip mid-install. An active legacy operation requires attention
+    # before deployment; removing the permission already prevents new web requests.
+    for name in sorted(UPDATES):
+        result=subprocess.run(['/usr/bin/systemctl','is-active','zedair-update@'+name+'.service'],capture_output=True,text=True,timeout=10)
+        state=result.stdout.strip()
+        if state not in ('inactive','failed','unknown'):
+            raise ValueError('Legacy engine updater may still be running ('+name+'). Inspect sudo systemctl status zedair-update@'+name+'.service before retrying; no package operation was interrupted.')
+    UPDATE_UNIT.unlink(missing_ok=True)
+    UPDATE_UNIT.symlink_to('/dev/null')
+    LEGACY_SCRIPT.unlink(missing_ok=True)
+    (LEGACY_STATE/'integration.json').unlink(missing_ok=True)
+    subprocess.run(['/usr/bin/systemctl','daemon-reload'],check=True,timeout=30)

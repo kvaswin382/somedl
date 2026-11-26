@@ -1,3 +1,9 @@
+# v2.3.1 remove GUI engine installation
+
+The web update endpoint now returns HTTP 410 without launching a process. The engine page only reads versions and displays/copies fixed terminal commands. Per-engine update commands require a newer stable version; missing engines get install commands even if release checks are unavailable. The combined command requires all three installed engines to have updates. Playwright commands include matching Chromium installation and sandbox checks.
+
+The privileged Python updater is removed. Install/upgrade revokes its polkit permission, masks the service template and removes its installed script/marker, retaining diagnostics. It refuses to interrupt an active legacy updater. The old shell updater is inert. Tests cover command availability, missing Playwright, invalid/offline metadata, HTTP rejection, retirement and browser controls. No actual package installation or physical laptop crash is reproduced; the earlier fixture success did not establish safety on the user's hardware.
+
 # v2.3.0 maintenance, rclone and file management
 
 The updater now quiesces the socket-activated `zed.local` forwarder before stopping the app, and restores its previous listener state after success, failure or recovery. Service-stop errors are inside recovery handling and retain their actual message. The systemd integration fixture runs on isolated temporary units under reconnect polling; no engine packages or real Zedair units are changed.

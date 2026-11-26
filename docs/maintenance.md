@@ -41,13 +41,33 @@ The app checks the SSD UUID/mount before writing and during transfers. The unmou
 
 ## Update download engines separately
 
-When websites change, update yt-dlp and gallery-dl without replacing the application:
+The web UI only checks stable versions for yt-dlp, gallery-dl and Playwright. Expand **Update commands** for a newer engine, or **Install commands** if it is missing. **Update all three engines** appears only when all three have newer versions. Other Python packages are dependencies; system tools remain managed through Ubuntu or their official installers.
 
-```bash
-sudo bash /opt/zedair/update.sh
-```
+Run commands yourself in an SSH terminal on the laptop:
 
-This briefly stops the web service, installs current stable engine releases from PyPI, then restarts. It does not pull your GitHub app source. Initial installation uses `requirements.txt`; app upgrades retain the installed engine versions. Ubuntu updates maintain FFmpeg/Transmission. If YouTube later requires a newer Deno, update Deno from its official upstream release and verify `/opt/zedair/bin/deno --version`.
+1. Hold the queue and wait for uploads/backups to finish.
+2. If you use `zed.local`, stop its socket first:
+   ```bash
+   sudo systemctl stop zedair-local.socket zedair-local.service
+   ```
+3. Stop the app and torrents to free memory:
+   ```bash
+   sudo systemctl stop zedair zedair-transmission
+   ```
+4. Run only the desired engine command shown in Settings. For **missing Playwright**, use:
+   ```bash
+   sudo /opt/zedair/venv/bin/python -m pip install --no-cache-dir --upgrade playwright &&
+   sudo bash /opt/zedair/install-browser.sh --installed
+   ```
+   This installs its matching Chromium, system dependencies and sandbox profile. Keep at least 1.5 GiB free internally. Read errors in the terminal; do not treat a failed command as a completed installation.
+5. After success, restart:
+   ```bash
+   sudo systemctl start zedair-transmission zedair
+   ```
+   If you use `zed.local`, also run `sudo systemctl start zedair-local.socket`.
+6. Refresh the page, verify installed versions and resume the queue.
+
+No browser button can execute these commands. The old update API returns HTTP 410, its systemd template is masked and its polkit permission is removed during upgrade. Historical logs are retained. The former `update.sh` only prints directions and exits; it never installs or restarts anything. If an old updater is still active, deployment refuses to interrupt it and identifies the service to inspect.
 
 ## Troubleshooting
 

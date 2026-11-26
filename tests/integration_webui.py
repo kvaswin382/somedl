@@ -44,8 +44,6 @@ with sync_playwright() as pw:
         root=Path(tmp);(root/'ssd/Zedair/Travel photos').mkdir(parents=True)
         desk=Desk({'state':str(root/'state'),'mount':str(root/'ssd'),'require_mount':False,'setup_key_hash':digest('fixture-setup')})
         desk.rpc.call=lambda *a,**k:{'torrents':[]}
-        maintenance.UPDATE_STATE=root/'updater';maintenance.UPDATE_STATE.mkdir()
-        (maintenance.UPDATE_STATE/'integration.json').write_text('{}')
         # Fixed metadata avoids external release checks in this UI fixture.
         desk.release_cache={'checked_at':time.time(),'packages':{'yt-dlp':{'latest_version':'2099.01.01'},'gallery-dl':{'latest_version':'1.32.19'},'playwright':{'latest_version':'1.65.1'}}};desk.release_checking=False
         platforms.save_cookies(desk.state,'instagram',{'fields':{'sessionid':'fixture-not-a-login'}})
@@ -65,7 +63,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.3.0')
+            expect(page.locator('#appVersion')).to_have_text('v2.3.1')
             original_theme(page)
             # Toasts stay at the top and above nested modal backdrops, without stealing focus.
             for width,dark in [(1360,False),(1360,True),(390,False),(390,True)]:
@@ -217,8 +215,17 @@ with sync_playwright() as pw:
             page.locator('[data-settings-tab=engines]').click()
             expect(page.locator('#packageInventory')).to_contain_text('yt-dlp')
             expect(page.locator('#packageInventory')).to_contain_text('New release available')
-            expect(page.locator('[data-update-package]')).to_have_count(1)
-            expect(page.locator('[data-update-package]')).to_have_attribute('data-update-package','yt-dlp')
+            expect(page.locator('[data-update-package]')).to_have_count(0)
+            expect(page.locator('.engine-command')).to_have_count(1)
+            expect(page.locator('.engine-command code')).to_contain_text("'yt-dlp[default]'")
+            expect(page.locator('.engine-command summary')).to_have_text('Update commands')
+            engine_posts=[]
+            page.on('request',lambda request:engine_posts.append(request.url) if request.method=='POST' and '/api/engines' in request.url else None)
+            page.locator('.engine-command summary').click()
+            page.locator('[data-copy-engine]').click()
+            assert not engine_posts
+            no_overflow(page)
+            page.locator('.engine-command summary').click()
             expect(page.locator('#packageInventory')).not_to_contain_text('Not installed · Latest 1.32.19')
             centered_settings(page)
             expect(page.locator('.engine-table tbody tr')).to_have_count(3)
@@ -272,6 +279,24 @@ with sync_playwright() as pw:
             page.locator('[data-settings-tab=engines]').click()
             expect(page.locator('.engine-table tbody tr')).to_have_count(3)
             page.evaluate('() => scrollTo(0,0)');no_overflow(page);centered_settings(page);screenshot(page,'engines-mobile-dark')
+            page.locator('.engine-command summary').click();no_overflow(page)
+            screenshot(page,'engine-commands-mobile-dark')
+            page.locator('.engine-command summary').click()
+            # Missing Playwright is repairable; combined commands require all updates.
+            inventory_response=page.request.get(f'http://127.0.0.1:{site.server_port}/api/engines').json()
+            missing={**inventory_response,'packages':[dict(p,version='Not installed',has_update=False,command=maintenance.engine_command('playwright')) if p['name']=='playwright' else p for p in inventory_response['packages']],'all_command':''}
+            page.route('**/api/engines?check=1',lambda route:route.fulfill(json=missing))
+            page.locator('#loadPackages').click()
+            expect(page.locator('.engine-command summary').filter(has_text='Install commands')).to_have_count(1)
+            expect(page.locator('#packageInventory')).to_contain_text('install-browser.sh --installed')
+            assert not engine_posts
+            all_updates={**inventory_response,'packages':[dict(p,has_update=True,command=maintenance.engine_command(p['name'])) if p['name'] in maintenance.UPDATES else p for p in inventory_response['packages']],'all_command':maintenance.engine_command('all')}
+            page.unroute('**/api/engines?check=1');page.route('**/api/engines?check=1',lambda route:route.fulfill(json=all_updates))
+            page.locator('#loadPackages').click()
+            expect(page.locator('.engine-command summary').filter(has_text='Update all three')).to_have_count(1)
+            assert not engine_posts
+            page.unroute('**/api/engines?check=1')
+
             page.route('**/api/system',lambda r:r.fulfill(json={'cpu_percent':95,'cores':4,'memory':{'total':2147483648,'used':1610612736,'available':536870912,'percent':75},'swap':{'total':0,'used':0,'percent':0},'system_disk':{'total':32000000000,'used':6400000000,'percent':20},'ssd':None,'temperature_c':83,'uptime_seconds':3600,'load':[1,1,1],'sampled_at':time.time()}))
             page.locator('[data-settings-tab=system]').click()
             expect(page.locator('.usage-ring[data-level=critical]')).to_have_count(1)
