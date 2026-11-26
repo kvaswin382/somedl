@@ -859,7 +859,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'telegram_result':self.get_setting('telegram_last_result',{}), 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.3.1', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.3.2', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def add_stories(self,data):
         from instagram_story import target
@@ -1487,9 +1487,13 @@ class Handler(BaseHTTPRequestHandler):
                 result=subprocess.run(['/usr/bin/systemctl','--no-ask-password','start','--no-block','zedair-memory.service'],capture_output=True,text=True,timeout=10)
                 if result.returncode:raise APIError('Setting saved but systemd limit could not be applied. Run upgrade.sh to install memory controls.')
         elif path == '/api/jobs/retry-all':
+            retried=skipped=0
             with d.lock:
-                for row in d.rows("SELECT id FROM jobs WHERE status='error'"):
-                    if row['id'] not in d.workers:d.job_action(row['id'],'retry')
+                for row in d.rows("SELECT id FROM jobs WHERE status='error' AND remove_requested=0"):
+                    if row['id'] in d.workers or row['id'] in d.processes:
+                        skipped+=1;continue
+                    d.job_action(row['id'],'retry');retried+=1
+            self.reply({'ok':True,'retried':retried,'skipped':skipped});return
         elif path == '/api/instagram/stories':
             self.reply(d.add_stories(data));return
         elif path == '/api/telegram/test':

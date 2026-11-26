@@ -1,12 +1,14 @@
 # Zedair Download Desk
 
-**v2.3.1** · Ubuntu 24.04 · Python 3.12 · Built for a 2 GB headless laptop + USB SSD
+**v2.3.2** · Ubuntu 24.04 · Python 3.12 · Built for a 2 GB headless laptop + USB SSD
 
 Queue webpage links from your phone or computer. Zedair finds and downloads the media on the laptop, even after you close the browser.
 
 [Install](#first-installation) · [Upgrade](#upgrade-an-existing-installation) · [Use](#everyday-use) · [Telegram](#telegram) · [Troubleshoot](#troubleshooting) · [Detailed guides](#guides)
 
-## What changed in v2.3.1
+## What changed in v2.3.2
+
+- **Retry all failed** is beside the download filters, including Attention. One click queues failed downloads across every page/search and reports the count. Hold queue and concurrency settings remain in effect.
 
 - **GUI package installation is removed.** Download engines only checks versions and shows terminal commands. Missing engines get install commands. The upgrade removes the old updater permission and masks its service; it does not reinstall missing Playwright automatically.
 - **Settings → Rclone** has separate Remotes, Browse & copy, URL downloads, Streaming and Backups tabs. Upgrade imports new remotes from the account running `sudo bash upgrade.sh`; existing app remotes are preserved. You can also import `rclone.conf` in the UI, including password-encrypted configs.
@@ -31,7 +33,7 @@ sudo bash upgrade.sh
 - If Git reports local edits or a diverged branch, preserve and review them first. Do not force-reset the checkout.
 - The upgrader backs up app/state under `/var/backups/zedair`, installs into `/opt/zedair`, and checks startup. It restores the backup if its health check fails.
 - SSD downloads, saved cookies, accounts and queue history are preserved. Engine packages are updated separately.
-- Refresh with **Ctrl+F5**; the footer should show **v2.3.1**. Pulling source alone does not update the running app.
+- Refresh with **Ctrl+F5**; the footer should show **v2.3.2**. Pulling source alone does not update the running app.
 
 ## First installation
 

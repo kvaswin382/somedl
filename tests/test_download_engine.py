@@ -274,8 +274,24 @@ class EngineHTTP(Fixture):
         self.login();ids=[]
         for i,status in enumerate(('error','error','paused','done')):
             jid=self.create_job('https://example.com/'+str(i));self.desk.update_job(jid,status=status);ids.append(jid)
-        self.assertEqual(self.request('/api/jobs/retry-all',{})[0],200)
+        self.desk.set_setting('hold',True)
+        code,result,_=self.request('/api/jobs/retry-all',{})
+        self.assertEqual(code,200);self.assertEqual(result,{'ok':True,'retried':2,'skipped':0})
+        self.assertTrue(self.desk.get_setting('hold'))
+        self.assertEqual(self.request('/api/jobs/retry-all',{})[1]['retried'],0)
         self.assertEqual([self.desk.job(j)['status'] for j in ids],['queued','queued','paused','done'])
+    def test_retry_all_skips_stopping_workers_and_removed_items(self):
+        self.login();ids=[]
+        for i in range(4):
+            jid=self.create_job('https://example.com/bulk-'+str(i));self.desk.update_job(jid,status='error');ids.append(jid)
+        self.desk.update_job(ids[3],remove_requested=1)
+        self.desk.workers[ids[1]]=object();self.desk.processes[ids[2]]=object()
+        try:
+            code,result,_=self.request('/api/jobs/retry-all',{})
+            self.assertEqual(code,200);self.assertEqual(result,{'ok':True,'retried':1,'skipped':2})
+            self.assertEqual([self.desk.job(jid)['status'] for jid in ids],['queued','error','error','error'])
+        finally:
+            self.desk.workers.pop(ids[1]);self.desk.processes.pop(ids[2])
     def test_masked_token_preserved_and_explicitly_cleared(self):
         self.login();self.desk.rpc.call=lambda *a,**k:{}
         self.assertEqual(self.request('/api/settings',{'telegram_bot_token':'123:secret','browser_timeout':120})[0],200)

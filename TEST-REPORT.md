@@ -1,3 +1,7 @@
+# v2.3.2 visible bulk retry
+
+Retry all failed is beside the queue filters and works across search and pagination. The API reports queued/skipped counts, excludes removed jobs and waits for stopping workers. The button prevents duplicate submissions and reports errors without losing its enabled state. Tests verify Hold queue, paused/completed jobs, stopping workers, repeated requests and a browser click with twelve failures and an active search.
+
 # v2.3.1 remove GUI engine installation
 
 The web update endpoint now returns HTTP 410 without launching a process. The engine page only reads versions and displays/copies fixed terminal commands. Per-engine update commands require a newer stable version; missing engines get install commands even if release checks are unavailable. The combined command requires all three installed engines to have updates. Playwright commands include matching Chromium installation and sandbox checks.

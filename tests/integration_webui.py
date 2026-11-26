@@ -63,7 +63,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.3.1')
+            expect(page.locator('#appVersion')).to_have_text('v2.3.2')
             original_theme(page)
             # Toasts stay at the top and above nested modal backdrops, without stealing focus.
             for width,dark in [(1360,False),(1360,True),(390,False),(390,True)]:
@@ -589,6 +589,22 @@ with sync_playwright() as pw:
                 page.locator('#torrentDialog [data-close]').click()
             finally:desk.rpc.call=original_rpc
             assert not errors,errors
+            # One click retries all failed pages even with an active search.
+            failed_ids=desk.add_jobs({'urls':[f'https://example.com/retry-fixture-{i}' for i in range(12)]})['ids']
+            for jid in failed_ids:desk.update_job(jid,status='error',attempts=3,last_error='fixture failure')
+            desk.set_setting('hold',True)
+            page.locator('[data-page=queue]').click()
+            page.locator('[data-filter=error]').click()
+            page.locator('#searchJobs').fill('retry-fixture-0')
+            expect(page.locator('#retryAll')).to_be_visible()
+            assert page.locator('#retryAll').evaluate('(el)=>!!el.closest(".board-toolbar")')
+            with page.expect_response('**/api/jobs/retry-all') as retried:
+                page.locator('#retryAll').click()
+            result=retried.value.json();assert result['retried']>=12 and result['skipped']==0,result
+            assert all(desk.job(jid)['status']=='queued' and desk.job(jid)['attempts']==0 for jid in failed_ids)
+            assert desk.get_setting('hold') is True
+            expect(page.locator('#retryAll')).to_be_enabled()
+            no_overflow(page);assert not errors,errors
             print('PASS: original blue/neutral light and dark palettes, centered settings, border-free slider tracks and compact engine rows verified; real UI verified default MP4, live link count, stable single favicon, range autosave 1–20 step 1, masked token, release-aware engine cards, usage chart, exact highlight share, backdrop dismissal and mobile/dark layouts without overflow.')
         finally:
             browser.close();site.shutdown();site.server_close();thread.join();desk.close()

@@ -545,7 +545,7 @@ for(const form of $$('form'))form.noValidate=true;
 document.addEventListener('submit',event=>{const form=event.target;form.noValidate=true;if(!form.checkValidity()){event.preventDefault();event.stopImmediatePropagation();const field=$(':invalid',form);toast(field?.validationMessage||'Check the form fields.','warning');field?.focus();}},true);
 
 // Maintenance uses the same authenticated, CSRF-protected API as other settings.
-$('#retryAll').onclick=()=>action(async()=>{await api('jobs/retry-all',{});toast('Failed downloads queued for retry.');await refresh();});
+$('#retryAll').onclick=()=>action(async()=>{const button=$('#retryAll');if(button.disabled)return;button.disabled=true;button.textContent='Queuing retries…';try{const r=await api('jobs/retry-all',{});toast((r.retried?`${r.retried} failed download${r.retried===1?'':'s'} queued for retry.`:'No failed downloads to retry.')+(r.skipped?` ${r.skipped} still stopping; retry again shortly.`:''),r.skipped?'warning':r.retried?'success':'info');await refresh();}finally{button.disabled=false;button.textContent='Retry all failed';}});
 $('#queuePrev').onclick=()=>{queueOffset=Math.max(0,queueOffset-queuePageSize);renderJobs();};
 $('#queueNext').onclick=()=>{queueOffset+=queuePageSize;renderJobs();};
 $('#queuePageSize').onchange=e=>{queuePageSize=Number(e.target.value);queueOffset=0;localStorage.setItem('zedair-queue-page-size',queuePageSize);renderJobs();};
