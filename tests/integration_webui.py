@@ -367,6 +367,61 @@ with sync_playwright() as pw:
             assert cloud_submissions[0]['urls']==['https://example.com/video']
             assert cloud_submissions[0]['quality']=='best' and cloud_submissions[0]['container']=='mp4'
             page.unroute('**/api/jobs');page.unroute('**/api/remotes/browse?*');page.unroute('**/api/remotes')
+            # Import and browse a real isolated remote; verify copy/stream form payloads
+            # without starting storage workers before the thumbnail regressions below.
+            cloud_root=root/'cloud-ui';cloud_root.mkdir();(cloud_root/'Movie.mp4').write_bytes(b'fixture movie')
+            config=('[ui-drive]\ntype = alias\nremote = '+str(cloud_root)+'\n').encode()
+            page.locator('[data-cloud-tab=remotes]').click()
+            page.locator('#importRemote').click()
+            page.locator('#remoteImportForm [name=config]').set_input_files({'name':'rclone.conf','mimeType':'text/plain','buffer':config})
+            page.locator('#remoteImportForm button[type=submit]').click()
+            expect(page.locator('#remoteImportDialog')).not_to_be_visible()
+            expect(page.locator('#remoteList')).to_contain_text('ui-drive')
+            page.locator('[data-cloud-tab=files]').click()
+            expect(page.locator('#cloudFiles')).to_contain_text('Movie.mp4')
+            page.locator('#cloudMkdir').click();page.locator('#messageInput').fill('Copies');page.locator('#messageAccept').click()
+            expect(page.locator('#cloudFiles')).to_contain_text('Copies')
+            page.locator('#cloudSearch').fill('absent');expect(page.locator('#cloudFiles')).to_contain_text('No matching')
+            page.locator('#cloudSearch').fill('Movie')
+            page.locator('[data-cloud-copy]').click()
+            expect(page.locator('#cloudCopySource')).to_have_text('ui-drive:Movie.mp4')
+            page.locator('#cloudCopyBrowse').click();page.locator('[data-remote-folder="Copies"]').click();page.locator('#remoteChoose').click()
+            copies=[]
+            def copy_submit(route):
+                copies.append(route.request.post_data_json);route.fulfill(json={'id':'copy-fixture'})
+            page.route('**/api/remotes/copy',copy_submit)
+            page.locator('#cloudCopyForm button[type=submit]').click()
+            expect(page.locator('#cloudCopyDialog')).not_to_be_visible()
+            assert copies==[{'remote':'ui-drive','path':'Movie.mp4','directory':False,'target_remote':'ui-drive','target_path':'Copies/Movie.mp4'}]
+            page.unroute('**/api/remotes/copy')
+            streaming={'running':False,'readers':0,'error':'','urls':{},'addresses':['127.0.0.1'],'settings':{'remote':'ui-drive','path':'','address':'127.0.0.1','http_port':8090,'webdav_port':8091,'buffer_mib':64,'username':'viewer'}}
+            stream_submissions=[]
+            def stream_route(route):
+                if route.request.method=='POST':
+                    data=route.request.post_data_json;stream_submissions.append(data)
+                    streaming['running']=data.get('action')!='stop'
+                    if streaming['running']:
+                        streaming['settings'].update({k:v for k,v in data.items() if k!='password'})
+                        streaming['urls']={'http':'http://127.0.0.1:8090/','webdav':'http://127.0.0.1:8091/'}
+                    else:streaming['urls']={}
+                route.fulfill(json=streaming)
+            page.route('**/api/remotes/serve',stream_route)
+            page.locator('[data-cloud-tab=streaming]').click()
+            expect(page.locator('#streamForm [name=username]')).to_have_value('viewer')
+            page.locator('#streamForm [name=password]').fill('fixture-password-123')
+            page.locator('#streamForm [name=buffer_mib]').focus();page.keyboard.press('ArrowRight')
+            expect(page.locator('#streamBufferLabel')).to_have_text('72 MiB')
+            page.locator('#startRemoteServer').click()
+            expect(page.locator('#streamStatus')).to_contain_text('Running')
+            expect(page.locator('#streamForm [name=password]')).to_have_value('')
+            assert stream_submissions[0]['buffer_mib']==72 and stream_submissions[0]['remote']=='ui-drive'
+            page.locator('[data-cloud-tab=files]').click()
+            expect(page.locator('#cloudFiles a')).to_have_attribute('href','http://127.0.0.1:8090/Movie.mp4')
+            no_overflow(page);screenshot(page,'cloud-browse-mobile-dark')
+            page.locator('[data-cloud-tab=streaming]').click();page.locator('#stopRemoteServer').click()
+            expect(page.locator('#streamStatus')).to_contain_text('Stopped')
+            assert stream_submissions[-1]=={'action':'stop'}
+            page.unroute('**/api/remotes/serve')
             page.locator('[data-cloud-tab=backups]').click()
             expect(page.locator('#backupForm')).to_be_visible()
             page.locator('#backupForm [name=repeat]').select_option('weekly')

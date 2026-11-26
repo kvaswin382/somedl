@@ -824,6 +824,9 @@ class Desk:
 
     def start(self):
         import schedules
+        if (self.state/'folder-rename.json').exists() and self.storage(reserve=False)['ready']:
+            from fileops import finish_folder_rename
+            with self.file_lock:finish_folder_rename(self)
         for function in (self.media_loop, self.torrent_loop,self.notification_loop,self.health_loop,self.tasks.loop,lambda:schedules.loop(self)):
             thread = threading.Thread(target=function, daemon=True)
             thread.start()

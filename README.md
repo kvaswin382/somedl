@@ -33,8 +33,6 @@ sudo bash upgrade.sh
 - SSD downloads, saved cookies, accounts and queue history are preserved. Engine packages are updated separately.
 - Refresh with **Ctrl+F5**; the footer should show **v2.3.0**. Pulling source alone does not update the running app.
 
-**This update:** select up to **20 torrent files** at once, with individual results and duplicate confirmation before downloading a fresh copy. Existing files are kept. [Torrent controls](docs/storage-cloud.md#torrent-resources-and-data).
-
 ## First installation
 
 Already installed? Use **Upgrade** above; do not rerun the initial installer.

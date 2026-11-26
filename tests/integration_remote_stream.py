@@ -1,5 +1,5 @@
 """Real rclone HTTP/WebDAV: authenticated ranges, browsing, read-only and no cache."""
-import base64,http.client,json,socket,sys,tempfile,time
+import base64,http.client,json,socket,sys,tempfile,time,threading
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from server import Desk
@@ -34,5 +34,15 @@ with tempfile.TemporaryDirectory() as tmp:
         assert not list(desk.root.iterdir()),list(desk.root.iterdir())
         desk.remote_servers.close()
         assert not desk.remote_servers.public()['running']
+        job={'cancel':threading.Event(),'bytes':0,'detail':'','process':None}
+        copy={'remote':'fixture','path':'Sub/movie.mp4','target_remote':'fixture','target_path':'Copies/movie.mp4'}
+        desk.remotes.copy(job,copy)
+        assert (remote/'Copies/movie.mp4').read_bytes()==payload
+        desk.remotes.copy(job,copy)  # Identical destination is safely skipped.
+        (remote/'Copies/movie.mp4').write_bytes(b'keep existing bytes')
+        desk.remotes.copy(job,copy)
+        assert (remote/'Copies/movie.mp4').read_bytes()==b'keep existing bytes'
+        assert not list(desk.root.iterdir())
+        print('PASS: real remote copy preserves exact bytes and skips all existing destinations without SSD staging.')
         print('PASS: actual rclone HTTP and WebDAV require credentials; byte-range seeks and full reads match; writes refused; no SSD cache; servers stop cleanly.')
     finally:desk.close()

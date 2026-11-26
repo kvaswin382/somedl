@@ -137,7 +137,9 @@ class Remotes:
         if data.get('directory') is True:
             if not data.get('path'):raise ValueError('Select a folder, not the whole remote')
             if data.get('remote')==data.get('target_remote') and data.get('target_path','').startswith(data['path']+'/'):raise ValueError('Cannot copy a folder into itself')
-        args=self.args('copy' if data.get('directory') is True else 'copyto',source,destination,'--immutable','--transfers','1','--checkers','1','--buffer-size','1M','--stats','1s','--use-json-log','--retries','1')
+        # Older rclone versions do not consistently enforce --immutable for copyto.
+        # Skip every existing destination so a copy never replaces cloud files.
+        args=self.args('copy' if data.get('directory') is True else 'copyto',source,destination,'--ignore-existing','--immutable','--transfers','1','--checkers','1','--buffer-size','1M','--stats','1s','--use-json-log','--retries','1')
         p=self.desk.tasks.process(job,args,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
         tail=[]
         def monitor():

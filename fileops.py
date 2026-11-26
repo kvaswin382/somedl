@@ -17,15 +17,17 @@ def finish_folder_rename(desk):
     if source.exists():
         if target.exists():raise ValueError('Folder rename recovery conflict; both names exist')
         journal.unlink();return
-    if not target.is_dir() or [target.stat().st_dev,target.stat().st_ino]!=data['identity']:
-        raise ValueError('Folder rename recovery requires the original SSD folder')
+    if not target.is_dir():raise ValueError('Folder rename recovery requires the original SSD folder')
+    if [target.stat().st_dev,target.stat().st_ino]!=data['identity']:
+        if not data.get('content_stamp') or folder_inventory(desk,target)['content_stamp']!=data['content_stamp']:
+            raise ValueError('Folder changed during rename recovery; inspect the SSD folder')
     with desk.lock:
         try:
             for table in ('file_dates','covers'):
                 for row in desk.rows('SELECT DISTINCT folder FROM '+table):
                     folder=row['folder']
                     if folder==old or folder.startswith(old+'/'):
-                        desk.db.execute('UPDATE '+table+' SET folder=? WHERE folder=?',(new+folder[len(old):],folder))
+                        desk.db.execute('UPDATE OR REPLACE '+table+' SET folder=? WHERE folder=?',(new+folder[len(old):],folder))
             for row in desk.rows('SELECT id,folder,subdir FROM jobs'):
                 path='/'.join(p for p in (row['folder'],row['subdir']) if p)
                 if path==old or path.startswith(old+'/'):
@@ -59,13 +61,14 @@ def rename_folder(desk,data):
             if (desk.root/job['folder']/job['subdir']).is_relative_to(source):raise ValueError('Wait for this folder’s download worker to stop')
         for path in protection(desk)['torrents']:
             if path.is_relative_to(source):raise ValueError('Remove the torrent using this folder first; keep its files')
-        folder_inventory(desk,source)  # Refuse symlinks, nested mounts and special files.
+        inventory=folder_inventory(desk,source)  # Refuse symlinks, nested mounts and special files.
         new=target.relative_to(desk.root).as_posix();st=source.stat()
         journal=desk.state/'folder-rename.json';temp=journal.with_suffix('.tmp')
         with temp.open('w') as stream:
-            json.dump({'source':old,'target':new,'identity':[st.st_dev,st.st_ino]},stream);stream.flush();os.fsync(stream.fileno())
+            json.dump({'source':old,'target':new,'identity':[st.st_dev,st.st_ino],'content_stamp':inventory['content_stamp']},stream);stream.flush();os.fsync(stream.fileno())
         temp.chmod(0o600);os.replace(temp,journal)
-        os.rename(source,target)
+        try:os.rename(source,target)
+        except OSError:journal.unlink(missing_ok=True);raise
         finish_folder_rename(desk)
         record(desk,'folder renamed',old+' → '+new)
         return {'path':new}
@@ -191,8 +194,9 @@ def folder_inventory(desk,path):
             fingerprint.update((child.relative_to(path).as_posix()+f'\0{st.st_mode}:{st.st_size}:{st.st_mtime_ns}\n').encode())
             if child.is_file():files+=1;size+=st.st_size
             elif not child.is_dir():raise ValueError('Folder contains a special file')
+    durable=fingerprint.hexdigest()
     st=path.stat();fingerprint.update(f'{st.st_dev}:{st.st_ino}:{st.st_mtime_ns}'.encode())
-    return {'files':files,'bytes':size,'stamp':fingerprint.hexdigest()}
+    return {'files':files,'bytes':size,'stamp':fingerprint.hexdigest(),'content_stamp':durable}
 
 
 def inspect_folder(desk,data):

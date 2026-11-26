@@ -3,7 +3,7 @@ from pathlib import Path
 from unittest.mock import patch
 from test_desk import Fixture
 from app_time import checked
-from fileops import rename_folder,finish_folder_rename
+from fileops import rename_folder,finish_folder_rename,folder_inventory
 from storage_tools import stamp,set_cover
 from remotes import merge_config
 from publishing import facebook_title
@@ -51,6 +51,19 @@ class RevisionTests(Fixture):
         old=self.desk.root/'Old';old.mkdir();st=old.stat();self.desk.write('INSERT INTO covers VALUES(?,?)',('Old','pic.jpg'))
         (self.desk.state/'folder-rename.json').write_text(json.dumps({'source':'Old','target':'New','identity':[st.st_dev,st.st_ino]}));old.rename(self.desk.root/'New')
         finish_folder_rename(self.desk);self.assertEqual(self.desk.rows('SELECT * FROM covers')[0]['folder'],'New')
+    def test_folder_recovery_after_remount_and_stale_destination_metadata(self):
+        old=self.desk.root/'Old';old.mkdir();(old/'cover.jpg').write_bytes(b'cover')
+        durable=folder_inventory(self.desk,old)['content_stamp']
+        self.desk.write('INSERT INTO covers VALUES(?,?)',('Old','cover.jpg'))
+        self.desk.write('INSERT INTO covers VALUES(?,?)',('New','stale.jpg'))
+        journal=self.desk.state/'folder-rename.json'
+        journal.write_text(json.dumps({'source':'Old','target':'New','identity':[0,0],'content_stamp':durable}));old.rename(self.desk.root/'New')
+        finish_folder_rename(self.desk)
+        self.assertEqual(self.desk.rows('SELECT * FROM covers'),[{'folder':'New','name':'cover.jpg'}])
+        # Replay after a database commit but before journal removal is harmless.
+        journal.write_text(json.dumps({'source':'Old','target':'New','identity':[0,0],'content_stamp':durable}))
+        finish_folder_rename(self.desk);self.assertEqual(self.desk.rows('SELECT * FROM covers')[0]['name'],'cover.jpg')
+
     def test_torrent_counts_network_only_not_cached_size_and_persists_delta(self):
         torrent={'hashString':'a'*40,'addedDate':1,'downloadedEver':100,'uploadedEver':30,'haveValid':999999999,'totalSize':999999999,'percentDone':1}
         self.desk.record_owned_torrent_usage([torrent]);self.assertEqual(self.desk.usage_summary('day')['total'],0)

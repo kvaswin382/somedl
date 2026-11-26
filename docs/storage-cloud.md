@@ -8,7 +8,9 @@ Use the normal upgrade commands in [README](../README.md). The upgrader also ins
 2. Choose Google Drive or another installed rclone provider and answer its setup questions. On a headless server, OAuth providers can ask you to run `rclone authorize` on a computer with a browser and paste its result. Follow the displayed provider instructions; tokens stay in the laptop's private configuration.
 3. To encrypt remote files, create a **crypt** remote over an existing cloud remote. Keep the encryption passwords somewhere safe: losing them prevents recovery.
 4. Unfinished setup can be resumed after closing the dialog or restarting the app. **Remove** deletes only the local configuration; it keeps cloud files and refuses removal while jobs, schedules or another remote depend on it.
-5. In **Settings → Rclone → Download URLs to remote**, paste your links and select that remote. Browse only its folders; **New folder** creates a child folder. The saved rclone configuration is `/var/lib/zedair/rclone.conf`, owned by the service user. Existing remotes in a different user's rclone configuration are not silently imported.
+5. In **Settings → Rclone → URL downloads**, paste your links and select that remote. Browse only its folders; **New folder** creates a child folder. The saved rclone configuration is `/var/lib/zedair/rclone.conf`, owned by the service user. Upgrading with sudo imports new remotes from the invoking user's ordinary config without replacing existing Zedair remotes. Alternatively, use **Import existing rclone config**, including for password-encrypted configs.
+
+**Browse & copy** lists remote files and folders, with search, folder creation and background copying to another configured remote. Conflicting destination files are preserved. **Streaming** starts password-protected, read-only HTTP and WebDAV on a selected LAN address. Open an HTTP file link in VLC's Open Network Stream and enter the streaming credentials. Two requests share the adjustable RAM read-ahead buffer; no SSD file cache is used. Hosting stops on app restart. Keep these ports on your LAN.
 
 Direct cloud transfers use bounded pipes, not the SSD/eMMC for media staging. There is one cloud download pipeline at a time. Individual HTTP files and extracted media streams are supported. MP4 streams use a fragmented MP4 container so they do not need a seekable local file. Original video/audio codecs are copied. A unique job/attempt suffix prevents overwriting an existing cloud file. Pausing or retrying restarts from zero; failed uploads are cleaned up where the provider permits it.
 
@@ -18,7 +20,7 @@ Provider limitations still apply. Unknown-length streams need a backend supporti
 
 **Backups** supports application/settings/database/cookies, SSD files, or both. Database snapshots are consistent; SSD files changing during backup cause the attempt to fail instead of being silently called complete. Backups stream as tar archives; application backup excludes the OS, virtualenv and browser binaries. Reinstall dependencies when restoring. Archive credentials are private: choose a crypt remote if encryption is needed.
 
-Choose daily, weekly, monthly, yearly, or a five-field numeric cron expression and a time in **Asia/Kolkata**. The application evaluates the schedule; it does not install arbitrary shell commands in crontab. Missed runs while the server is off are not replayed. A date such as the 31st runs only in months containing that date. Retention deletes only successful backup paths recorded as created by this application, beneath its unique backup prefix. Other remote files are never swept by age. Progress and safe cancellation appear below the backup form.
+Choose daily, weekly, monthly, yearly, or a five-field numeric cron expression. Times follow **Settings → General → Timezone**, defaulting to **Asia/Kolkata**. The application evaluates the schedule; it does not install arbitrary shell commands in crontab. Missed runs while the server is off are not replayed. A date such as the 31st runs only in months containing that date. Retention deletes only successful backup paths recorded as created by this application, beneath its unique backup prefix. Other remote files are never swept by age. Progress and safe cancellation appear below the backup form.
 
 **System usage → Scheduled reboot** uses the same calendar. Reboots are skipped while transfers, uploads, background workers or torrents are active, or torrent status is unknown. Only the fixed, root-owned systemd helper can request the reboot. Disable the schedule to remove it.
 
@@ -42,7 +44,7 @@ The torrent memory ceiling defaults to **1024 MiB**, configurable from **128–1
 
 Tracker details show connected peers and the tracker's reported seeders/leechers; unknown counts remain blank. You can add trackers or request an announcement. Trackers cannot create peers for a dead torrent.
 
-**Data usage** separates downloads (blue) from uploads (amber), including Transmission counters and rclone streaming bytes. Older history cannot be reconstructed. Figures are payload estimates, not ISP billing: retransfers count again, browser traffic and protocol overhead are excluded, and charts retain their existing UTC calendar.
+**Data usage** separates downloads (blue) from uploads (amber), including gallery-dl payloads, Transmission transfer counters and direct-to-rclone download bytes. Existing torrent content is excluded. Charts follow the global timezone. Older missing traffic cannot be reconstructed, and older hourly/daily records have approximate time boundaries. Figures are payload estimates, not ISP billing: retransfers count again; browser traffic and protocol overhead are excluded.
 
 ## Diagnostics
 
