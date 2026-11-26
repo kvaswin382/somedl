@@ -280,6 +280,10 @@ with sync_playwright() as pw:
             expect(page.locator('.engine-table tbody tr')).to_have_count(3)
             page.evaluate('() => scrollTo(0,0)');no_overflow(page);centered_settings(page);screenshot(page,'engines-mobile-dark')
             page.locator('.engine-command summary').click();no_overflow(page)
+            for row in page.locator('.engine-table tbody tr').all():
+                installed=row.locator('[data-label=Installed]').bounding_box();latest=row.locator('[data-label=Latest]').bounding_box()
+                assert installed['width']>=80 and latest['width']>=80
+                assert installed['x']+installed['width']<=latest['x'], 'Installed/latest labels overlap on mobile'
             screenshot(page,'engine-commands-mobile-dark')
             page.locator('.engine-command summary').click()
             # Missing Playwright is repairable; combined commands require all updates.
