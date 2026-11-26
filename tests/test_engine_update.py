@@ -42,11 +42,13 @@ class RetireUpdaterTests(unittest.TestCase):
             root=Path(tmp);rule=root/'rule';unit=root/'updater.service';script=root/'engine_update.py';state=root/'state';state.mkdir()
             for p in (rule,unit,script,state/'integration.json'):p.write_text('legacy')
             (state/'update-playwright.json').write_text('keep diagnostics')
-            def run(args,**kwargs):return subprocess.CompletedProcess(args,0 if active else 3,stdout='active\n' if active else 'inactive\n')
+            def run(args,**kwargs):
+                if 'is-active' in args:self.assertTrue(unit.is_symlink(), 'Mask before checking instances')
+                return subprocess.CompletedProcess(args,0 if active else 3,stdout='active\n' if active else 'inactive\n')
             with patch.multiple(maintenance,UPDATE_RULE=rule,UPDATE_UNIT=unit,LEGACY_SCRIPT=script,LEGACY_STATE=state),patch('maintenance.os.geteuid',return_value=0),patch('maintenance.subprocess.run',side_effect=run) as command:
                 if active:
                     with self.assertRaisesRegex(ValueError,'still be running'):maintenance.retire_update_service()
-                    self.assertTrue(script.exists());self.assertFalse(unit.is_symlink())
+                    self.assertTrue(script.exists());self.assertTrue(unit.is_symlink())
                 else:
                     maintenance.retire_update_service();self.assertEqual(unit.readlink(),Path('/dev/null'));self.assertFalse(script.exists());self.assertFalse((state/'integration.json').exists())
                 self.assertFalse(rule.exists());self.assertTrue((state/'update-playwright.json').exists())

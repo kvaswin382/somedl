@@ -150,6 +150,11 @@ def retire_update_service():
     """Root installer only: revoke access and mask the retired GUI updater."""
     if os.geteuid()!=0:raise ValueError('Root is required to remove updater integration')
     UPDATE_RULE.unlink(missing_ok=True)
+    # Mask and reload before inspecting active instances: polkit rule reload is
+    # asynchronous, so revoking its file alone leaves a short activation window.
+    UPDATE_UNIT.unlink(missing_ok=True)
+    UPDATE_UNIT.symlink_to('/dev/null')
+    subprocess.run(['/usr/bin/systemctl','daemon-reload'],check=True,timeout=30)
     # Never interrupt pip mid-install. An active legacy operation requires attention
     # before deployment; removing the permission already prevents new web requests.
     for name in sorted(UPDATES):
@@ -157,8 +162,5 @@ def retire_update_service():
         state=result.stdout.strip()
         if state not in ('inactive','failed','unknown'):
             raise ValueError('Legacy engine updater may still be running ('+name+'). Inspect sudo systemctl status zedair-update@'+name+'.service before retrying; no package operation was interrupted.')
-    UPDATE_UNIT.unlink(missing_ok=True)
-    UPDATE_UNIT.symlink_to('/dev/null')
     LEGACY_SCRIPT.unlink(missing_ok=True)
     (LEGACY_STATE/'integration.json').unlink(missing_ok=True)
-    subprocess.run(['/usr/bin/systemctl','daemon-reload'],check=True,timeout=30)
