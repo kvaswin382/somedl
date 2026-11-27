@@ -12,6 +12,7 @@ import contextlib
 import signal
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 from engine_settings import DEFAULTS
 from media import validate_url
@@ -126,7 +127,20 @@ def post(node,quality='best'):
 class Selection:
     def __init__(self,scope,quality='best',images_only=False):
         self.scope=scope;self.quality=quality;self.images_only=images_only
-        self.items={};self.errors=[];self.links=set();self.complete=False;self.matched=False;self.user_id='';self.required={}
+        self.items={};self.errors=[];self.links=set();self.complete=False;self.matched=False;self.user_id='';self.required={};self.failures={};self.complete_counts={}
+
+    def add_post(self,node):
+        code=node.get('shortcode') or node.get('code')
+        if not isinstance(code,str):return
+        expected=number(node.get('carousel_media_count') or (node.get('edge_sidecar_to_children') or {}).get('count'))
+        self.required[code]=max(self.required.get(code,0),expected)
+        try:
+            items=post(node,self.quality)
+            if len(items)<self.required[code]:
+                if self.complete_counts.get(code,0)>=self.required[code]:return
+                raise ValueError('Instagram returned an incomplete carousel for '+code)
+            self.add(items);self.failures.pop(code,None);self.complete_counts[code]=len(items)
+        except (ValueError,TypeError,AttributeError) as exc:self.failures[code]=str(exc)
 
     def connection(self,feed):
         s=self.scope
@@ -138,7 +152,7 @@ class Selection:
                 if identifier.isdigit() and (not owner(child) or owner(child)==s['user']):self.links.add(identifier)
             elif not owner(child) or owner(child)==s['user']:
                 if not owner(child):child={**child,'owner':{'username':s['user']}}
-                self.add(post(child,self.quality))
+                self.add_post(child)
         if feed.get('page_info',{}).get('has_next_page') is False or feed.get('more_available') is False:self.complete=True
 
     def ingest(self,data,requested=False):
@@ -161,15 +175,17 @@ class Selection:
                     expected=number(node.get('carousel_media_count') or (node.get('edge_sidecar_to_children') or {}).get('count'))
                     self.required[code]=max(self.required.get(code,0),expected)
                 if s['kind']=='post' and code==s['code']:
-                    self.add(post(node,self.quality));self.matched=True;self.complete=bool(self.items)
+                    self.add_post(node);self.matched=True;self.complete=bool(self.items)
                 elif s['kind'] in ('posts','reels','everything') and owner(node)==s['user'] and code:
                     if s['kind']=='reels' and node.get('product_type')!='clips':continue
-                    self.add(post(node,self.quality));self.matched=True
+                    self.add_post(node);self.matched=True
                 elif s['kind']=='avatar' and str(node.get('username','')).lower()==s['user']:
                     hd=node.get('hd_profile_pic_url_info') or {}
                     url=hd.get('url') or node.get('profile_pic_url_hd')
                     if url:
                         self.add([{'key':s['user']+'_avatar','url':url,'video':False,'owner':s['user']}]);self.matched=True;self.complete=True
+                elif s['kind']=='stories' and s.get('id') and str(node.get('pk') or node.get('id') or '').split('_')[0]==s['id'] and owner(node)==s['user']:
+                    self.add([media(node,'story_'+s['id'],self.quality)]);self.matched=True;self.complete=bool(self.items)
                 elif s['kind'] in ('highlight','stories') and isinstance(node.get('items'),list):
                     identifier=str(node.get('id') or node.get('pk') or '')
                     matches=(identifier in (s.get('id'),'highlight:'+s.get('id',''))) if s['kind']=='highlight' else owner(node)==s['user']
@@ -196,6 +212,7 @@ class Selection:
                 if not old or item.get('rank',(0,0))>=old.get('rank',(0,0)):self.items[item['key']]=item
 
     def result(self):
+        if self.failures:raise ValueError(next(iter(self.failures.values())))
         if not self.images_only:
             for code,expected in self.required.items():
                 if sum(k.startswith(code+'_') for k in self.items)<expected:raise ValueError('Instagram returned an incomplete carousel for '+code)
@@ -234,7 +251,7 @@ def rendered_post(page,scope,deadline):
             const variants=(e.srcset||'').split(',').map(s=>{const [url,w]=s.trim().split(/\s+/);return {url,w:parseInt(w)||0}}).filter(v=>v.url).sort((a,b)=>b.w-a.w);
             out.push({video:false,url:variants[0]?.url||e.currentSrc||e.src,height:e.naturalHeight,width:e.naturalWidth});
           } return out;
-        """)
+        }""")
         if any(v['video'] for v in values):values=[v for v in values if v['video']]
         for value in values:
             if not value['url'].startswith('https://'):
@@ -277,16 +294,16 @@ def _discover(spec,jar):
                 context=browser.new_context(accept_downloads=False,service_workers='block',locale='en-US')
                 context.set_default_timeout(1500)
                 context.add_cookies([{'name':c.name,'value':c.value,'domain':c.domain,'path':c.path or '/', 'secure':c.secure,'httpOnly':c.has_nonstandard_attr('HTTPOnly') or c.has_nonstandard_attr('HttpOnly'),**({'expires':c.expires} if c.expires else {})} for c in jar if not c.is_expired()])
-                validated=set()
+                validated=set();trackers=[d.strip().lower() for d in settings['tracker_domains'].split(',') if d.strip()]
                 def route(r):
                     try:
                         p=urlsplit(r.request.url);origin=(p.scheme,p.hostname,p.port)
                         if origin not in validated:validate_url(r.request.url);validated.add(origin)
-                        if r.request.resource_type in ('font','media'):return r.abort()
+                        if r.request.resource_type in ('font','media') or (settings['block_trackers'] and any(p.hostname==d or (p.hostname or '').endswith('.'+d) for d in trackers)):return r.abort()
                         r.continue_()
                     except Exception:r.abort()
                 context.route('**/*',route);context.route_web_socket('**/*',lambda ws:ws.close())
-                budget=[0]
+                budget=[0];pending=[]
                 def response(res):
                     try:
                         if res.status!=200 or not (urlsplit(res.url).hostname or '').endswith('.instagram.com'):return
@@ -297,7 +314,11 @@ def _discover(spec,jar):
                         if len(raw)>4*1024**2:return
                         for line in raw.decode('utf-8').splitlines():
                             if line.startswith('for (;;);'):line=line[9:]
-                            try:selection.ingest(json.loads(line),requested=bound_request(res.request,selection))
+                            try:
+                                data=json.loads(line)
+                                selection.ingest(data,requested=bound_request(res.request,selection))
+                                if scope['kind'] in ('posts','reels','highlights') and not selection.user_id and budget[0]<=8*1024**2 and len(pending)<8:
+                                    pending.append((data,SimpleNamespace(url=res.request.url,post_data=res.request.post_data)))
                             except ValueError:pass
                     except Exception:pass
                 context.on('response',response)
@@ -315,12 +336,16 @@ def _discover(spec,jar):
                         for script in scripts:
                             try:selection.ingest(json.loads(script))
                             except ValueError:pass
+                        if selection.user_id and pending:
+                            for data,request in pending:selection.ingest(data,requested=bound_request(request,selection))
+                            pending.clear()
                         if len(selection.items)!=last:last=len(selection.items);settled=time.monotonic()
                         if selection.complete and time.monotonic()-settled>=settings['browser_settle']:break
                         if scope['kind']=='post' and not selection.complete and not dom_tried and time.monotonic()-started>=min(12,settings['browser_timeout']/2):
                             dom_tried=True
                             items=rendered_post(page,scope,deadline)
-                            if items:selection.add(items);selection.complete=True;break
+                            if items:
+                                selection.add(items);selection.failures.pop(scope['code'],None);selection.complete=True;break
                         if scope['kind'] in ('posts','reels','everything','highlights'):page.mouse.wheel(0,850)
                         else:
                             controls=page.locator('button[aria-label="Play"]')

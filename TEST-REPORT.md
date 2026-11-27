@@ -1,6 +1,6 @@
 ## v2.3.4 Instagram fallback validation
 
-New regression cases cover empty gallery success, failed extractor handoff, whole-transfer browser leasing, exact carousel matching, recommendation rejection, video-poster rejection, missing carousel items, image/video rendition selection, inline DASH audio/video selection, story IDs, highlight catalogs, profile ownership, archived collection completion and disabled fallback. The sandboxed Chromium integration uses controlled Instagram responses to exercise authenticated JSON, HttpOnly cookies, rendered carousel navigation and login-wall errors. These fixtures do not establish live Instagram account compatibility.
+New regression cases cover empty gallery success, failed extractor handoff, whole-transfer browser leasing, exact carousel matching, recommendation rejection, video-poster rejection, missing carousel items, image/video rendition selection, inline DASH audio/video selection, story IDs, highlight catalogs, profile ownership, archived collection completion and disabled fallback. The sandboxed Chromium integration uses controlled Instagram responses to exercise authenticated JSON, HttpOnly cookies, rendered carousel navigation and login-wall errors. A separate real-transfer fixture verifies the shared lease during discovery and HTTP transfer, received-byte accounting, exact image bytes, and ffmpeg copying 1080p H.264 plus AAC into MP4. These fixtures do not establish live Instagram account compatibility.
 
 # v2.3.3 fresh failed retries and LAN streaming
 

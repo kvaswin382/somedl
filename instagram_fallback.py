@@ -69,11 +69,12 @@ def run(spec):
             # complete browser collection (duplicates or lower renditions).
             for p in outputs(dest):p.unlink()
             for p in completed:p.replace(dest/p.name);http.output_register(dest,p.name)
+            print('ZEDITEMTOTAL '+str(len(completed)),flush=True)
             if spec.get('cookie'):
                 session.jar.save(spec['cookie'],ignore_discard=True,ignore_expires=False)
             return 0
         except Exception as exc:
-            raise ValueError(reason+'; Instagram browser fallback: '+diagnostic(exc)) from exc
+            raise ValueError(reason+'; primary details: '+log[-2000:]+'; Instagram browser fallback: '+diagnostic(exc)) from exc
         finally:session.save()
 
 

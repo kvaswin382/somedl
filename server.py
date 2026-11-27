@@ -551,6 +551,9 @@ class Desk:
                 try:
                     live['exact_bytes']=True;self.record_usage(jid,int(line[9:]))
                 except ValueError:pass
+            elif line.startswith('ZEDITEMTOTAL '):
+                try:self.write('UPDATE jobs SET items=? WHERE id=?',(max(0,int(line[13:])),jid))
+                except ValueError:pass
             elif line.startswith('ZEDITEM '):
                 self.write('UPDATE jobs SET items=items+1 WHERE id=?',(jid,))
                 live['detail']='Profile media saved to staging; continuing…'

@@ -278,7 +278,7 @@ def failure_kind(message):
         return 'pagination', 'Instagram repeated a page. Job paused for review; saved files are kept.'
     if any(s in low for s in ('429','too many requests','rate limit','please wait a few minutes')):
         return 'rate_limit', 'Website rate limit. Wait before retrying; automatic retries are paused.'
-    if any(s in low for s in ('checkpoint_required','challenge_required','consent_required','/challenge/')):
+    if any(s in low for s in ('checkpoint_required','challenge_required','consent_required','/challenge/','instagram requires login or account verification')):
         return 'challenge', 'Instagram/site requires verification. Open the site in your browser and resolve the prompt; this does not prove the saved cookie expired.'
     if any(s in low for s in ('login required','loginrequired','authenticationerror','authentication required',
                               'not logged in','log in to','sign in to','sign-in','cookies are no longer valid',

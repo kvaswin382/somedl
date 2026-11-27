@@ -40,6 +40,12 @@ class InstagramSelectionTests(unittest.TestCase):
         selection.ingest({'username':'alice','id':'123','edge_owner_to_timeline_media':{'edges':[{'node':photo()}],'page_info':{'has_next_page':False}}})
         self.assertTrue(selection.complete);self.assertEqual(len(selection.items),1)
 
+    def test_profile_end_does_not_hide_missing_media(self):
+        selection=ig.Selection({'kind':'posts','user':'alice'})
+        selection.ingest({'username':'alice','edge_owner_to_timeline_media':{'edges':[
+            {'node':photo('Good')},{'node':photo('Broken',is_video=True)}], 'page_info':{'has_next_page':False}}})
+        with self.assertRaisesRegex(ValueError,'full video'):selection.result()
+
     def test_specific_story_id_and_highlight(self):
         selection=ig.Selection({'kind':'stories','user':'alice','id':'222'})
         items=[{**photo(),'pk':'111'},{**photo(),'pk':'222'}]
@@ -113,3 +119,12 @@ class InstagramHandoffTests(unittest.TestCase):
     def test_disabled_empty_success_is_failure(self):
         with tempfile.TemporaryDirectory() as root,patch.object(fallback,'execute',return_value=(0,'')):
             with self.assertRaisesRegex(ValueError,'disabled'):fallback.run({'args':[],'dest':root,'enabled':False})
+
+
+from test_desk import Fixture
+class InstagramCounterTests(Fixture):
+    def test_completed_browser_batch_replaces_partial_gallery_count(self):
+        import io
+        jid=self.create_job()
+        self.desk.consume(io.BytesIO(b'ZEDITEM gallery-partial\nZEDITEM browser-one\nZEDITEM browser-two\nZEDITEMTOTAL 2\n'),jid)
+        self.assertEqual(self.desk.job(jid)['items'],2)
