@@ -85,6 +85,8 @@ class ProfileTests(Fixture):
 
     def test_empty_profile_failure_preserves_auth_error(self):
         result=self.desk.add_profile({'platform':'instagram','profile':'empty'})
+        # This regression isolates primary-extractor error classification.
+        self.desk.update_job(result['id'],browser_fallback=0)
         job=self.desk.job(result['id'])
         program='print("login_required: saved session rejected",flush=True);raise SystemExit(1)'
         with patch('server.validate_url'),patch('server.build_command',return_value=[sys.executable,'-c',program]):

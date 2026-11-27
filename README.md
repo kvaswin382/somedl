@@ -1,12 +1,17 @@
 # Zedair Download Desk
 
-**v2.3.3** · Ubuntu 24.04 · Python 3.12 · Built for a 2 GB headless laptop + USB SSD
+**v2.3.4** · Ubuntu 24.04 · Python 3.12 · Built for a 2 GB headless laptop + USB SSD
 
 Queue webpage links from your phone or computer. Zedair finds and downloads the media on the laptop, even after you close the browser.
 
 [Install](#first-installation) · [Upgrade](#upgrade-an-existing-installation) · [Use](#everyday-use) · [Telegram](#telegram) · [Troubleshoot](#troubleshooting) · [Detailed guides](#guides)
 
-## What changed in v2.3.3
+## What changed in v2.3.4
+
+- Instagram can fall back to **Playwright** when gallery-dl fails or returns no files. The existing browser-fallback checkbox controls this for queued downloads; Tools jobs enable it by default. Saved cookies are reused. Only one browser fallback extracts/downloads at a time, regardless of general concurrency.
+- The fallback matches the requested post, carousel, story, highlight or profile. It selects the highest exposed rendition (or your selected lower video quality), keeps images as images, and copies separate video/audio tracks into MP4 without re-encoding. It refuses unrelated media, video posters and collections whose completeness cannot be verified.
+- Rate-limit and explicit account-verification responses keep their cooldown/error instead of immediately opening another browser. Browser login walls report that verification is needed. No package is installed automatically.
+- Browser fallback is for the SSD download queue and Instagram Tools; direct-to-rclone uses its separate streaming pipeline. Large/private/expired collections or changed Instagram page structures may still be unavailable. A browser cannot guarantee access or reveal a higher original quality than Instagram exposes.
 
 - Retrying failed items starts extraction from the beginning, clears only that job’s partial workspace/checkpoints, and keeps the attempt count increasing. Finished files are preserved. Paused downloads still resume.
 - Rclone streaming offers **All LAN interfaces** and displays LAN URLs, ports, username, shared folder and VLC instructions.
@@ -36,7 +41,7 @@ sudo bash upgrade.sh
 - If Git reports local edits or a diverged branch, preserve and review them first. Do not force-reset the checkout.
 - The upgrader backs up app/state under `/var/backups/zedair`, installs into `/opt/zedair`, and checks startup. It restores the backup if its health check fails.
 - SSD downloads, saved cookies, accounts and queue history are preserved. Engine packages are updated separately.
-- Refresh with **Ctrl+F5**; the footer should show **v2.3.3**. Pulling source alone does not update the running app.
+- Refresh with **Ctrl+F5**; the footer should show **v2.3.4**. Pulling source alone does not update the running app.
 
 ## First installation
 

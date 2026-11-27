@@ -63,7 +63,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.3.3')
+            expect(page.locator('#appVersion')).to_have_text('v2.3.4')
             original_theme(page)
             # Toasts stay at the top and above nested modal backdrops, without stealing focus.
             for width,dark in [(1360,False),(1360,True),(390,False),(390,True)]:

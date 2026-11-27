@@ -26,6 +26,8 @@ def target(value,mode):
             match=re.fullmatch(r'highlight:(\d{1,30})',decoded)
             if not match:raise ValueError('This share link does not identify an Instagram highlight')
             return '', 'https://www.instagram.com/stories/highlights/'+match[1]+'/'
+        if parts[0]=='stories' and len(parts)>=3 and parts[2].isdigit():
+            return parts[1].lower(), 'https://www.instagram.com/stories/'+parts[1].lower()+'/'+parts[2]+'/'
         if parts[0]=='stories' and len(parts)>=2:value=parts[1]
         elif len(parts)<=2 and (len(parts)==1 or parts[1]=='highlights'):value=parts[0]
         else:raise ValueError('Use a username, profile, story or highlight URL')

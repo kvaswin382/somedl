@@ -1,3 +1,7 @@
+## v2.3.4 Instagram fallback validation
+
+New regression cases cover empty gallery success, failed extractor handoff, whole-transfer browser leasing, exact carousel matching, recommendation rejection, video-poster rejection, missing carousel items, image/video rendition selection, inline DASH audio/video selection, story IDs, highlight catalogs, profile ownership, archived collection completion and disabled fallback. The sandboxed Chromium integration uses controlled Instagram responses to exercise authenticated JSON, HttpOnly cookies, rendered carousel navigation and login-wall errors. These fixtures do not establish live Instagram account compatibility.
+
 # v2.3.3 fresh failed retries and LAN streaming
 
 Manual and bulk retry share the fresh-retry path for failed items. Worker-side preparation discards only the job's partial workspace and publication journal, resets the publish phase and per-job gallery cache/checkpoints, and leaves finished files and account cookies intact. Attempts remain cumulative; a separate retry baseline renews the automatic retry budget. Paused resume and explicit refresh/resume retain partials. Tests reproduce a stale publish-phase failure, execute extraction on retry, verify counts and finished-file preservation, and redownload through a real gallery-dl fixture after resetting its archive.

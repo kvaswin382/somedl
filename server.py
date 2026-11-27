@@ -648,6 +648,16 @@ class Desk:
                 spec.write_text(json.dumps({'args':args,'url':job['url'],'dest':str(dest),'state':str(self.state),'cookie':str(cookie or ''),'enabled':bool(job.get('browser_fallback',1)),'force':bool(job.get('browser_force')),'quality':job['quality'],'container':job.get('container','auto'),'filename':job.get('filename',''),'settings':settings}))
                 spec.chmod(0o600)
                 args=[sys.executable,str(Path(__file__).with_name('download_engine.py')),str(spec)]
+            if key=='instagram' and job['layout']==2:
+                spec=self.state/('instagram-'+jid+'.json')
+                spec.write_text(json.dumps({'args':args,'url':job['url'],'dest':str(dest),'state':str(self.state),
+                    'cookie':str(cookie or ''),'settings':settings,'enabled':bool(job.get('browser_fallback',1)),
+                    'mode':job.get('profile_mode',''),'username':job.get('profile_username',''),
+                    'quality':job['quality'],'container':job.get('container','mp4'),
+                    'images_only':bool(job.get('images_only')),
+                    'published':bool(self.rows('SELECT source FROM published WHERE job=? AND complete=1',(jid,)))}))
+                spec.chmod(0o600)
+                args=[sys.executable,str(HERE/'instagram_fallback.py'),str(spec)]
             env = dict(os.environ, TMPDIR=str(dest), XDG_CACHE_HOME=str(dest), PYTHONUNBUFFERED='1')
             self.current = jid
             self.live[jid] = {}
@@ -752,6 +762,7 @@ class Desk:
                     paths=[self.root/self.job(jid)['folder']/self.job(jid)['subdir']/r['target'] for r in self.rows('SELECT target FROM published WHERE job=? AND complete=1',(jid,))]
                     queue_thumbnails(self,paths,embed=True)
             (self.state / ('video-' + jid + '.json')).unlink(missing_ok=True)
+            (self.state / ('instagram-' + jid + '.json')).unlink(missing_ok=True)
             (self.state / ('gallery-' + jid + '.json')).unlink(missing_ok=True)
             (self.state / ('profile-' + jid + '.json')).unlink(missing_ok=True)
 
@@ -879,7 +890,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'telegram_result':self.get_setting('telegram_last_result',{}), 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.3.3', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.3.4', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def add_stories(self,data):
         from instagram_story import target
