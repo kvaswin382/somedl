@@ -195,7 +195,7 @@ class Desk:
                 last_error TEXT DEFAULT '', position REAL);
         ''')
         columns = {r[1] for r in self.db.execute('PRAGMA table_info(jobs)')}
-        for key, definition in {'remote':"TEXT DEFAULT ''", 'remote_path':"TEXT DEFAULT ''", 'container':"TEXT DEFAULT 'auto'", 'layout':'INTEGER DEFAULT 1', 'phase':"TEXT DEFAULT 'download'", 'error_kind':"TEXT DEFAULT ''", 'profile_mode':"TEXT DEFAULT ''", 'profile_username':"TEXT DEFAULT ''", 'scroll_limit':'INTEGER DEFAULT 2000', 'items':'INTEGER DEFAULT 0', 'filename':"TEXT DEFAULT ''", 'images_only':'INTEGER DEFAULT 0', 'browser_fallback':'INTEGER DEFAULT 1', 'engine':"TEXT DEFAULT 'video'", 'browser_force':'INTEGER DEFAULT 0', 'remove_requested':'INTEGER DEFAULT 0'}.items():
+        for key, definition in {'restart_pending':'INTEGER DEFAULT 0','retry_base':'INTEGER DEFAULT 0','remote':"TEXT DEFAULT ''", 'remote_path':"TEXT DEFAULT ''", 'container':"TEXT DEFAULT 'auto'", 'layout':'INTEGER DEFAULT 1', 'phase':"TEXT DEFAULT 'download'", 'error_kind':"TEXT DEFAULT ''", 'profile_mode':"TEXT DEFAULT ''", 'profile_username':"TEXT DEFAULT ''", 'scroll_limit':'INTEGER DEFAULT 2000', 'items':'INTEGER DEFAULT 0', 'filename':"TEXT DEFAULT ''", 'images_only':'INTEGER DEFAULT 0', 'browser_fallback':'INTEGER DEFAULT 1', 'engine':"TEXT DEFAULT 'video'", 'browser_force':'INTEGER DEFAULT 0', 'remove_requested':'INTEGER DEFAULT 0'}.items():
             if key not in columns:
                 self.db.execute('ALTER TABLE jobs ADD COLUMN '+key+' '+definition)
         self.db.execute('CREATE TABLE IF NOT EXISTS published(job TEXT, source TEXT, target TEXT, signature TEXT, complete INTEGER, PRIMARY KEY(job,source))')
@@ -503,6 +503,8 @@ class Desk:
     def job_action(self, jid, action):
         with self.lock:
             job = self.job(jid)
+            fresh_retry=action=='retry' and job['status'] in ('error','retry','cancelled')
+            if fresh_retry and (jid in self.workers or jid in self.processes):raise APIError('Previous worker is still stopping; retry shortly')
             if action=='remove':
                 self.update_job(jid,status='cancelled',remove_requested=1,detail='Removed from queue')
                 if jid not in self.workers and jid not in self.processes and self.current!=jid:
@@ -521,7 +523,8 @@ class Desk:
                 if job['status']=='done':raise APIError('This download is complete. Remove its queue entry before adding the URL again.')
                 if job['status'] == 'running':
                     raise APIError('This download is already running')
-                self.update_job(jid, status='queued', attempts=0, next_try=0, last_error='', error_kind='', detail='Waiting in queue')
+                reset={'restart_pending':1,'phase':'download','progress':0,'items':0,'layout':2,'browser_force':0} if fresh_retry else {}
+                self.update_job(jid, status='queued', retry_base=job['attempts'], next_try=0, last_error='', error_kind='', detail='Fresh retry queued' if fresh_retry else 'Waiting in queue',**reset)
             elif action == 'first':
                 self.update_job(jid, position=now() - 10**10)
             else:
@@ -580,17 +583,33 @@ class Desk:
                 live['detail'] = line[-250:]
         pipe.close()
 
+    def prepare_fresh_retry(self,job):
+        if not job.get('restart_pending'):return
+        # This runs in the reserved worker, never in the web request. Only this
+        # job's partial workspace is discarded; published SSD files stay intact.
+        with self.file_lock:
+            if not job.get('remote'):
+                stage=self.staging(job['id'])
+                shutil.rmtree(stage);stage.mkdir(mode=0o700)
+            with self.lock:
+                self.db.execute('DELETE FROM published WHERE job=?',(job['id'],))
+                self.db.commit()
+                self.update_job(job['id'],restart_pending=0)
+            self.live.pop(job['id'],None)
+
     def run_job(self, job):
         jid = job['id']
         instagram_session = None
         process = None
         try:
             with self.lock:
-                if self.job(jid)['status'] not in ('queued', 'retry', 'blocked'):
+                job=self.job(jid)
+                if job['status'] not in ('queued', 'retry', 'blocked'):
                     return
                 self.current=jid
                 self.update_job(jid, status='running', attempts=job['attempts']+1, engine='video', detail='Connecting…')
             validate_url(job['url'])
+            self.prepare_fresh_retry(job)
             if job.get('remote'):
                 from remote_download import run as remote_run
                 self.live[jid]={}
@@ -705,9 +724,10 @@ class Desk:
                 error = platforms.redact(str(exc), self.state)[-8000:]
                 category, detail = platforms.failure_kind(error)
                 self.queue_notice(job,error)
-                profile_retry=job.get('profile_mode') in ('posts','reels','everything','avatar') and job['kind']=='instagram' and category in ('transient','rate_limit','access') and attempts<=96
-                again = profile_retry or (category=='transient' and attempts <= self.get_setting('retry_count', 3))
-                delay=random.randint(1800,3600)*min(8,2**min(attempts-1,3)) if profile_retry else min(1800,60*2**min(attempts-1,5))
+                cycle_attempts=max(1,attempts-job.get('retry_base',0))
+                profile_retry=job.get('profile_mode') in ('posts','reels','everything','avatar') and job['kind']=='instagram' and category in ('transient','rate_limit','access') and cycle_attempts<=96
+                again = profile_retry or (category=='transient' and cycle_attempts <= self.get_setting('retry_count', 3))
+                delay=random.randint(1800,3600)*min(8,2**min(cycle_attempts-1,3)) if profile_retry else min(1800,60*2**min(cycle_attempts-1,5))
                 if profile_retry:detail='Collection incomplete. Saved progress kept; cooling down before automatic retry.'
                 self.update_job(jid, status='retry' if again else 'error', attempts=attempts,
                     next_try=now() + delay,
@@ -859,7 +879,7 @@ class Desk:
                 'torrent_error': self.torrent_error, 'telegram_result':self.get_setting('telegram_last_result',{}), 'settings_schema':engine_settings.schema(), 'settings': {**self.settings(),'telegram_bot_token':'','telegram_token_set':bool(self.get_setting('telegram_bot_token',''))}, 'speedtest': self.speedtest.snapshot(),
                 'cookies': {s: (self.state / ('cookies-' + s + '.txt')).exists() for s in COOKIE_SLOTS},
                 'platforms': self.platform_settings(), 'cookie_status': {s: platforms.cookie_status(self.state,s) for s in COOKIE_SLOTS},
-                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.3.2', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
+                'engine_versions':self.engine_versions,'uptime': int(now()-self.started), 'version': '2.3.3', 'tools': {'facebook_browser': profiles.browser_ready(), 'local_url': 'http://zed.local', 'local_enabled': Path('/etc/zedair/local-address-enabled').exists()}, 'session_days': DAYS}
 
     def add_stories(self,data):
         from instagram_story import target

@@ -103,7 +103,7 @@ def build_command(job, dest, cookie, settings, state):
             'downloader': {'http': {'rate': str(settings['media_kib']) + 'k' if settings['media_kib'] else None},
                            'ytdl': {'options': {'format': 'bv*+ba/b', 'noplaylist': True,
                                                'concurrent_fragment_downloads': 1}}},
-            'cache': {'file': str(state / 'gallery-cache.sqlite3')},
+            'cache': {'file': str(dest / '.gallery-cache.sqlite3')},
             'output': {'progress': False},
         }
         if job.get('profile_mode'):

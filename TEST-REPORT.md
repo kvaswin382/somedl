@@ -1,3 +1,9 @@
+# v2.3.3 fresh failed retries and LAN streaming
+
+Manual and bulk retry share the fresh-retry path for failed items. Worker-side preparation discards only the job's partial workspace and publication journal, resets the publish phase and per-job gallery cache/checkpoints, and leaves finished files and account cookies intact. Attempts remain cumulative; a separate retry baseline renews the automatic retry budget. Paused resume and explicit refresh/resume retain partials. Tests reproduce a stale publish-phase failure, execute extraction on retry, verify counts and finished-file preservation, and redownload through a real gallery-dl fixture after resetting its archive.
+
+Streaming binds to all IPv4 interfaces when selected, retaining LAN-source checks, authentication and read-only access. Address discovery handles the service PATH and has a route-based fallback. API/UI show usable LAN links, ports, remote folder, username and buffer details without returning passwords. The real rclone fixture accesses the listener through detected non-loopback LAN addresses and checks exact range bytes. This does not test the user's router/firewall or live Instagram account.
+
 # v2.3.2 visible bulk retry
 
 Retry all failed is beside the queue filters and works across search and pagination. The API reports queued/skipped counts, excludes removed jobs and waits for stopping workers. The button prevents duplicate submissions and reports errors without losing its enabled state. Tests verify Hold queue, paused/completed jobs, stopping workers, repeated requests and a browser click with twelve failures and an active search.

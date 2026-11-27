@@ -3,6 +3,7 @@ import base64,http.client,json,socket,sys,tempfile,time,threading
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from server import Desk
+from remote_serve import addresses
 
 def port():
     with socket.socket() as s:s.bind(('127.0.0.1',0));return s.getsockname()[1]
@@ -14,8 +15,17 @@ with tempfile.TemporaryDirectory() as tmp:
     password='fixture-stream-password';auth='Basic '+base64.b64encode(('viewer:'+password).encode()).decode()
     desk.remotes.config.write_text('[disk]\ntype = local\n[fixture]\ntype = alias\nremote = '+str(remote)+'\n')
     try:
-        result=desk.remote_servers.start({'remote':'fixture','path':'Sub','address':'127.0.0.1','http_port':port(),'webdav_port':port(),'buffer_mib':8,'username':'viewer','password':password})
+        result=desk.remote_servers.start({'remote':'fixture','path':'Sub','address':'0.0.0.0','http_port':port(),'webdav_port':port(),'buffer_mib':8,'username':'viewer','password':password})
         assert result['running'],result
+        assert all(s.server_address[0]=='0.0.0.0' for s in desk.remote_servers.servers)
+        lan_hosts=[a for a in addresses() if a!='127.0.0.1']
+        for host in lan_hosts:
+            assert 'http://'+host+':'+str(result['settings']['http_port'])+'/' in result['lan_urls']['http']
+            c=http.client.HTTPConnection(host,result['settings']['http_port'],timeout=10)
+            try:
+                c.request('GET','/movie.mp4',headers={'Authorization':auth,'Range':'bytes=0-9'});response=c.getresponse()
+                assert response.status==206 and response.read()==payload[:10]
+            finally:c.close()
         assert 'password_hash' not in result['settings'] and password not in json.dumps(result)
         def request(protocol,method,path,headers=None,body=None):
             c=http.client.HTTPConnection('127.0.0.1',result['settings'][protocol+'_port'],timeout=10)

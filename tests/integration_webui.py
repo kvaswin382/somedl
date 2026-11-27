@@ -63,7 +63,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.3.2')
+            expect(page.locator('#appVersion')).to_have_text('v2.3.3')
             original_theme(page)
             # Toasts stay at the top and above nested modal backdrops, without stealing focus.
             for width,dark in [(1360,False),(1360,True),(390,False),(390,True)]:
@@ -423,7 +423,7 @@ with sync_playwright() as pw:
             expect(page.locator('#cloudCopyDialog')).not_to_be_visible()
             assert copies==[{'remote':'ui-drive','path':'Movie.mp4','directory':False,'target_remote':'ui-drive','target_path':'Copies/Movie.mp4'}]
             page.unroute('**/api/remotes/copy')
-            streaming={'running':False,'readers':0,'error':'','urls':{},'addresses':['127.0.0.1'],'settings':{'remote':'ui-drive','path':'','address':'127.0.0.1','http_port':8090,'webdav_port':8091,'buffer_mib':64,'username':'viewer'}}
+            streaming={'running':False,'readers':0,'error':'','urls':{},'addresses':['0.0.0.0','127.0.0.1'],'settings':{'remote':'ui-drive','path':'','address':'127.0.0.1','http_port':8090,'webdav_port':8091,'buffer_mib':64,'username':'viewer'}}
             stream_submissions=[]
             def stream_route(route):
                 if route.request.method=='POST':
@@ -431,21 +431,25 @@ with sync_playwright() as pw:
                     streaming['running']=data.get('action')!='stop'
                     if streaming['running']:
                         streaming['settings'].update({k:v for k,v in data.items() if k!='password'})
-                        streaming['urls']={'http':'http://127.0.0.1:8090/','webdav':'http://127.0.0.1:8091/'}
+                        streaming['urls']={'http':'http://192.168.1.7:8090/','webdav':'http://192.168.1.7:8091/'}
                     else:streaming['urls']={}
                 route.fulfill(json=streaming)
             page.route('**/api/remotes/serve',stream_route)
             page.locator('[data-cloud-tab=streaming]').click()
             expect(page.locator('#streamForm [name=username]')).to_have_value('viewer')
+            expect(page.locator('#streamForm [name=address]')).to_have_value('0.0.0.0')
             page.locator('#streamForm [name=password]').fill('fixture-password-123')
             page.locator('#streamForm [name=buffer_mib]').focus();page.keyboard.press('ArrowRight')
             expect(page.locator('#streamBufferLabel')).to_have_text('72 MiB')
             page.locator('#startRemoteServer').click()
             expect(page.locator('#streamStatus')).to_contain_text('Running')
+            expect(page.locator('#streamStatus')).to_contain_text('viewer')
+            expect(page.locator('#streamStatus')).to_contain_text('WebDAV 8091')
+            expect(page.locator('#streamStatus')).to_contain_text('VLC')
             expect(page.locator('#streamForm [name=password]')).to_have_value('')
             assert stream_submissions[0]['buffer_mib']==72 and stream_submissions[0]['remote']=='ui-drive'
             page.locator('[data-cloud-tab=files]').click()
-            expect(page.locator('#cloudFiles a')).to_have_attribute('href','http://127.0.0.1:8090/Movie.mp4')
+            expect(page.locator('#cloudFiles a')).to_have_attribute('href','http://192.168.1.7:8090/Movie.mp4')
             no_overflow(page);screenshot(page,'cloud-browse-mobile-dark')
             page.locator('[data-cloud-tab=streaming]').click();page.locator('#stopRemoteServer').click()
             expect(page.locator('#streamStatus')).to_contain_text('Stopped')
@@ -601,7 +605,7 @@ with sync_playwright() as pw:
             with page.expect_response('**/api/jobs/retry-all') as retried:
                 page.locator('#retryAll').click()
             result=retried.value.json();assert result['retried']>=12 and result['skipped']==0,result
-            assert all(desk.job(jid)['status']=='queued' and desk.job(jid)['attempts']==0 for jid in failed_ids)
+            assert all(desk.job(jid)['status']=='queued' and desk.job(jid)['attempts']==3 and desk.job(jid)['restart_pending']==1 for jid in failed_ids)
             assert desk.get_setting('hold') is True
             expect(page.locator('#retryAll')).to_be_enabled()
             no_overflow(page);assert not errors,errors

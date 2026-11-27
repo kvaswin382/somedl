@@ -22,12 +22,19 @@ from urllib.parse import urlsplit
 def addresses():
     values={'127.0.0.1'}
     try:
-        p=subprocess.run(['ip','-j','-4','address'],capture_output=True,text=True,check=True,timeout=3)
+        p=subprocess.run([next((p for p in ('/usr/sbin/ip','/sbin/ip','/usr/bin/ip') if os.path.isfile(p)),'ip'),'-j','-4','address'],capture_output=True,text=True,check=True,timeout=3)
         for interface in json.loads(p.stdout):
             for item in interface.get('addr_info',[]):
                 value=item.get('local','')
                 if lan(value):values.add(value)
     except (OSError,ValueError,subprocess.SubprocessError):pass
+    # ip may live in /usr/sbin, outside the service PATH. A UDP route lookup
+    # discovers the local source address without sending any packet.
+    try:
+        with socket.socket(socket.AF_INET,socket.SOCK_DGRAM) as probe:
+            probe.connect(('192.0.2.1',9));value=probe.getsockname()[0]
+            if lan(value):values.add(value)
+    except OSError:pass
     return sorted(values,key=lambda v:(v=='127.0.0.1',v))
 
 def lan(value):
@@ -138,18 +145,20 @@ class RemoteServers:
     def active(self):return bool(self.servers)
     def public(self):
         saved=self.desk.get_setting('remote_serve',{})
+        available=addresses();hosts=[a for a in available if a!='127.0.0.1'] if self.options.get('address')=='0.0.0.0' else [self.options.get('address','127.0.0.1')]
+        links={s.protocol:['http://'+host+':'+str(s.server_port)+'/' for host in hosts] for s in self.servers}
         return {'running':self.active() and all(p.poll() is None for p in self.processes),
-            'readers':self.readers,'error':self.error,'addresses':addresses(),
+            'readers':self.readers,'error':self.error,'addresses':['0.0.0.0',*available],
             'settings':{k:v for k,v in saved.items() if k!='password_hash'},'password_set':bool(saved.get('password_hash')),
-            'urls':{s.protocol:'http://'+self.options['address']+':'+str(s.server_port)+'/' for s in self.servers}}
+            'urls':{protocol:values[0] for protocol,values in links.items() if values},'lan_urls':links,'access':'LAN clients only; read-only; password required'}
     def start(self,data):
         from server import password_hash
         with self.control:
             if self.readers:raise ValueError('Previous streams are closing; try again in a moment')
             if self.active():raise ValueError('Stop streaming before changing its settings')
             remote=data.get('remote');path=data.get('path','');target=self.desk.remotes.read_target(remote,path)
-            address=data.get('address')
-            if address not in addresses():raise ValueError('Select this laptop’s LAN address')
+            address=data.get('address','0.0.0.0')
+            if address not in ['0.0.0.0',*addresses()]:raise ValueError('Select this laptop’s LAN address')
             ports=[data.get('http_port',8090),data.get('webdav_port',8091)]
             if any(type(n) is not int or not 1024<=n<=65535 for n in ports) or ports[0]==ports[1]:raise ValueError('Choose two different ports from 1024 to 65535')
             budget=data.get('buffer_mib',64)

@@ -43,6 +43,24 @@ with tempfile.TemporaryDirectory() as folder:
         assert metered==2*len(photo),(metered,output.getvalue())
         assert Handler.count==2,Handler.count
         assert len(list(dest.glob('*.jpg')))==2
+        # Retry a failed publication from a populated gallery archive/workspace.
+        from server import Desk
+        (root/'ssd/Zedair').mkdir(parents=True)
+        desk=Desk({'state':str(root/'state'),'mount':str(root/'ssd'),'require_mount':False})
+        desk.set_setting('reserve_gib',0)
+        try:
+            jid=desk.add_jobs({'urls':['https://www.instagram.com/p/fixture/']})['ids'][0]
+            stage=desk.staging(jid);retry_spec={**spec,'dest':str(stage)}
+            with patch('gallery_dl.extractor.find',side_effect=find),contextlib.redirect_stdout(io.StringIO()):
+                assert instagram_story.run(retry_spec)==0
+                before=Handler.count
+                desk.update_job(jid,status='error',phase='publish',attempts=2)
+                desk.job_action(jid,'retry');desk.prepare_fresh_retry(desk.job(jid))
+                assert instagram_story.run(retry_spec)==0
+                assert Handler.count==before+2, 'Fresh retry must redownload rather than use the old gallery archive'
+            assert desk.job(jid)['attempts']==2
+        finally:desk.close()
+
         assert all(p.read_bytes()==photo for p in dest.glob('*.jpg'))
         assert output.getvalue().count('ZEDITEM story')==2,output.getvalue()
         assert 'ZEDOWNER fixture' in output.getvalue(),output.getvalue()
