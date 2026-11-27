@@ -63,7 +63,7 @@ with sync_playwright() as pw:
             page.locator('#authForm [name=username]').fill('fixture')
             page.locator('#authForm [name=password]').fill('fixture-password-long')
             page.locator('#authSubmit').click();expect(page.locator('#shell')).to_be_visible()
-            expect(page.locator('#appVersion')).to_have_text('v2.3.4')
+            expect(page.locator('#appVersion')).to_have_text('v2.3.5')
             original_theme(page)
             # Toasts stay at the top and above nested modal backdrops, without stealing focus.
             for width,dark in [(1360,False),(1360,True),(390,False),(390,True)]:
@@ -431,13 +431,22 @@ with sync_playwright() as pw:
                     streaming['running']=data.get('action')!='stop'
                     if streaming['running']:
                         streaming['settings'].update({k:v for k,v in data.items() if k!='password'})
-                        streaming['urls']={'http':'http://192.168.1.7:8090/','webdav':'http://192.168.1.7:8091/'}
+                        streaming['urls']={'http':'http://192.168.1.7:8090/','webdav':'http://192.168.1.7:8091/','ftp':'ftp://192.168.1.7:2121/'}
                     else:streaming['urls']={}
                 route.fulfill(json=streaming)
             page.route('**/api/remotes/serve',stream_route)
             page.locator('[data-cloud-tab=streaming]').click()
             expect(page.locator('#streamForm [name=username]')).to_have_value('viewer')
             expect(page.locator('#streamForm [name=address]')).to_have_value('0.0.0.0')
+            expect(page.locator('#streamForm [name=protocol]')).to_have_value('both')
+            page.locator('#streamForm [name=protocol]').select_option('ftp')
+            expect(page.locator('#streamForm [name=http_port]')).to_be_disabled()
+            expect(page.locator('#streamForm [name=ftp_port]')).to_be_visible()
+            page.locator('#streamForm [name=protocol]').select_option('http')
+            expect(page.locator('#streamForm [name=ftp_port]')).to_be_disabled()
+            page.locator('#streamForm [name=protocol]').select_option('webdav')
+            expect(page.locator('#streamForm [name=webdav_port]')).to_be_visible()
+            page.locator('#streamForm [name=protocol]').select_option('all')
             page.locator('#streamForm [name=password]').fill('fixture-password-123')
             page.locator('#streamForm [name=buffer_mib]').focus();page.keyboard.press('ArrowRight')
             expect(page.locator('#streamBufferLabel')).to_have_text('72 MiB')
@@ -445,6 +454,9 @@ with sync_playwright() as pw:
             expect(page.locator('#streamStatus')).to_contain_text('Running')
             expect(page.locator('#streamStatus')).to_contain_text('viewer')
             expect(page.locator('#streamStatus')).to_contain_text('WebDAV 8091')
+            expect(page.locator('#streamStatus')).to_contain_text('FTP 2121')
+            expect(page.locator('#streamStatus')).to_contain_text('8110–8129')
+            assert stream_submissions[0]['protocol']=='all'
             expect(page.locator('#streamStatus')).to_contain_text('VLC')
             expect(page.locator('#streamForm [name=password]')).to_have_value('')
             assert stream_submissions[0]['buffer_mib']==72 and stream_submissions[0]['remote']=='ui-drive'

@@ -1,12 +1,14 @@
 # Zedair Download Desk
 
-**v2.3.4** · Ubuntu 24.04 · Python 3.12 · Built for a 2 GB headless laptop + USB SSD
+**v2.3.5** · Ubuntu 24.04 · Python 3.12 · Built for a 2 GB headless laptop + USB SSD
 
 Queue webpage links from your phone or computer. Zedair finds and downloads the media on the laptop, even after you close the browser.
 
 [Install](#first-installation) · [Upgrade](#upgrade-an-existing-installation) · [Use](#everyday-use) · [Telegram](#telegram) · [Troubleshoot](#troubleshooting) · [Detailed guides](#guides)
 
-## What changed in v2.3.4
+## What changed in v2.3.5
+
+- **Settings → Rclone → Streaming** now offers HTTP, WebDAV, FTP, or all protocols. Existing HTTP + WebDAV configurations remain available. FTP is read-only, password-protected and passive-mode only, sharing the existing two-transfer RAM budget. Default FTP control port: **2121**; passive data ports: **8110–8129**, both configurable. Allow these ports from your LAN subnet if a firewall is enabled. Copy an `ftp://` file URL into VLC or an FTP client; browsers generally do not open FTP links. No additional package or SSD cache is required.
 
 - Instagram can fall back to **Playwright** when gallery-dl fails or returns no files. The existing browser-fallback checkbox controls this for queued downloads; Tools jobs enable it by default. Saved cookies are reused. Only one browser fallback extracts/downloads at a time, regardless of general concurrency.
 - The fallback matches the requested post, carousel, story, highlight or profile. It selects the highest exposed rendition (or your selected lower video quality), keeps images as images, and copies separate video/audio tracks into MP4 without re-encoding. It refuses unrelated media, video posters and collections whose completeness cannot be verified.
@@ -41,7 +43,7 @@ sudo bash upgrade.sh
 - If Git reports local edits or a diverged branch, preserve and review them first. Do not force-reset the checkout.
 - The upgrader backs up app/state under `/var/backups/zedair`, installs into `/opt/zedair`, and checks startup. It restores the backup if its health check fails.
 - SSD downloads, saved cookies, accounts and queue history are preserved. Engine packages are updated separately.
-- Refresh with **Ctrl+F5**; the footer should show **v2.3.4**. Pulling source alone does not update the running app.
+- Refresh with **Ctrl+F5**; the footer should show **v2.3.5**. Pulling source alone does not update the running app.
 
 ## First installation
 

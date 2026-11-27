@@ -141,12 +141,12 @@ class RemoteServers:
         self.desk=desk;self.lock=threading.RLock();self.control=threading.Lock()
         self.processes=[];self.servers=[];self.threads=[];self.options={};self.readers=0
         self.streams=threading.BoundedSemaphore(2);self.requests=threading.BoundedSemaphore(8)
-        self.stopping=threading.Event();self.error=''
+        self.stopping=threading.Event();self.error='';self.ftp_clients=set()
     def active(self):return bool(self.servers)
     def public(self):
         saved=self.desk.get_setting('remote_serve',{})
         available=addresses();hosts=[a for a in available if a!='127.0.0.1'] if self.options.get('address')=='0.0.0.0' else [self.options.get('address','127.0.0.1')]
-        links={s.protocol:['http://'+host+':'+str(s.server_port)+'/' for host in hosts] for s in self.servers}
+        links={s.protocol:[('ftp://' if s.protocol=='ftp' else 'http://')+host+':'+str(s.server_port)+'/' for host in hosts] for s in self.servers}
         return {'running':self.active() and all(p.poll() is None for p in self.processes),
             'readers':self.readers,'error':self.error,'addresses':['0.0.0.0',*available],
             'settings':{k:v for k,v in saved.items() if k!='password_hash'},'password_set':bool(saved.get('password_hash')),
@@ -159,8 +159,16 @@ class RemoteServers:
             remote=data.get('remote');path=data.get('path','');target=self.desk.remotes.read_target(remote,path)
             address=data.get('address','0.0.0.0')
             if address not in ['0.0.0.0',*addresses()]:raise ValueError('Select this laptop’s LAN address')
-            ports=[data.get('http_port',8090),data.get('webdav_port',8091)]
-            if any(type(n) is not int or not 1024<=n<=65535 for n in ports) or ports[0]==ports[1]:raise ValueError('Choose two different ports from 1024 to 65535')
+            selection=data.get('protocol','both')
+            choices={'http':('http',),'webdav':('webdav',),'ftp':('ftp',),'both':('http','webdav'),'all':('http','webdav','ftp')}
+            if selection not in choices:raise ValueError('Select HTTP, WebDAV, FTP or all protocols')
+            protocols=choices[selection]
+            configured={k+'_port':data.get(k+'_port',v) for k,v in (('http',8090),('webdav',8091),('ftp',2121))}
+            ports=[configured[k+'_port'] for k in protocols]
+            if any(type(n) is not int or not 1024<=n<=65535 for n in ports) or len(set(ports))!=len(ports):raise ValueError('Choose distinct listener ports from 1024 to 65535')
+            low=data.get('ftp_passive_min',8110);high=data.get('ftp_passive_max',8129)
+            if 'ftp' in protocols and (type(low) is not int or type(high) is not int or not 1024<=low<=high<=65535 or high-low>99 or any(low<=p<=high for p in ports)):
+                raise ValueError('Choose 1–100 passive FTP ports, from 1024 to 65535, separate from listener ports')
             budget=data.get('buffer_mib',64)
             if type(budget) is not int or not 8<=budget<=512:raise ValueError('RAM buffer must be 8–512 MiB')
             user=data.get('username','')
@@ -169,14 +177,15 @@ class RemoteServers:
             if secret and (not isinstance(secret,str) or not 12<=len(secret)<=512):raise ValueError('Use a streaming password of 12–512 characters')
             hashed=password_hash(secret) if secret else saved.get('password_hash')
             if not hashed:raise ValueError('Set a streaming password')
-            self.options={'remote':remote,'path':path,'address':address,'http_port':ports[0],'webdav_port':ports[1],'buffer_mib':budget,'username':user,'password_hash':hashed}
+            self.options={'remote':remote,'path':path,'address':address,**configured,'protocol':selection,'ftp_passive_min':low,'ftp_passive_max':high,'buffer_mib':budget,'username':user,'password_hash':hashed}
             self.stopping.clear();self.error='';self.internal_password=secrets.token_urlsafe(32)
             try:
-                for protocol,port in zip(('http','webdav'),ports):
-                    front=Server((address,port),Handler);front.owner=self;front.protocol=protocol;self.servers.append(front)
+                for protocol,port in zip(protocols,ports):
+                    from remote_ftp import FTPHandler
+                    front=Server((address,port),FTPHandler if protocol=='ftp' else Handler);front.owner=self;front.protocol=protocol;self.servers.append(front)
                     with socket.socket() as probe:probe.bind(('127.0.0.1',0));upstream=probe.getsockname()[1]
                     front.upstream=upstream
-                    args=self.desk.remotes.args('serve',protocol,target,'--addr','127.0.0.1:'+str(upstream),'--read-only','--vfs-cache-mode','off','--buffer-size','0','--dir-cache-time','30s','--poll-interval','0','--no-modtime')
+                    args=self.desk.remotes.args('serve','webdav' if protocol=='ftp' else protocol,target,'--addr','127.0.0.1:'+str(upstream),'--read-only','--vfs-cache-mode','off','--buffer-size','0','--dir-cache-time','30s','--poll-interval','0','--no-modtime')
                     env={**os.environ,'RCLONE_USER':'zedair','RCLONE_PASS':self.internal_password}
                     p=subprocess.Popen(args,env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,start_new_session=True);self.processes.append(p)
                     ready=False
@@ -199,6 +208,11 @@ class RemoteServers:
         return self.public()
     def _stop(self):
         self.stopping.set()
+        with self.lock:clients=list(self.ftp_clients)
+        for client in clients:
+            try:client.shutdown(socket.SHUT_RDWR)
+            except OSError:pass
+            client.close()
         for index,s in enumerate(self.servers):
             if index<len(self.threads):s.shutdown()
             s.server_close()
