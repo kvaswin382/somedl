@@ -100,14 +100,21 @@ def main():
         assert len(files)==4 and all(p.read_bytes()==png for p in files)
         assert final['items']==4 and Handler.requests==4,final
         with sqlite3.connect(stage/'.profile-downloads-v2.sqlite3') as db:assert db.execute('SELECT count(*) FROM archive').fetchone()[0]==4
-        # Restart the same job's download phase: real archive skips completed IDs.
-        desk.update_job(jid,phase='download',status='error');desk.job_action(jid,'retry')
+        # Paused resume keeps the real archive and skips completed IDs.
+        desk.update_job(jid,phase='download',status='paused');desk.job_action(jid,'retry')
         with patch('server.validate_url'),patch('server.build_command',side_effect=actual_command):desk.run_job(desk.job(jid))
         assert desk.job(jid)['status']=='done' and desk.job(jid)['items']==4
         assert len(list(output.glob('*.png')))==4 and Handler.requests==4
         assert len(desk.rows('SELECT * FROM file_dates'))==4
+        previous_attempts=desk.job(jid)['attempts']
+        desk.update_job(jid,phase='publish',status='error');desk.job_action(jid,'retry')
+        with patch('server.validate_url'),patch('server.build_command',side_effect=actual_command):desk.run_job(desk.job(jid))
+        final=desk.job(jid);assert final['status']=='done' and final['attempts']==previous_attempts+1,final
+        assert Handler.requests==8 and len(list(output.glob('*.png')))==8
+        assert all(p.read_bytes()==png for p in files), 'Fresh retry must preserve previously published files'
+        assert len(desk.rows('SELECT * FROM file_dates'))==8
         desk.close();local_server.shutdown();local_server.server_close()
-    print('PASS: reproduced 4 false downloads, zero media requests and poisoned archive with old CLI; upgraded same job fetched/published 4 exact-byte media files across 2 pages; retry fetched no duplicates and kept an accurate count.')
+    print('PASS: reproduced 4 false downloads, zero media requests and poisoned archive with old CLI; upgraded same job fetched/published 4 exact-byte media files across 2 pages; paused resume fetched no duplicates; failed retry fetched fresh bytes, incremented attempts and preserved old files.')
 
 if __name__=='__main__':
     if len(sys.argv)>1 and sys.argv[1] in ('--worker','--profile'):worker()
